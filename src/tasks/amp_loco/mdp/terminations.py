@@ -115,23 +115,28 @@ def ball_contact(
 
 def wall_contact(
   env: ManagerBasedRlEnv,
-  sensor_name: str = "wall_robot_contact",
+  sensor_names: tuple[str, ...] = ("wall_robot_contact",),
 ) -> torch.Tensor:
-  """Terminate the episode when the robot touches the static wall (crashed into it).
+  """Terminate the episode when the robot touches any static wall (crashed into it).
 
-  Reads the ``wall_robot_contact`` :class:`ContactSensor` (primary = wall body,
-  secondary = the robot's pelvis *subtree* == the whole robot, same construction as
-  the ball sensor). ``found > 0`` means some robot link is touching the wall this
-  step. No velocity-discontinuity fallback is needed (unlike the ball): the wall is
-  pinned and the robot's own speeds are far below the tunneling regime, so the
-  contact sensor is exact. This termination is NOT excluded from the -200
-  ``is_terminated`` penalty on the wall task -- running into the wall is a genuine
-  failure, unlike a ball hit (which is penalized implicitly by lost future reward).
+  Reads the wall :class:`ContactSensor`\\ s (one per wall entity; primary = wall
+  body, secondary = the robot's pelvis *subtree* == the whole robot, same
+  construction as the ball sensor). ``found > 0`` on ANY of them means some robot
+  link is touching a wall this step. No velocity-discontinuity fallback is needed
+  (unlike the ball): the walls are pinned and the robot's own speeds are far below
+  the tunneling regime, so the contact sensor is exact. This termination is NOT
+  excluded from the -200 ``is_terminated`` penalty on the wall tasks -- running
+  into the wall is a genuine failure, unlike a ball hit (which is penalized
+  implicitly by lost future reward).
   """
-  sensor: ContactSensor = env.scene[sensor_name]
-  found = sensor.data.found  # [B, num_slots]
-  assert found is not None, f"Sensor '{sensor_name}' must include 'found' in its fields."
-  return found.squeeze(-1) > 0.0
+  hit = None
+  for name in sensor_names:
+    sensor: ContactSensor = env.scene[name]
+    found = sensor.data.found  # [B, num_slots]
+    assert found is not None, f"Sensor '{name}' must include 'found' in its fields."
+    h = found.squeeze(-1) > 0.0
+    hit = h if hit is None else (hit | h)
+  return hit
 
 
 class DelayedTerminationManager(TerminationManager):

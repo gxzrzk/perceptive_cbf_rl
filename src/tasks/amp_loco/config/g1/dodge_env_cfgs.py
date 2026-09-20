@@ -913,48 +913,72 @@ def g1_amp_dodge_mimickit_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvC
   return cfg
 
 
-def _apply_wall_overrides(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
-  """Add a STATIC WALL obstacle beside the spawn point to a built dodge env.
+def _apply_wall_overrides(
+  cfg: ManagerBasedRlEnvCfg,
+  num_walls: int = 1,
+  placement: str = "beside",
+  recycle_ahead: bool = False,
+  obs_k: int = 1,
+) -> ManagerBasedRlEnvCfg:
+  """Add STATIC WALL obstacles around the robot to a built dodge env.
 
-  The robot must dodge the thrown ball without backing/sidestepping into the wall:
-  the wall's side (left/right, 50/50) and distance are randomized every episode, the
-  actor observes the wall state (``dodge_wall_state_b`` in the ``ball_state`` group,
-  which the MimicKit runner feeds to BOTH actor and critic -- no runner change), a
-  per-link static-barrier reward (``wall_link_cbf``) shapes wall clearance, and
-  touching the wall terminates the episode WITH the -200 ``is_terminated`` penalty
-  (unlike a ball hit, a wall crash is a genuine failure).
+  The robot must dodge the thrown ball without backing/sidestepping into a wall:
+  wall side (left/right, 50/50) and distance are randomized every episode
+  (HEADING-RELATIVE -- the RSI clips reset the robot to a ~-90 deg mean yaw, so
+  placement is relative to the robot's reset heading, not the world axes), the
+  actor observes the wall state (``dodge_wall_state_b`` in the ``ball_state``
+  group, which the MimicKit runner feeds to BOTH actor and critic -- no runner
+  change), a per-link static-barrier reward (``wall_link_cbf``) shapes wall
+  clearance, and touching a wall terminates the episode WITH the -200
+  ``is_terminated`` penalty (unlike a ball hit, a wall crash is a genuine failure).
+
+  ``num_walls`` wall entities (``wall_0`` ... or just ``wall`` when 1) are added.
+  ``placement``: ``"beside"`` (walls beside the spawn, standing dodge task) or
+  ``"path"`` (walls scattered along the walking corridor). ``recycle_ahead``:
+  step event teleports walked-past walls back ahead (endless corridor, walk
+  task). ``obs_k``: how many nearest walls the observation carries (3 dims each).
 
   Knobs are read at CALL time (env-var override, like OMNI_THROW/CBF_JOINT) so a
   benchmark can vary them per build; training sets them at launch.
   """
   ev = lambda k, d: float(os.environ.get(k, d))
-
-  # --- Wall entity (freejoint box, re-pinned every step -> kinematically static). ---
-  cfg.scene.entities = {**cfg.scene.entities, "wall": get_wall_cfg()}
-
-  # --- Wall<->robot contact sensor (same construction as ball_robot_contact). ---
-  wall_hit_cfg = ContactSensorCfg(
-    name="wall_robot_contact",
-    primary=ContactMatch(mode="body", pattern="wall", entity="wall"),
-    secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
-    fields=("found",),
-    reduce="netforce",
-    num_slots=1,
+  wall_names = (
+    ("wall",) if num_walls == 1 else tuple(f"wall_{i}" for i in range(num_walls))
   )
-  cfg.scene.sensors = (cfg.scene.sensors or ()) + (wall_hit_cfg,)
+
+  # --- Wall entities (freejoint boxes, re-pinned every step -> kinematically static). ---
+  for name in wall_names:
+    cfg.scene.entities = {**cfg.scene.entities, name: get_wall_cfg()}
+
+  # --- Wall<->robot contact sensors (same construction as ball_robot_contact). ---
+  sensor_names = []
+  for name in wall_names:
+    sensor = f"{name}_robot_contact"
+    sensor_names.append(sensor)
+    cfg.scene.sensors = (cfg.scene.sensors or ()) + (
+      ContactSensorCfg(
+        name=sensor,
+        primary=ContactMatch(mode="body", pattern="wall", entity=name),
+        secondary=ContactMatch(mode="subtree", pattern="pelvis", entity="robot"),
+        fields=("found",),
+        reduce="netforce",
+        num_slots=1,
+      ),
+    )
 
   # --- Terminate on wall contact. NOT excluded from is_terminated (-200). ---
   cfg.terminations["wall_hit"] = TerminationTermCfg(
     func=mdp.wall_contact,
-    params={"sensor_name": "wall_robot_contact"},
+    params={"sensor_names": tuple(sensor_names)},
   )
 
-  # --- Events: randomize the wall pose on reset; pin it every step. ---
+  # --- Events: randomize the wall poses on reset; pin them every step. ---
   cfg.events["reset_wall_pose"] = EventTermCfg(
     func=mdp.reset_wall_pose,
     mode="reset",
     params={
-      "wall_name": "wall",
+      "wall_names": wall_names,
+      "robot_name": "robot",
       # (0.6, 1.0) m: close enough to constrain the dodge space, far enough that
       # the RSI reset poses (arm swings) never start already touching the wall.
       "lateral_dist_range": (
@@ -965,18 +989,44 @@ def _apply_wall_overrides(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
         ev("WALL_X_OFF_MIN", -0.5),
         ev("WALL_X_OFF_MAX", 0.5),
       ),
+      "placement": placement,
+      # path mode (walk task): first wall 2.5-4 m ahead, then every 3 m.
+      "path_ahead_range": (
+        ev("WALL_PATH_AHEAD_MIN", 2.5),
+        ev("WALL_PATH_AHEAD_MAX", 4.0),
+      ),
+      "path_spacing": ev("WALL_PATH_SPACING", 3.0),
     },
   )
   cfg.events["pin_wall"] = EventTermCfg(
     func=mdp.pin_wall,
     mode="step",
-    params={"wall_name": "wall"},
+    params={"wall_names": wall_names},
   )
+  if recycle_ahead:
+    # Walk task: walked-past walls teleport back ahead -> endless obstacle corridor.
+    cfg.events["recycle_walls_ahead"] = EventTermCfg(
+      func=mdp.recycle_walls_ahead,
+      mode="step",
+      params={
+        "wall_names": wall_names,
+        "robot_name": "robot",
+        "ahead_range": (
+          ev("WALL_RECYCLE_AHEAD_MIN", 7.0),
+          ev("WALL_RECYCLE_AHEAD_MAX", 10.0),
+        ),
+        "lateral_range": (
+          ev("WALL_DIST_MIN", 0.6),
+          ev("WALL_DIST_MAX", 1.2),
+        ),
+        "behind_margin": 1.0,
+      },
+    )
 
   # --- Actor+critic wall observation: wall state appended to the ball_state group. ---
   cfg.observations["ball_state"].terms["wall_state"] = ObservationTermCfg(
     func=mdp.dodge_wall_state_b,
-    params={"robot_name": "robot", "wall_name": "wall"},
+    params={"robot_name": "robot", "wall_names": wall_names, "k": obs_k},
   )
 
   # --- Reward: per-link static wall barrier (zero when safe; see rewards.py). ---
@@ -985,7 +1035,7 @@ def _apply_wall_overrides(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
     weight=ev("WALL_CBF_WEIGHT", 0.3),
     params={
       "robot_name": "robot",
-      "wall_name": "wall",
+      "wall_names": wall_names,
       "alpha": ev("WALL_CBF_ALPHA", 1.0),
       "margin": 0.05,
       "constraint_clip": 2.0,
@@ -993,10 +1043,10 @@ def _apply_wall_overrides(cfg: ManagerBasedRlEnvCfg) -> ManagerBasedRlEnvCfg:
   )
 
   # --- Disable the ball-hit velocity-discontinuity fallback: a ball bouncing off
-  # the WALL sees a large delta_v within hit_dist (1 m) of the pelvis above
+  # a WALL sees a large delta_v within hit_dist (1 m) of the pelvis above
   # hit_z_min, which would falsely register as a body hit. The contact sensor alone
   # is exact here (throws are ~3-5 m/s -> ~1 cm per physics step, no tunneling; the
-  # fallback exists for the 12-15 m/s omni throws, which this task does not use). ---
+  # fallback exists for the 12-15 m/s omni throws, which these tasks do not use). ---
   cfg.terminations["ball_hit"].params["delta_v_threshold"] = 0.0
 
   return cfg
@@ -1007,13 +1057,58 @@ def g1_amp_dodge_mimickit_wall_flat_env_cfg(play: bool = False) -> ManagerBasedR
 
   The ``Unitree-G1-AMP-Dodge-MimicKit-Flat`` setup (ground-truth ball-state actor
   obs, MimicKit task reward) plus a wall obstacle: randomized side/distance each
-  episode, wall state added to the (symmetric actor+critic) ``ball_state`` obs
-  group, a per-link static CBF reward for wall clearance, and a wall-contact
-  termination penalized by the standard -200 ``is_terminated``. Trains "dodge the
-  ball WITHOUT crashing into the obstacle next to you".
+  episode (heading-relative -- placed relative to the robot's post-RSI heading,
+  not the world axes), wall state added to the (symmetric actor+critic)
+  ``ball_state`` obs group, a per-link static CBF reward for wall clearance, and a
+  wall-contact termination penalized by the standard -200 ``is_terminated``.
+  Trains "dodge the ball WITHOUT crashing into the obstacle next to you".
   """
   cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=play)
-  return _apply_wall_overrides(cfg)
+  return _apply_wall_overrides(cfg, num_walls=1, placement="beside", obs_k=1)
+
+
+def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """G1 AMP dodge (state oracle) WHILE WALKING FORWARD through a wall corridor.
+
+  Same perception/reward base as the standing wall task, but the robot is driven
+  FORWARD continuously (``forward_offset`` command: goal pinned ahead of the robot
+  every step -> a constant ~max_lin_vel_x forward walk) instead of standing at
+  home. ``WALLWALK_NUM_WALLS`` (default 3) walls are scattered along the walking
+  path at episode start and RECYCLED ahead once the robot walks past them
+  (endless obstacle corridor). Balls are still thrown on the timed 1-4 s trigger,
+  led at the walking robot.
+
+  Reward changes vs the standing task (a walking robot must NOT be rewarded for
+  stillness): the two threat-gated anti-twitch terms
+  (``dodge_stillness_when_safe``, ``dodge_action_rate_when_safe``) are dropped and
+  ``mimickit_dodge``'s stillness term is zeroed (vel_w=0); forward speed is
+  anchored by the kept velocity-tracking rewards.
+  """
+  ev = lambda k, d: float(os.environ.get(k, d))
+  cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=play)
+
+  # --- Forward-walk command: goal pinned ahead every step -> constant forward walk.
+  # kp (1.5) * forward_offset (2.0) = 3.0, clamped to max_lin_vel_x -> a constant
+  # 1.3 m/s forward command by default. No standing / in-place envs: everyone walks.
+  twist = cfg.commands["twist"]
+  twist.home_goal = False
+  twist.back_offset = 0.0
+  twist.forward_offset = ev("WALK_FORWARD_OFFSET", 2.0)
+  twist.max_lin_vel_x = ev("WALK_MAX_VEL_X", 1.3)
+  twist.rel_standing_envs = 0.0
+  twist.rel_inplace_throw_envs = 0.0
+
+  # --- De-conflict the reward with walking (see docstring). ---
+  cfg.rewards.pop("dodge_stillness_when_safe", None)
+  cfg.rewards.pop("dodge_action_rate_when_safe", None)
+  if "mimickit_dodge" in cfg.rewards:
+    cfg.rewards["mimickit_dodge"].params["vel_w"] = 0.0
+
+  num_walls = int(ev("WALLWALK_NUM_WALLS", 3))
+  cfg = _apply_wall_overrides(
+    cfg, num_walls=num_walls, placement="path", recycle_ahead=True, obs_k=num_walls
+  )
+  return cfg
 
 
 @dataclass(kw_only=True)

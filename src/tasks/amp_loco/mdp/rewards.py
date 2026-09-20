@@ -544,7 +544,7 @@ def dodge_link_cbf_reward(
 def wall_link_cbf_reward(
   env: ManagerBasedRlEnv,
   robot_name: str = "robot",
-  wall_name: str = "wall",
+  wall_names: tuple[str, ...] = ("wall",),
   alpha: float = 1.0,
   margin: float = 0.05,
   constraint_clip: float = 2.0,
@@ -557,9 +557,12 @@ def wall_link_cbf_reward(
   structure; read its docstring first). Differences:
 
   * The obstacle is a box, not a sphere: ``d`` is the distance from each link centre
-    to the wall's SURFACE (axis-aligned box -- the wall is pinned at yaw 0, so its
-    axes are the env/world axes; ``excess = (|rel| - half_extents).clamp(min=0)``,
-    ``d = ||excess||``). ``h = d - (r_link + margin)``.
+    to the wall's SURFACE (the box is rotated to the wall's yaw -- walls yaw with
+    the walking path -- so ``rel`` is first rotated into each wall's frame, then
+    ``excess = (|rel_wall| - half_extents).clamp(min=0)``, ``d = ||excess||``).
+    ``h = d - (r_link + margin)``.
+  * Multiple walls (``wall_names``) are stacked and the constraint takes the min
+    over walls -- only the most-threatening wall charges each link.
   * The wall does not move, so ``h_dot`` comes ONLY from the robot's own link
     velocities (``h_dot = v_link . grad(d)``) -- this barrier penalizes swinging a
     limb (or the base) TOWARD the wall faster than ``alpha * h`` allows.
@@ -574,9 +577,8 @@ def wall_link_cbf_reward(
   sees only the wall-state observation.
   """
   robot: Entity = env.scene[robot_name]
-  wall: Entity = env.scene[wall_name]
 
-  # Cache (once) the per-link safety radii and the wall geom id. Link radii are
+  # Cache (once) the per-link safety radii and the wall geom ids. Link radii are
   # env-invariant; shares the cache built by dodge_link_cbf_reward when both terms
   # are registered.
   if not hasattr(env, "_dodge_link_radii"):
@@ -596,27 +598,57 @@ def wall_link_cbf_reward(
     env._dodge_link_radii = torch.tensor(  # type: ignore[attr-defined]
       radii, device=env.device, dtype=torch.float32
     ) + margin  # (L,)
-  if not hasattr(env, "_wall_geom_id"):
-    env._wall_geom_id = int(  # type: ignore[attr-defined]
-      env.sim.mj_model.geom(f"{wall_name}/wall_collision").id
-    )
+  if not hasattr(env, "_wall_geom_ids"):
+    env._wall_geom_ids = {}
+  for name in wall_names:
+    if name not in env._wall_geom_ids:
+      env._wall_geom_ids[name] = int(  # type: ignore[attr-defined]
+        env.sim.mj_model.geom(f"{name}/wall_collision").id
+      )
 
   r_link = env._dodge_link_radii  # (L,)
-  half_extents = env.sim.model.geom_size[:, env._wall_geom_id, :]  # (N, 3)
-
-  wall_p = wall.data.root_link_pos_w  # (N, 3)
+  W = len(wall_names)
   link_p = robot.data.body_link_pos_w  # (N, L, 3)
   link_v = robot.data.body_link_lin_vel_w  # (N, L, 3)
+  L = link_p.shape[1]
 
-  rel = link_p - wall_p.unsqueeze(1)  # (N, L, 3) wall centre -> link
-  excess = (rel.abs() - half_extents.unsqueeze(1)).clamp(min=0.0)  # (N, L, 3)
-  d = excess.norm(dim=-1).clamp_min(1e-6)  # (N, L) distance to wall surface
-  h = d - r_link.unsqueeze(0)  # (N, L) clearance (radii cache already has margin)
+  # Stack per-wall quantities: centres (N, W, 3), half extents (N, W, 3), yaws (N, W).
+  wall_p = torch.stack(
+    [env.scene[n].data.root_link_pos_w for n in wall_names], dim=1
+  )
+  half_extents = torch.stack(
+    [env.sim.model.geom_size[:, env._wall_geom_ids[n], :] for n in wall_names], dim=1
+  )
+  wyaw = getattr(env, "_wall_yaw_w", None)
+  if wyaw is None or wyaw.shape[1] != W:
+    w_yaw = torch.zeros(env.num_envs, W, device=env.device)
+  else:
+    w_yaw = wyaw
+
+  rel = link_p.unsqueeze(1) - wall_p.unsqueeze(2)  # (N, W, L, 3) wall centre -> link
+  # Rotate each rel xy into its wall's frame (walls yaw with the walking path).
+  c = torch.cos(-w_yaw).view(env.num_envs, W, 1)
+  s = torch.sin(-w_yaw).view(env.num_envs, W, 1)
+  rx = c * rel[..., 0] - s * rel[..., 1]  # (N, W, L)
+  ry = s * rel[..., 0] + c * rel[..., 1]
+  rel_wall = torch.stack([rx, ry, rel[..., 2]], dim=-1)  # (N, W, L, 3)
+
+  excess = (rel_wall.abs() - half_extents.unsqueeze(2)).clamp(min=0.0)  # (N, W, L, 3)
+  d = excess.norm(dim=-1).clamp_min(1e-6)  # (N, W, L) distance to wall surface
+  h = d - r_link.view(1, 1, L)  # (N, W, L) clearance (radii cache has margin)
   # h_dot from the robot's own motion (wall static): grad of d wrt the link is
-  # sign(rel) * excess / d (componentwise; zero for components inside the slab).
-  grad = torch.sign(rel) * excess / d.unsqueeze(-1)  # (N, L, 3)
-  h_dot = (link_v * grad).sum(dim=-1)  # (N, L) < 0 while approaching
-  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)  # (N, L) <= 0
+  # sign(rel_wall) * excess / d (componentwise; zero for components inside the slab).
+  # BOTH operands must live in the SAME frame: grad is wall-frame, so rotate the
+  # link velocities into the wall frame too (same R(-yaw) as rel above).
+  grad = torch.sign(rel_wall) * excess / d.unsqueeze(-1)  # (N, W, L, 3)
+  lv = link_v.unsqueeze(1).expand(-1, W, -1, -1)  # (N, W, L, 3) world frame
+  vx = c * lv[..., 0] - s * lv[..., 1]
+  vy = s * lv[..., 0] + c * lv[..., 1]
+  v_wall = torch.stack([vx, vy, lv[..., 2]], dim=-1)  # (N, W, L, 3) wall frame
+  h_dot = (v_wall * grad).sum(dim=-1)  # (N, W, L) < 0 while approaching
+  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)  # (N, W, L) <= 0
+  cbf = cbf.min(dim=1).values  # (N, L) most-threatening wall per link
+  h = h.min(dim=1).values  # (N, L)
   if danger_band is not None:
     # Only links within `danger_band` of the wall count (keeps a whole-body fast
     # move far from the wall from washing out the per-link signal under "sum").

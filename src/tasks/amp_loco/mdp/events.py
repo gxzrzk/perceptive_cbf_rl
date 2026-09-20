@@ -672,114 +672,242 @@ def throw_ball_on_dwell(
 
 
 # ------------------------------------------------------------------
-# Static wall obstacle: randomized placement on reset, pinned every step
+# Static wall obstacles: randomized placement on reset, pinned every step
 # ------------------------------------------------------------------
 #
-# The wall is a freejoint box entity (see ``assets/objects/wall``). A static body
+# Walls are freejoint box entities (see ``assets/objects/wall``). A static body
 # welded to the world cannot be placed per env (welded geoms live at shared global
-# coordinates in the compiled model), so instead the wall's root pose is WRITTEN per
-# env at reset (randomized side/distance, like the ball's parking) and re-pinned
-# every step -- kinematically static: robot and ball collide with it but it never
-# moves.
+# coordinates in the compiled model), so instead each wall's root pose is WRITTEN
+# per env at reset and re-pinned every step -- kinematically static: robot and ball
+# collide with it but it never moves.
+#
+# Placement is HEADING-RELATIVE, not world-frame: the RSI motion clips reset the
+# robot to a yaw around -90 deg (not +x), so a world-frame "+y wall" would land
+# directly in the throw cone. Walls are placed relative to the robot's post-reset
+# heading (reset events run in registration order, and reset_from_motion is
+# registered before reset_wall_pose, so the robot's pose is fresh here).
 
-_WALL_POSE_ATTR = "_wall_pose_w"
+_WALL_POS_ATTR = "_wall_pos_w"  # (N, W, 3) wall centre positions
+_WALL_YAW_ATTR = "_wall_yaw_w"  # (N, W) wall yaws (long axis direction)
+
+
+def _wall_geom_id(env: "ManagerBasedRlEnv", wall_name: str) -> int:
+    if not hasattr(env, "_wall_geom_ids"):
+        env._wall_geom_ids = {}
+    if wall_name not in env._wall_geom_ids:
+        env._wall_geom_ids[wall_name] = env.sim.mj_model.geom(
+            f"{wall_name}/wall_collision"
+        ).id
+    return env._wall_geom_ids[wall_name]
+
+
+def _heading_frame(robot_quat_w: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """(fwd_xy, perp_xy) unit vectors of the robot heading: perp = 90deg left of fwd."""
+    fwd = quat_apply(yaw_quat(robot_quat_w), torch.tensor(
+        [1.0, 0.0, 0.0], device=robot_quat_w.device
+    ).expand(robot_quat_w.shape[0], 3))[:, :2]
+    perp = torch.stack([-fwd[:, 1], fwd[:, 0]], dim=-1)
+    return fwd, perp
 
 
 def reset_wall_pose(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
-  wall_name: str = "wall",
+  wall_names: tuple[str, ...] = ("wall",),
+  robot_name: str = "robot",
   lateral_dist_range: tuple[float, float] = (0.6, 1.0),
   x_offset_range: tuple[float, float] = (-0.5, 0.5),
+  placement: str = "beside",
+  path_ahead_range: tuple[float, float] = (2.5, 4.0),
+  path_spacing: float = 3.0,
 ) -> None:
-    """Reset event: place the wall beside the spawn point at a randomized spot.
+    """Reset event: place the wall(s) around the spawn point, heading-relative.
 
-    Per env: picks a SIDE (left/right of the env origin, 50/50) at lateral distance
-    ``lateral_dist_range`` and a longitudinal offset ``x_offset_range``, yaw = 0 (the
-    wall's long axis stays parallel to the env x axis -- a wall *beside* the robot).
+    Two placements (per env, random side 50/50 and yaw = the robot's reset heading):
 
-    The lateral-distance floor (0.6 m) keeps the wall clear of the RSI reset poses
-    (which include arm swings) so an episode never starts already touching the wall;
-    the cap (1.0 m) keeps it close enough to genuinely constrain the dodge space.
+    * ``"beside"`` (standing dodge task): each wall at
+      ``robot_xy + perp * side * U(lateral_dist_range) + fwd * U(x_offset_range)``
+      -- a wall BESIDE the robot, constraining the dodge space without blocking the
+      frontal throw cone. The lateral floor (0.6 m) keeps the wall clear of the RSI
+      reset poses (arm swings) so an episode never starts already touching it.
+    * ``"path"`` (forward-walk task): wall ``i`` at
+      ``robot_xy + fwd * (U(path_ahead_range) + i * path_spacing) + perp * side * U(lateral_dist_range)``
+      -- walls scattered along the walking corridor (see also ``recycle_walls_ahead``).
 
     The bimodal side sampling forces the policy to actually READ the wall
-    observation (a fixed-side wall would be memorizable). The sampled pose is
-    stashed on ``env._wall_pose_w`` for ``pin_wall``.
+    observation (a fixed-side wall would be memorizable). Sampled poses are stashed
+    on ``env._wall_pos_w`` / ``env._wall_yaw_w`` for ``pin_wall``.
     """
     if env_ids is None:
         env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
     if len(env_ids) == 0:
         return
 
-    wall: Entity = env.scene[wall_name]
+    robot: Entity = env.scene[robot_name]
     n = len(env_ids)
+    W = len(wall_names)
     device = env.device
 
     def _uniform(lo: float, hi: float) -> torch.Tensor:
         return torch.rand(n, device=device) * (hi - lo) + lo
 
-    side = torch.where(
-        torch.rand(n, device=device) < 0.5,
-        -torch.ones(n, device=device),
-        torch.ones(n, device=device),
-    )
-    offset = torch.stack(
-        [
-            _uniform(*x_offset_range),
-            side * _uniform(*lateral_dist_range),
-            torch.zeros(n, device=device),
-        ],
-        dim=-1,
-    )
-    # Wall base on the ground: center z = half height. Read the per-env box half
-    # height from the model (the geom is a box; size row [hl, ht, hh]).
-    if not hasattr(env, "_wall_geom_id"):
-        env._wall_geom_id = env.sim.mj_model.geom(f"{wall_name}/wall_collision").id
-    half_h = env.sim.model.geom_size[env_ids, env._wall_geom_id, 2]
-    pose_pos = env.scene.env_origins[env_ids] + offset
-    pose_pos[:, 2] = half_h
+    pos = getattr(env, _WALL_POS_ATTR, None)
+    yaw = getattr(env, _WALL_YAW_ATTR, None)
+    if pos is None or pos.shape[0] != env.num_envs or pos.shape[1] != W:
+        pos = torch.zeros(env.num_envs, W, 3, device=device)
+        yaw = torch.zeros(env.num_envs, W, device=device)
+        setattr(env, _WALL_POS_ATTR, pos)
+        setattr(env, _WALL_YAW_ATTR, yaw)
 
-    pose = getattr(env, _WALL_POSE_ATTR, None)
-    if pose is None or pose.shape[0] != env.num_envs:
-        pose = torch.zeros(env.num_envs, 3, device=device)
-        setattr(env, _WALL_POSE_ATTR, pose)
-    pose[env_ids] = pose_pos
+    # robot.data is STALE at reset-event time: reset events fire back-to-back with
+    # no entity-data refresh in between, and reset_from_motion writes the RSI pose
+    # straight into sim qpos. Read the fresh root pose back from there (freejoint
+    # layout: pos(3) + quat wxyz(4)).
+    adr = robot.data.indexing.free_joint_q_adr
+    root_pose = env.sim.data.qpos[env_ids][:, adr]  # (n, 7)
+    root_pos = root_pose[:, :3]
+    root_quat = root_pose[:, 3:7]
+    robot_yaw = torch.atan2(
+        2.0 * (root_quat[:, 0] * root_quat[:, 3] + root_quat[:, 1] * root_quat[:, 2]),
+        1.0 - 2.0 * (root_quat[:, 2] ** 2 + root_quat[:, 3] ** 2),
+    )
+    fwd, perp = _heading_frame(root_quat)  # (n, 2) each
 
-    quat_identity = torch.zeros(n, 4, device=device)
-    quat_identity[:, 0] = 1.0
-    wall.write_root_link_pose_to_sim(
-        torch.cat([pose_pos, quat_identity], dim=-1), env_ids=env_ids
-    )
-    wall.write_root_link_velocity_to_sim(
-        torch.zeros(n, 6, device=device), env_ids=env_ids
-    )
+    for i, name in enumerate(wall_names):
+        side = torch.where(
+            torch.rand(n, device=device) < 0.5,
+            -torch.ones(n, device=device),
+            torch.ones(n, device=device),
+        )
+        if placement == "path":
+            ahead = _uniform(*path_ahead_range) + i * path_spacing
+            lateral = side * _uniform(*lateral_dist_range)
+        else:  # "beside"
+            ahead = _uniform(*x_offset_range)
+            lateral = side * _uniform(*lateral_dist_range)
+        offset_xy = fwd * ahead.unsqueeze(-1) + perp * lateral.unsqueeze(-1)
+        # Wall base on the ground: centre z = half height (box size row [hl, ht, hh]).
+        gid = _wall_geom_id(env, name)
+        half_h = env.sim.model.geom_size[env_ids, gid, 2]
+        wall_pos = root_pos + torch.cat(
+            [offset_xy, torch.zeros(n, 1, device=device)], dim=-1
+        )
+        wall_pos[:, 2] = half_h
+        pos[env_ids, i] = wall_pos
+        yaw[env_ids, i] = robot_yaw
+
+        quat = torch.zeros(n, 4, device=device)
+        quat[:, 0] = torch.cos(robot_yaw / 2.0)
+        quat[:, 3] = torch.sin(robot_yaw / 2.0)
+        wall: Entity = env.scene[name]
+        wall.write_root_link_pose_to_sim(
+            torch.cat([wall_pos, quat], dim=-1), env_ids=env_ids
+        )
+        wall.write_root_link_velocity_to_sim(
+            torch.zeros(n, 6, device=device), env_ids=env_ids
+        )
 
 
 def pin_wall(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | None,
-  wall_name: str = "wall",
+  wall_names: tuple[str, ...] = ("wall",),
 ) -> None:
-    """Step event: re-pin the wall to its sampled pose (kinematically static).
+    """Step event: re-pin the walls to their stashed poses (kinematically static).
 
-    Rewrites the wall's root pose to the ``reset_wall_pose`` target and zeroes its
-    velocity every step, so collisions with the robot or the ball cannot move it --
-    physically equivalent to an infinite-mass obstacle. Registered ``mode="step"``
-    (runs on all envs every step, after sim.forward()).
+    Rewrites each wall's root pose to the ``reset_wall_pose`` / ``recycle_walls_ahead``
+    target and zeroes its velocity every step, so collisions with the robot or the
+    ball cannot move it -- physically equivalent to an infinite-mass obstacle.
+    Registered ``mode="step"`` (runs on all envs every step, after sim.forward()).
     """
-    wall: Entity = env.scene[wall_name]
-    pose = getattr(env, _WALL_POSE_ATTR, None)
-    if pose is None:
+    pos = getattr(env, _WALL_POS_ATTR, None)
+    yaw = getattr(env, _WALL_YAW_ATTR, None)
+    if pos is None or yaw is None:
         return  # reset_wall_pose has not run yet (nothing to pin to)
     env_ids = torch.arange(env.num_envs, device=env.device, dtype=torch.long)
-    quat_identity = torch.zeros(env.num_envs, 4, device=env.device)
-    quat_identity[:, 0] = 1.0
-    wall.write_root_link_pose_to_sim(
-        torch.cat([pose, quat_identity], dim=-1), env_ids=env_ids
-    )
-    wall.write_root_link_velocity_to_sim(
-        torch.zeros(env.num_envs, 6, device=env.device), env_ids=env_ids
-    )
+    for i, name in enumerate(wall_names):
+        wall: Entity = env.scene[name]
+        quat = torch.zeros(env.num_envs, 4, device=env.device)
+        quat[:, 0] = torch.cos(yaw[:, i] / 2.0)
+        quat[:, 3] = torch.sin(yaw[:, i] / 2.0)
+        wall.write_root_link_pose_to_sim(
+            torch.cat([pos[:, i], quat], dim=-1), env_ids=env_ids
+        )
+        wall.write_root_link_velocity_to_sim(
+            torch.zeros(env.num_envs, 6, device=env.device), env_ids=env_ids
+        )
+
+
+def recycle_walls_ahead(
+  env: ManagerBasedRlEnv,
+  env_ids: torch.Tensor | None,
+  wall_names: tuple[str, ...] = ("wall",),
+  robot_name: str = "robot",
+  ahead_range: tuple[float, float] = (7.0, 10.0),
+  lateral_range: tuple[float, float] = (0.5, 1.2),
+  behind_margin: float = 1.0,
+) -> None:
+    """Step event (forward-walk task): recycle walls the robot has walked past.
+
+    Any wall more than ``behind_margin`` metres BEHIND the robot (along its heading)
+    is teleported to ``fwd * U(ahead_range) + perp * side * U(lateral_range)`` ahead
+    of it, with the wall yaw re-aligned to the robot's current heading. With a few
+    wall entities this makes an endless obstacle corridor: the robot keeps walking
+    forward and keeps meeting walls. Updates the ``env._wall_pos_w`` /
+    ``env._wall_yaw_w`` stash; ``pin_wall`` (also a step event) re-pins to the new
+    pose from the next step on, and this event writes the pose directly too.
+    """
+    robot: Entity = env.scene[robot_name]
+    pos = getattr(env, _WALL_POS_ATTR, None)
+    yaw = getattr(env, _WALL_YAW_ATTR, None)
+    if pos is None or yaw is None:
+        return
+
+    n = env.num_envs
+    device = env.device
+    root_pos = robot.data.root_link_pos_w  # (N, 3) fresh in step mode
+    root_quat = robot.data.root_link_quat_w
+    fwd, perp = _heading_frame(root_quat)  # (N, 2)
+
+    def _uniform(lo: float, hi: float) -> torch.Tensor:
+        return torch.rand(n, device=device) * (hi - lo) + lo
+
+    for i, name in enumerate(wall_names):
+        rel_xy = pos[:, i, :2] - root_pos[:, :2]
+        along = (rel_xy * fwd).sum(dim=-1)  # > 0 ahead of the robot
+        recycle = along < -behind_margin
+        if not recycle.any():
+            continue
+        m = recycle.float().unsqueeze(-1)
+        side = torch.where(
+            torch.rand(n, device=device) < 0.5,
+            -torch.ones(n, device=device),
+            torch.ones(n, device=device),
+        )
+        new_xy = (
+            root_pos[:, :2]
+            + fwd * _uniform(*ahead_range).unsqueeze(-1)
+            + perp * (side * _uniform(*lateral_range)).unsqueeze(-1)
+        )
+        pos[:, i, :2] = m * new_xy + (1.0 - m) * pos[:, i, :2]
+        robot_yaw = torch.atan2(
+            2.0 * (root_quat[:, 0] * root_quat[:, 3] + root_quat[:, 1] * root_quat[:, 2]),
+            1.0 - 2.0 * (root_quat[:, 2] ** 2 + root_quat[:, 3] ** 2),
+        )
+        yaw[:, i] = torch.where(recycle, robot_yaw, yaw[:, i])
+
+        # Teleport the recycled walls now (pin_wall re-pins everyone every step anyway).
+        wall: Entity = env.scene[name]
+        ids = recycle.nonzero(as_tuple=False).squeeze(-1)
+        quat = torch.zeros(len(ids), 4, device=device)
+        quat[:, 0] = torch.cos(yaw[ids, i] / 2.0)
+        quat[:, 3] = torch.sin(yaw[ids, i] / 2.0)
+        wall.write_root_link_pose_to_sim(
+            torch.cat([pos[ids, i], quat], dim=-1), env_ids=ids
+        )
+        wall.write_root_link_velocity_to_sim(
+            torch.zeros(len(ids), 6, device=device), env_ids=ids
+        )
 
 
 # ------------------------------------------------------------------

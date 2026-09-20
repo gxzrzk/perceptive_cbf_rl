@@ -347,6 +347,22 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       self.is_standing_env[:] = False
       self.is_inplace_env[:] = False
 
+    # Forward-offset mode: every step pin the goal forward_offset metres AHEAD of the
+    # robot (along its heading) so the nominal command is a constant FORWARD walk
+    # (kp * forward_offset, clamped to max_lin_vel_x). Used by the walk-and-dodge
+    # task: the robot keeps advancing down the wall corridor while balls are thrown
+    # at it. Overrides home_goal. The goal never gets closer (it moves with the
+    # robot), so the dwell/resample logic never fires.
+    if self.cfg.forward_offset != 0.0:
+      fwd_xy = quat_apply(
+        yaw_quat(self.robot.data.root_link_quat_w), self._forward_b
+      )[:, :2]
+      self.goal_pos_w[:] = self.robot.data.root_link_pos_w[:, :2] + (
+        self.cfg.forward_offset * fwd_xy
+      )
+      self.is_standing_env[:] = False
+      self.is_inplace_env[:] = False
+
     super()._update_command()  # fills self.vel_command_b with the nominal command
     self.vel_command_nominal_b = self.vel_command_b.clone()
     if not self.cfg.cbf_enabled:
@@ -432,6 +448,11 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   heading). The nominal command becomes a constant backpedal, so the robot is always in
   locomotion mode (dodges far better than standing) and already retreating from the
   front-thrown ball. Overrides home_goal. Used in the play demo."""
+  forward_offset: float = 0.0
+  """If > 0, every step place the goal this many meters AHEAD of the robot (along its
+  heading). The nominal command becomes a constant FORWARD walk at
+  ``min(kp * forward_offset, max_lin_vel_x)`` m/s, so the robot keeps advancing while
+  dodging. Overrides home_goal. Used by the walk-and-dodge wall task."""
   cbf_enabled: bool = True
   cbf_filter_command: bool = True
   """If True, the CBF-safe velocity replaces the nominal command the policy observes/tracks

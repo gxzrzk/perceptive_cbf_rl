@@ -794,34 +794,68 @@ def dodge_ball_state_b(
 def dodge_wall_state_b(
   env: ManagerBasedRlEnv,
   robot_name: str = "robot",
-  wall_name: str = "wall",
+  wall_names: tuple[str, ...] = ("wall",),
+  k: int = 1,
 ) -> torch.Tensor:
-  """Ground-truth static-wall state, robot heading (yaw) frame: ``[B, 3]``.
+  """Ground-truth static-wall state, robot heading (yaw) frame: ``[B, 3*k]``.
 
-  The wall centre's position *relative to the robot* in the robot's yaw frame, plus
-  the robot's clearance to the wall surface: ``[rel_x_b, rel_y_b, surf_dist]``.
+  For each of the ``k`` NEAREST walls (sorted by centre distance every step, so a
+  given output slot always carries the same "rank" of wall -- no discontinuity when
+  walls are recycled ahead on the walk task):
 
-  * ``rel_x_b``, ``rel_y_b`` -- where the wall is (the wall pose is randomized
-    left/right + distance each episode, so the policy must read this to know which
-    side is blocked). Wall height/heading are fixed (yaw 0, tall), so 2-D suffices.
-  * ``surf_dist`` -- signed distance from the robot root to the wall's surface in
-    the lateral direction (``|rel_y_w| - half_thickness``; > 0 clear, ~0 touching).
-    A direct "how much dodge room is left" cue, cheaper to learn than inferring it
-    from the centre offset.
+  * ``rel_x_b``, ``rel_y_b`` -- wall centre relative to the robot, in the robot's
+    yaw frame (the wall side/distance is randomized each episode, so the policy
+    must read this to know which side is blocked).
+  * ``surf_dist`` -- distance from the robot root to the wall's 2-D footprint
+    (box ``excess`` norm in the wall's own yaw frame; > 0 clear, ~0 touching). A
+    direct "how much room is left" cue, cheaper to learn than inferring it from
+    the centre offset + known wall size.
 
-  Actor-visible on the wall task (state oracle perception regime: the wall is part
-  of the known scene state, like the ball state).
+  Walls are tall (2 m), so z is omitted. Actor-visible on the wall tasks (state
+  oracle perception regime: the wall is part of the known scene state, like the
+  ball state).
   """
   robot: Entity = env.scene[robot_name]
-  wall: Entity = env.scene[wall_name]
   yq = yaw_quat(robot.data.root_link_quat_w)
-  rel_pos_w = wall.data.root_link_pos_w - robot.data.root_link_pos_w
-  pos_b = quat_apply_inverse(yq, rel_pos_w)  # (N, 3)
-  if not hasattr(env, "_wall_geom_id"):
-    env._wall_geom_id = env.sim.mj_model.geom(f"{wall_name}/wall_collision").id
-  half_t = env.sim.model.geom_size[:, env._wall_geom_id, 1]  # (N,) half thickness
-  surf_dist = rel_pos_w[:, 1].abs() - half_t  # wall runs along x (yaw 0)
-  return torch.cat([pos_b[:, :2], surf_dist.unsqueeze(-1)], dim=-1)  # (N, 3)
+  rp = robot.data.root_link_pos_w  # (N, 3)
+
+  if not hasattr(env, "_wall_geom_ids"):
+    env._wall_geom_ids = {}
+  feats = []
+  dists = []
+  for name in wall_names:
+    if name not in env._wall_geom_ids:
+      env._wall_geom_ids[name] = env.sim.mj_model.geom(f"{name}/wall_collision").id
+    gid = env._wall_geom_ids[name]
+    wall: Entity = env.scene[name]
+    rel_w = wall.data.root_link_pos_w - rp  # (N, 3)
+    pos_b = quat_apply_inverse(yq, rel_w)  # (N, 3) in robot yaw frame
+    # 2-D box distance in the WALL's yaw frame (walls yaw with the walking path).
+    wyaw = getattr(env, "_wall_yaw_w", None)
+    wi = wall_names.index(name)
+    if wyaw is not None:
+      w_yaw = wyaw[:, wi]
+    else:
+      w_yaw = torch.zeros(env.num_envs, device=env.device)
+    c, s = torch.cos(-w_yaw), torch.sin(-w_yaw)
+    lx = c * rel_w[:, 0] - s * rel_w[:, 1]  # along-wall offset in wall frame
+    ly = s * rel_w[:, 0] + c * rel_w[:, 1]  # lateral offset in wall frame
+    hl = env.sim.model.geom_size[:, gid, 0]  # (N,) half length
+    ht = env.sim.model.geom_size[:, gid, 1]  # (N,) half thickness
+    ex = (lx.abs() - hl).clamp(min=0.0)
+    ey = (ly.abs() - ht).clamp(min=0.0)
+    surf = torch.sqrt(ex * ex + ey * ey)  # (N,)
+    feats.append(torch.stack([pos_b[:, 0], pos_b[:, 1], surf], dim=-1))  # (N, 3)
+    dists.append(rel_w[:, :2].norm(dim=-1))
+
+  all_feats = torch.stack(feats, dim=1)  # (N, W, 3)
+  if len(wall_names) > 1:
+    order = torch.argsort(torch.stack(dists, dim=1), dim=1)  # (N, W)
+    all_feats = torch.gather(
+        all_feats, 1, order.unsqueeze(-1).expand(-1, -1, 3)
+    )
+  kk = min(k, len(wall_names))
+  return all_feats[:, :kk].reshape(env.num_envs, 3 * kk)  # (N, 3k)
 
 
 def dodge_cbf_state_b(
