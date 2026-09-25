@@ -22,6 +22,20 @@ _DODGE_MOTION_DIR = os.path.normpath(
   )
 )
 
+# WallWalk AMP discriminator dataset: the full amp_dodge set PLUS 10 walking clips
+# (walk forward/arc/sideway/backward + jog forward, symlinked from amp/WalkandRun).
+# amp_dodge alone has ZERO locomotion clips, so the style prior actively fought the
+# 1.3 m/s cruise this task requires; with the walk clips in, the discriminator
+# recognizes a walking gait as in-distribution. The matching env cfg resets (RSI)
+# from the same combined dir.
+_WALLWALK_MOTION_DIR = os.path.normpath(
+  os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    os.pardir, os.pardir, os.pardir, os.pardir, os.pardir,
+    "src", "assets", "motions", "g1", "amp_dodge_walk",
+  )
+)
+
 
 def g1_amp_leap_goto_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
   cfg = g1_amp_leap_ppo_runner_cfg()
@@ -90,6 +104,21 @@ def g1_amp_dodge_mimickit_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
     "actor": ("actor", "ball_state"),
     "critic": ("critic", "ball_state"),
   }
+  return cfg
+
+
+def g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
+  """Runner cfg for the MimicKit WallWalk task (walk a random path + dodge + walls).
+
+  Identical to the MimicKit dodge runner (symmetric ball_state obs, 50/50 style
+  blend) except the AMP discriminator trains on ``amp_dodge_walk`` -- the dodge set
+  augmented with 10 walking clips (see _WALLWALK_MOTION_DIR) -- so the style prior
+  covers the sustained 1.3 m/s gait the task commands instead of fighting it. The
+  env cfg independently switches its RSI reset dir to the same combined set.
+  """
+  cfg = g1_amp_dodge_mimickit_ppo_runner_cfg()
+  cfg.experiment_name = "g1_amp_dodge_mimickit_wallwalk"
+  cfg.amp_motion_files = _WALLWALK_MOTION_DIR
   return cfg
 
 

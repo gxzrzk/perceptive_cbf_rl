@@ -203,7 +203,9 @@ _WALLWALK_NAMES = ("wall_0", "wall_1", "wall_2")
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_forward_command_constant():
-    """forward_offset pins the goal ahead -> a constant clamped forward command
+    """Path-follow pure pursuit pins the goal 2 m ahead ON THE PATH -> at reset the
+    path's first segment is aligned with the robot heading (and >= the lookahead),
+    so the command is the same constant clamped forward walk as before
     (kp * 2.0 = 3.0 > max_lin_vel_x = 1.3 -> vx = 1.3 m/s for every env)."""
     env = _build_wallwalk_env()
     cmd = env.command_manager.get_command("twist")  # (N, 3): vx, vy, wz
@@ -211,57 +213,87 @@ def test_wallwalk_forward_command_constant():
     assert torch.allclose(
         cmd[:, 0], torch.full_like(cmd[:, 0], 1.3), atol=1e-4
     ), f"forward command should be clamped to 1.3 m/s, got {cmd[:, 0].unique()}"
-    assert cmd[:, 1].abs().max() < 1e-6 and cmd[:, 2].abs().max() < 1e-6, (
-        "no lateral / yaw command expected in forward-walk mode"
+    assert cmd[:, 1].abs().max() < 1e-4 and cmd[:, 2].abs().max() < 1e-4, (
+        "no lateral / yaw command expected on the heading-aligned first segment "
+        "(tiny float residue from the path geometry is fine)"
     )
+
+
+def _path_distance_and_station(env, points_xy: torch.Tensor):
+    """(min distance, arc-length station of the closest point) from each (N, 2) xy
+    point to its env's walk-path polyline. Vectorized over all segments."""
+    pts = env._walk_path_pts  # (N, M, 2)
+    cum = env._walk_path_cumlen  # (N, M)
+    count = env._walk_path_n  # (N,)
+    p0 = pts[:, :-1]  # (N, M-1, 2)
+    p1 = pts[:, 1:]
+    seg = p1 - p0
+    l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
+    u = (((points_xy.unsqueeze(1) - p0) * seg).sum(dim=-1) / l2).clamp(0.0, 1.0)
+    closest = p0 + u.unsqueeze(-1) * seg
+    dist = (closest - points_xy.unsqueeze(1)).norm(dim=-1)  # (N, M-1)
+    station = cum[:, :-1] + u * seg.norm(dim=-1)
+    # Ignore padding segments beyond each env's vertex count.
+    valid = (
+        torch.arange(pts.shape[1] - 1, device=env.device).unsqueeze(0)
+        < (count - 1).unsqueeze(1)
+    )
+    dist = torch.where(valid, dist, torch.full_like(dist, 1e9))
+    j = dist.argmin(dim=1)
+    ar = torch.arange(env.num_envs, device=env.device)
+    return dist[ar, j], station[ar, j]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_walls_scattered_ahead_on_path():
-    """Path placement: all 3 walls ahead of the robot along its heading (first at
-    2.5-4 m, then every 3 m), lateral within [0.6, 1.0] of the walking line."""
+    """Walk-path placement: wall i sits at arc-length station U(2.5,4)+3i along the
+    random path, offset 0.6-1.0 m perpendicular to the local tangent (station/distance
+    measured against the polyline, toleranced for curve geometry)."""
     env = _build_wallwalk_env()
-    robot = env.scene["robot"]
 
     assert env._wall_pos_w.shape == (env.num_envs, 3, 3)
-    fwd, perp = _heading_frame_from_yaw(env._wall_yaw_w[:, 0])
     for i in range(3):
-        off = env._wall_pos_w[:, i, :2] - robot.data.root_link_pos_w[:, :2]
-        along = (off * fwd).sum(dim=-1)
-        lat = (off * perp).sum(dim=-1)
-        lo, hi = 2.5 + i * 3.0, 4.0 + i * 3.0
-        assert torch.all(along >= lo - 1e-4) and torch.all(along <= hi + 1e-4), (
-            f"wall_{i} along-heading distance out of [{lo}, {hi}]: "
-            f"min {along.min():.3f}, max {along.max():.3f}"
+        dist, station = _path_distance_and_station(env, env._wall_pos_w[:, i, :2])
+        assert torch.all(dist >= 0.6 - 0.15) and torch.all(dist <= 1.0 + 0.05), (
+            f"wall_{i} distance-to-path out of ~[0.6, 1.0]: "
+            f"min {dist.min():.3f}, max {dist.max():.3f}"
         )
-        assert torch.all(lat.abs() >= 0.6 - 1e-4) and torch.all(lat.abs() <= 1.0 + 1e-4), (
-            f"wall_{i} lateral out of [0.6, 1.0]: min {lat.abs().min():.3f}, max {lat.abs().max():.3f}"
+        lo, hi = 2.5 + i * 3.0, 4.0 + i * 3.0
+        assert torch.all(station >= lo - 1.2) and torch.all(station <= hi + 1.2), (
+            f"wall_{i} path station out of ~[{lo}, {hi}]: "
+            f"min {station.min():.3f}, max {station.max():.3f}"
         )
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_recycle_moves_walked_past_walls_ahead():
-    """A wall > 1 m behind the robot teleports 7-10 m ahead along the current heading."""
+    """A wall > 1 m behind the robot teleports to a path station 7-10 m ahead of the
+    robot's path progress, offset 0.5-1.2 m from the path (along_path mode)."""
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
     robot = env.scene["robot"]
     fwd, _ = _heading_frame_from_yaw(env._wall_yaw_w[:, 0])
+    before = env._wall_pos_w.clone()
 
     # Drag wall_0 to 3 m BEHIND the robot (leave wall_1/2 untouched).
     env._wall_pos_w[:, 0, :2] = robot.data.root_link_pos_w[:, :2] - 3.0 * fwd
-    mdp.recycle_walls_ahead(env, None, wall_names=_WALLWALK_NAMES)
+    mdp.recycle_walls_ahead(env, None, wall_names=_WALLWALK_NAMES, along_path=True)
 
-    off = env._wall_pos_w[:, 0, :2] - robot.data.root_link_pos_w[:, :2]
-    along = (off * fwd).sum(dim=-1)
-    assert torch.all(along >= 7.0 - 1e-4) and torch.all(along <= 10.0 + 1e-4), (
-        f"recycled wall_0 should be 7-10 m ahead, got min {along.min():.3f}, max {along.max():.3f}"
+    dist, station = _path_distance_and_station(env, env._wall_pos_w[:, 0, :2])
+    s_robot = env.command_manager.get_term("twist")._path_s  # ~0 right after reset
+    assert torch.all(station >= s_robot + 7.0 - 1.2) and torch.all(station <= s_robot + 10.0 + 1.2), (
+        f"recycled wall_0 station should be ~7-10 m ahead of s_robot, got "
+        f"min {station.min():.3f}, max {station.max():.3f} (s_robot ~ {s_robot.mean():.3f})"
+    )
+    assert torch.all(dist >= 0.5 - 0.15) and torch.all(dist <= 1.2 + 0.05), (
+        f"recycled wall_0 distance-to-path out of ~[0.5, 1.2]: "
+        f"min {dist.min():.3f}, max {dist.max():.3f}"
     )
     # wall_1/2 were still ahead -> untouched.
-    for i in (1, 2):
-        off_i = env._wall_pos_w[:, i, :2] - robot.data.root_link_pos_w[:, :2]
-        along_i = (off_i * fwd).sum(dim=-1)
-        assert torch.all(along_i > 0.0), f"wall_{i} should not have been recycled"
+    assert torch.allclose(env._wall_pos_w[:, 1:], before[:, 1:]), (
+        "wall_1/2 should not have been recycled"
+    )
     # The entity pose was teleported too (not just the stash). recycle writes sim
     # qpos directly, so refresh (forward + update) before reading entity data.
     w0 = env.scene["wall_0"]

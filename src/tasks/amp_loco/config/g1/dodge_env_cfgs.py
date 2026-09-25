@@ -161,6 +161,20 @@ _DODGE_RESET_DIR = os.path.normpath(
   )
 )
 
+# RSI motion dir for the WALLWALK task: ``amp_dodge_walk`` = the full amp_dodge set
+# PLUS 10 walking clips (walk forward/arc/sideway/backward + jog forward, symlinked
+# from amp/WalkandRun). The amp_dodge prior contains ZERO locomotion clips (dodges +
+# one-leg idles at 0.03-0.39 m/s + short jumps at 0.24-0.57 m/s), so without this the
+# robot would NEVER reset into a mid-walk state for a task whose whole point is
+# sustained 1.3 m/s walking. ~37% of frames are walking -> ~37% of episodes start
+# mid-gait, matching the walk-vs-dodge time split of the task.
+_WALLWALK_RESET_DIR = os.path.normpath(
+  os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "assets", "motions", "g1", "amp_dodge_walk",
+  )
+)
+
 
 def _head_depth_camera_cfg(
   name: str = "head_depth",
@@ -973,6 +987,22 @@ def _apply_wall_overrides(
   )
 
   # --- Events: randomize the wall poses on reset; pin them every step. ---
+  if placement == "walk_path":
+    # Generate the random walk path FIRST (dict order = application order for
+    # reset events) so reset_wall_pose below can place walls along it.
+    cfg.events["reset_walk_path"] = EventTermCfg(
+      func=mdp.reset_walk_path,
+      mode="reset",
+      params={
+        "robot_name": "robot",
+        "seg_len_range": (
+          ev("WALK_PATH_SEG_MIN", 2.0),
+          ev("WALK_PATH_SEG_MAX", 4.0),
+        ),
+        "turn_max": ev("WALK_PATH_TURN_MAX", 0.45),
+        "initial_len": ev("WALK_PATH_INIT_LEN", 80.0),
+      },
+    )
   cfg.events["reset_wall_pose"] = EventTermCfg(
     func=mdp.reset_wall_pose,
     mode="reset",
@@ -1005,6 +1035,8 @@ def _apply_wall_overrides(
   )
   if recycle_ahead:
     # Walk task: walked-past walls teleport back ahead -> endless obstacle corridor.
+    # along_path: recycle along the random walk path (walk_path placement) instead
+    # of the robot's current straight heading.
     cfg.events["recycle_walls_ahead"] = EventTermCfg(
       func=mdp.recycle_walls_ahead,
       mode="step",
@@ -1020,6 +1052,7 @@ def _apply_wall_overrides(
           ev("WALL_DIST_MAX", 1.2),
         ),
         "behind_margin": 1.0,
+        "along_path": placement == "walk_path",
       },
     )
 
@@ -1068,32 +1101,43 @@ def g1_amp_dodge_mimickit_wall_flat_env_cfg(play: bool = False) -> ManagerBasedR
 
 
 def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """G1 AMP dodge (state oracle) WHILE WALKING FORWARD through a wall corridor.
+  """G1 AMP dodge (state oracle) WHILE WALKING a RANDOM PATH through a wall corridor.
 
-  Same perception/reward base as the standing wall task, but the robot is driven
-  FORWARD continuously (``forward_offset`` command: goal pinned ahead of the robot
-  every step -> a constant ~max_lin_vel_x forward walk) instead of standing at
-  home. ``WALLWALK_NUM_WALLS`` (default 3) walls are scattered along the walking
-  path at episode start and RECYCLED ahead once the robot walks past them
-  (endless obstacle corridor). Balls are still thrown on the timed 1-4 s trigger,
-  led at the walking robot.
+  Same perception/reward base as the standing wall task, but each episode every
+  env gets its own randomly shaped walking path (gentle-curve polyline, see
+  mdp/walk_path.py) and the robot is driven ALONG it continuously
+  (``path_follow`` command: pure-pursuit lookahead goal on the path -> a constant
+  ~max_lin_vel_x cruise that steers through the curves) instead of standing at
+  home. ``WALLWALK_NUM_WALLS`` (default 3) walls are scattered ALONG THE PATH at
+  episode start (flanking it: yaw = local tangent, perpendicular offset 0.6-1.0 m,
+  random side) and RECYCLED ahead along the path once the robot walks past them
+  (endless obstacle corridor that follows the curve). Balls are still thrown on
+  the timed 1-4 s trigger, led at the walking robot.
 
   Reward changes vs the standing task (a walking robot must NOT be rewarded for
   stillness): the two threat-gated anti-twitch terms
   (``dodge_stillness_when_safe``, ``dodge_action_rate_when_safe``) are dropped and
   ``mimickit_dodge``'s stillness term is zeroed (vel_w=0); forward speed is
-  anchored by the kept velocity-tracking rewards.
+  anchored by the kept velocity-tracking rewards, and route progress is rewarded
+  directly by ``walk_path_progress`` (arc-length rate along the path, replacing
+  the goal-distance term that degenerates to a constant under pure pursuit).
   """
   ev = lambda k, d: float(os.environ.get(k, d))
   cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=play)
 
-  # --- Forward-walk command: goal pinned ahead every step -> constant forward walk.
-  # kp (1.5) * forward_offset (2.0) = 3.0, clamped to max_lin_vel_x -> a constant
-  # 1.3 m/s forward command by default. No standing / in-place envs: everyone walks.
+  # --- Path-follow walk command: pure-pursuit goal on the random walk path every
+  # step -> a constant cruise (kp 1.5 * lookahead 2.0 = 3.0, clamped to
+  # max_lin_vel_x = 1.3 m/s) that steers through the path's curves via the
+  # go-to-goal heading controller. No standing / in-place envs: everyone walks.
   twist = cfg.commands["twist"]
   twist.home_goal = False
   twist.back_offset = 0.0
-  twist.forward_offset = ev("WALK_FORWARD_OFFSET", 2.0)
+  twist.forward_offset = 0.0
+  twist.path_follow = True
+  twist.path_lookahead = ev("WALK_PATH_LOOKAHEAD", 2.0)
+  # Must exceed the wall-recycle ahead_range max (10 m) so recycled walls always
+  # land on already-generated path.
+  twist.path_wall_ahead = ev("WALK_PATH_WALL_AHEAD", 11.0)
   twist.max_lin_vel_x = ev("WALK_MAX_VEL_X", 1.3)
   twist.rel_standing_envs = 0.0
   twist.rel_inplace_throw_envs = 0.0
@@ -1104,9 +1148,31 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   if "mimickit_dodge" in cfg.rewards:
     cfg.rewards["mimickit_dodge"].params["vel_w"] = 0.0
 
+  # --- Replace the (dead in path mode) goal_distance with PATH PROGRESS. The
+  # pure-pursuit goal rides 2 m ahead, so exp(-d^2/std^2) is a constant ~0.17 with
+  # no gradient; instead reward the arc-length RATE along the random path (m/s,
+  # symmetric: backsliding is penalized) -- "advance along the route toward its
+  # end". Complements velocity tracking: tracking rewards matching the commanded
+  # velocity vector, this rewards actually making route progress in the path
+  # frame (e.g. rejoining and pushing forward after a dodge knocks the robot
+  # sideways). ~1.3 m/s at cruise -> ~0.65/step at the default weight.
+  cfg.rewards.pop("goal_distance", None)
+  cfg.rewards["walk_path_progress"] = RewardTermCfg(
+    func=mdp.walk_path_progress_reward,
+    weight=ev("WALK_PATH_PROGRESS_WEIGHT", 0.5),
+    params={"command_name": "twist"},
+  )
+
+  # --- RSI from the walk-augmented set (see _WALLWALK_RESET_DIR): the amp_dodge
+  # prior has no walking clips, so without this episodes would NEVER start mid-gait.
+  # The AMP discriminator dir is switched in the matching runner cfg
+  # (g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg).
+  cfg.events["init_motion_loader"].params["motion_dir"] = _WALLWALK_RESET_DIR
+  cfg.events["reset_from_motion"].params["motion_dir"] = _WALLWALK_RESET_DIR
+
   num_walls = int(ev("WALLWALK_NUM_WALLS", 3))
   cfg = _apply_wall_overrides(
-    cfg, num_walls=num_walls, placement="path", recycle_ahead=True, obs_k=num_walls
+    cfg, num_walls=num_walls, placement="walk_path", recycle_ahead=True, obs_k=num_walls
   )
   return cfg
 

@@ -336,6 +336,36 @@ def goal_progress_reward(
   return closing_speed.clamp(-clip, clip)
 
 
+def walk_path_progress_reward(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  clip: float = 2.0,
+) -> torch.Tensor:
+  """Dense reward for making progress ALONG the random walk path toward its end.
+
+  The WallWalk random-path analog of :func:`goal_progress_reward`: reads the
+  command term's per-step arc-length delta (``_path_s_delta``, metres, from the
+  robot's projection onto its polyline path) and expresses it as a PROGRESS RATE
+  (m/s): ``delta_s / dt``, clipped to +/-``clip``. ~1.3 m/s at cruise.
+
+  Why not ``goal_distance_reward``/``goal_progress_reward``: in path-follow mode
+  the "goal" is a pure-pursuit lookahead point that rides 2 m ahead of the robot,
+  so distance-to-goal is ~constant (both terms degenerate to constants). Arc
+  length along the path is the true objective:
+
+  * Measured in the PATH frame, so it rewards actually advancing along the route
+    -- moving fast in the wrong direction (e.g. backing off-path after a dodge)
+    collects nothing here even while velocity tracking pays out.
+  * Symmetric: sliding BACKWARD along the path (delta_s < 0) is penalized, so it
+    stays close to policy-invariant potential-based shaping.
+  * ~0 on an episode's new path (the command zeroes the delta on a path change),
+    so a reset never reads as a progress spike.
+  """
+  command = env.command_manager.get_term(command_name)
+  rate = command._path_s_delta / env.step_dt
+  return rate.clamp(-clip, clip)
+
+
 def goal_reached_bonus(
   env: ManagerBasedRlEnv,
   command_name: str,

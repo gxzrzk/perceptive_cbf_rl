@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Play / visualize the STATE-BASED (oracle) dodge WHILE WALKING through a wall
 # corridor policy (Unitree-G1-AMP-Dodge-MimicKit-WallWalk-Flat) in the viser web
-# viewer (default http://localhost:8080). The robot walks forward continuously
-# (~1.3 m/s) while dodging the thrown ball AND slaloming WALLWALK_NUM_WALLS
-# (default 3) static walls scattered along its path -- walked-past walls recycle
-# back ahead, so the corridor is endless.
+# viewer (default http://localhost:8080). Each episode gets a RANDOMLY SHAPED
+# walking path (gentle-curve polyline); the robot walks along it continuously
+# (~1.3 m/s, pure-pursuit lookahead) while dodging the thrown ball AND slaloming
+# WALLWALK_NUM_WALLS (default 3) static walls flanking the path -- walked-past
+# walls recycle back ahead along the curve, so the corridor is endless.
 #
 # NOTE: checkpoints from the plain state task OR the standing wall task DO NOT
 # load here -- the ball_state obs group is 6 + 3*WALLWALK_NUM_WALLS dims (15 by
@@ -22,7 +23,7 @@
 #   WALLWALK_NUM_WALLS=5 ./play_wallwalk.sh --agent zero        # denser corridor, untrained
 #
 # Env overrides: RUN, NUM_ENVS, EXP_NAME, RESET_STAND, WALLWALK_NUM_WALLS,
-# WALK_FORWARD_OFFSET, WALK_MAX_VEL_X. Extra args -> scripts/play.py.
+# WALK_PATH_LOOKAHEAD, WALK_PATH_TURN_MAX, WALK_MAX_VEL_X. Extra args -> scripts/play.py.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

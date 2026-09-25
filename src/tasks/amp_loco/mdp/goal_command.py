@@ -42,6 +42,7 @@ from mjlab.utils.lab_api.math import (
 
 from src.assets.objects.ball import DEFAULT_BALL_RADIUS
 from src.tasks.amp_loco.mdp.cbf import predictive_dodge_filter
+from src.tasks.amp_loco.mdp.walk_path import extend_walk_path, walk_path_query
 
 if TYPE_CHECKING:
   from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -310,6 +311,19 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self._dodge_ball_radius = torch.full(
       (self.num_envs,), DEFAULT_BALL_RADIUS, device=self.device
     )
+    # Path-follow state (cfg.path_follow; the WallWalk random-path task): the robot's
+    # current segment index and arc length along its env's random walk path (stash on
+    # env, see mdp/walk_path.py), and the last-seen path epoch (a bump = new episode's
+    # path -> restart progress). _path_s is also read by the wall-recycle event.
+    self._path_seg_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+    self._path_s = torch.zeros(self.num_envs, device=self.device)
+    # Per-step arc-length progress (m); +ve = advanced along the path. Read by the
+    # walk_path_progress reward. ~0 on an episode's new path (a path change is not
+    # motion), mirroring prev_distance/distance_delta in GoToGoalCommand.
+    self._path_s_delta = torch.zeros(self.num_envs, device=self.device)
+    self._path_epoch_seen = torch.full(
+      (self.num_envs,), -1, dtype=torch.long, device=self.device
+    )
     self.metrics["cbf_active_frac"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["cbf_min_h"] = torch.zeros(self.num_envs, device=self.device)
 
@@ -333,6 +347,75 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self.prev_distance[env_ids] = torch.norm(self.goal_pos_w[env_ids] - base_xy, dim=-1)
     self.dwell_counter[env_ids] = 0
 
+  def _update_path_goal(self) -> None:
+    """Pure-pursuit goal on the env's random walk path (see mdp/walk_path.py).
+
+    Advances the robot's arc-length progress along its polyline path (segment
+    index + clamped projection), extends the path when the horizon (lookahead +
+    the wall-recycle reach) runs off the end, and pins ``goal_pos_w`` to the
+    point ``path_lookahead`` metres ahead. The parent's P-controller + heading
+    logic turns that into a cruise-speed command that follows the path's curves.
+    """
+    env = self._env
+    pts = env._walk_path_pts  # (N, M, 2)
+    cum = env._walk_path_cumlen  # (N, M)
+    count = env._walk_path_n  # (N,)
+    ar = torch.arange(self.num_envs, device=self.device)
+
+    # A bumped epoch = this env reset into a new episode with a fresh path (the
+    # robot starts at the path origin by construction) -> restart progress.
+    new_path = env._walk_path_epoch != self._path_epoch_seen
+    self._path_seg_idx = torch.where(
+      new_path, torch.zeros_like(self._path_seg_idx), self._path_seg_idx
+    )
+    self._path_s = torch.where(new_path, torch.zeros_like(self._path_s), self._path_s)
+    self._path_epoch_seen = env._walk_path_epoch.clone()
+
+    robot_xy = self.robot.data.root_link_pos_w[:, :2]
+
+    # Advance the segment index while the robot's projection passes the next
+    # vertex (capped loop; the robot moves ~3 cm/step, so >1 crossing/step only
+    # happens on a teleport/reset edge case).
+    for _ in range(8):
+      i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
+      p0 = pts[ar, i]
+      p1 = pts[ar, i + 1]
+      seg = p1 - p0
+      l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
+      u = ((robot_xy - p0) * seg).sum(dim=-1) / l2
+      adv = (u > 1.0) & (self._path_seg_idx < count - 2)
+      if not adv.any():
+        break
+      self._path_seg_idx = torch.where(adv, self._path_seg_idx + 1, self._path_seg_idx)
+
+    # Arc-length position: cum[i] + clamped projection onto the current segment.
+    i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
+    p0 = pts[ar, i]
+    p1 = pts[ar, i + 1]
+    seg = p1 - p0
+    l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
+    u = (((robot_xy - p0) * seg).sum(dim=-1) / l2).clamp(0.0, 1.0)
+    s_new = cum[ar, i] + u * seg.norm(dim=-1)
+    # Per-step progress (m). On a new path _path_s was zeroed above and the robot
+    # sits at the path origin, so the delta is ~0 -- a path change never reads as
+    # motion.
+    self._path_s_delta = s_new - self._path_s
+    self._path_s = s_new
+
+    # Keep the path long enough for the goal lookahead AND the wall-recycle
+    # reach (path_wall_ahead > the recycle event's ahead_range max, so wall
+    # placement queries always land on generated path).
+    total = cum[ar, count - 1]
+    horizon = self._path_s + self.cfg.path_lookahead + self.cfg.path_wall_ahead
+    need = total < horizon
+    if need.any():
+      extend_walk_path(env, ar[need], horizon[need] + 20.0)
+
+    goal_xy, _ = walk_path_query(env, ar, self._path_s + self.cfg.path_lookahead)
+    self.goal_pos_w[:] = goal_xy
+    self.is_standing_env[:] = False
+    self.is_inplace_env[:] = False
+
   def _update_command(self) -> None:
     # Back-offset mode: every step pin the goal back_offset metres behind the robot
     # (opposite its heading) so the nominal command is a constant backpedal -- the robot
@@ -347,13 +430,24 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       self.is_standing_env[:] = False
       self.is_inplace_env[:] = False
 
+    # Path-follow mode (WallWalk random-path task): pin the goal to a lookahead
+    # point on the env's random walk path (pure pursuit). Replaces forward_offset:
+    # the P-controller + simple_heading then steer ALONG the path's curves instead
+    # of straight ahead. The goal never gets closer (it advances with the robot's
+    # path progress), so the dwell/resample logic never fires, and the lookahead
+    # (2 m) >> arrive_radius (0.25 m) so the arrived-zeroing never triggers.
+    path_active = False
+    if self.cfg.path_follow and hasattr(self._env, "_walk_path_pts"):
+      self._update_path_goal()
+      path_active = True
+
     # Forward-offset mode: every step pin the goal forward_offset metres AHEAD of the
     # robot (along its heading) so the nominal command is a constant FORWARD walk
     # (kp * forward_offset, clamped to max_lin_vel_x). Used by the walk-and-dodge
     # task: the robot keeps advancing down the wall corridor while balls are thrown
     # at it. Overrides home_goal. The goal never gets closer (it moves with the
     # robot), so the dwell/resample logic never fires.
-    if self.cfg.forward_offset != 0.0:
+    if self.cfg.forward_offset != 0.0 and not path_active:
       fwd_xy = quat_apply(
         yaw_quat(self.robot.data.root_link_quat_w), self._forward_b
       )[:, :2]
@@ -453,6 +547,21 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   heading). The nominal command becomes a constant FORWARD walk at
   ``min(kp * forward_offset, max_lin_vel_x)`` m/s, so the robot keeps advancing while
   dodging. Overrides home_goal. Used by the walk-and-dodge wall task."""
+  path_follow: bool = False
+  """If True, follow the env's random walk path (mdp/walk_path.py, generated at
+  reset by the ``reset_walk_path`` event): every step the goal is pinned to a
+  lookahead point ``path_lookahead`` metres ahead of the robot's arc-length
+  progress along the path, so the nominal command cruises at
+  ``min(kp * path_lookahead, max_lin_vel_x)`` m/s and the heading controller
+  steers through the path's random curves. Takes precedence over forward_offset.
+  Used by the WallWalk random-path task."""
+  path_lookahead: float = 2.0
+  """Pure-pursuit lookahead distance (m) along the path. >> arrive_radius so the
+  command never decays to zero; small enough that the goal hugs the curves."""
+  path_wall_ahead: float = 11.0
+  """Extra path length (m) kept generated beyond the lookahead -- must exceed the
+  wall-recycle event's ahead_range max (10 m) so recycled walls always land on
+  already-generated path."""
   cbf_enabled: bool = True
   cbf_filter_command: bool = True
   """If True, the CBF-safe velocity replaces the nominal command the policy observes/tracks

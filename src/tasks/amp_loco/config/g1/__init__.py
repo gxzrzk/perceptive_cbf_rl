@@ -11,6 +11,7 @@ from .dodge_env_cfgs import (
 from .goto_rl_cfg import (
   g1_amp_dodge_depth_single_ppo_runner_cfg,
   g1_amp_dodge_mimickit_ppo_runner_cfg,
+  g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg,
 )
 from .rl_cfg import g1_amp_ppo_runner_cfg
 
@@ -55,18 +56,21 @@ register_mjlab_task(
   runner_cls=AMPOnPolicyRunner,
 )
 
-# STATE ORACLE + WALLS WHILE WALKING: same ground-truth ball-state perception
-# regime, but the robot WALKS FORWARD continuously (goal pinned ahead every step,
-# ~1.3 m/s) through an endless corridor of static walls (WALLWALK_NUM_WALLS,
-# default 3): walls are scattered along the path at episode start and recycled
-# back ahead once walked past. The robot must keep advancing while dodging the
-# thrown ball AND slaloming the walls. Stillness rewards are dropped (they fight
-# walking); forward speed is anchored by the velocity-tracking terms.
+# STATE ORACLE + WALLS WHILE WALKING A RANDOM PATH: same ground-truth ball-state
+# perception regime, but each episode the robot follows a randomly shaped walking
+# path (gentle-curve polyline, pure-pursuit ~1.3 m/s) through an endless corridor
+# of static walls (WALLWALK_NUM_WALLS, default 3) flanking the path: walls are
+# scattered along the path at episode start and recycled ahead along the curve
+# once walked past. The robot must keep advancing while dodging the thrown ball
+# AND slaloming the walls. Stillness rewards are dropped (they fight walking);
+# route progress is rewarded by walk_path_progress. The AMP discriminator AND the
+# RSI resets use the walk-augmented amp_dodge_walk motion set (the dodge set has
+# no locomotion clips).
 register_mjlab_task(
   task_id="Unitree-G1-AMP-Dodge-MimicKit-WallWalk-Flat",
   env_cfg=g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(),
   play_env_cfg=g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=True),
-  rl_cfg=g1_amp_dodge_mimickit_ppo_runner_cfg(),
+  rl_cfg=g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg(),
   runner_cls=AMPOnPolicyRunner,
 )
 
