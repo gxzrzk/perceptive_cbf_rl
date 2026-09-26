@@ -228,6 +228,88 @@ def test_walk_path_progress_reward():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_walk_path_adherence_reward():
+    """walk_path_adherence_reward = exp(-d^2/0.5^2) on lateral distance to the path:
+    ~1 on the route, exp(-1) ~ 0.37 after a 0.5 m sideways teleport, and the
+    tracked _path_lat_err matches the teleported offset."""
+    import math
+    import src.tasks.amp_loco.mdp as mdp
+
+    env = _build_wallwalk_env()
+    robot = env.scene["robot"]
+    ar = torch.arange(env.num_envs, device=env.device)
+    cmd = env.command_manager.get_term("twist")
+
+    # On the route at spawn -> adherence ~1, lat_err ~0.
+    env.command_manager.compute(dt=env.step_dt)
+    r0 = mdp.walk_path_adherence_reward(env)
+    assert torch.all(r0 > 0.95), (
+        f"on-path robot should get ~1 adherence, min {r0.min():.3f}"
+    )
+    assert cmd._path_lat_err.max() < 0.1, (
+        f"lat_err should be ~0 at the path origin, max {cmd._path_lat_err.max():.3f}"
+    )
+
+    # Teleport 0.5 m perpendicular to the local path tangent -> adherence ~e^-1.
+    _, tan_yaw = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
+    perp = torch.stack([-torch.sin(tan_yaw), torch.cos(tan_yaw)], dim=-1)
+    pose = robot.data.root_link_pose_w.clone()
+    pose[:, :2] = pose[:, :2] + 0.5 * perp
+    robot.write_root_link_pose_to_sim(pose)
+    _refresh(env, robot)
+    env.command_manager.compute(dt=env.step_dt)
+    r1 = mdp.walk_path_adherence_reward(env)
+    expect = math.exp(-1.0)
+    assert torch.allclose(cmd._path_lat_err, torch.full_like(cmd._path_lat_err, 0.5), atol=0.15), (
+        f"lat_err should be ~0.5 after the sideways teleport, mean {cmd._path_lat_err.mean():.3f}"
+    )
+    assert torch.allclose(r1, torch.full_like(r1, expect), atol=0.2), (
+        f"adherence at 0.5 m off-path should be ~e^-1={expect:.3f}, mean {r1.mean():.3f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_path_debug_vis_draws_polyline():
+    """The command's debug-vis draws the walk path: a chain of path cylinders plus
+    a progress-point sphere (and the inherited goal marker) for each visualized env."""
+    env = _build_wallwalk_env(num_envs=4)
+    cmd = env.command_manager.get_term("twist")
+
+    class _FakeViz:
+        def __init__(self):
+            self.cylinders = []
+            self.spheres = []
+            self.arrows = []
+
+        def get_env_indices(self, num_envs):
+            return [0, 1]
+
+        def add_cylinder(self, start, end, radius, color, label=None):
+            self.cylinders.append((start, end))
+
+        def add_sphere(self, center, radius, color, label=None):
+            self.spheres.append(center)
+
+        def add_arrow(self, start, end, color, width=0.015, label=None):
+            self.arrows.append((start, end))
+
+    viz = _FakeViz()
+    cmd.debug_vis(viz)
+    # 2 envs x (<= 41 segments) path cylinders, and progress + goal spheres.
+    assert len(viz.cylinders) > 40, (
+        f"expected the path polyline to be drawn, got {len(viz.cylinders)} cylinders"
+    )
+    # Every cylinder segment lies on the path: its start point must be within the
+    # generated vertex set of one of the two visualized envs (z=0.03 added).
+    pts0 = env._walk_path_pts[0].cpu().numpy()
+    s0 = viz.cylinders[0][0]
+    import numpy as np
+    d = np.linalg.norm(pts0 - np.array(s0[:2]), axis=1).min()
+    assert d < 1e-4, f"cylinder start not on the path polyline (min dist {d:.4f})"
+    assert len(viz.spheres) >= 2, "progress-point (and goal) spheres missing"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_path_regenerated_per_episode_reset():
     """A fresh env.reset() regenerates every env's path: epoch bumps, command
     progress restarts at 0, and the new path still starts at the robot."""

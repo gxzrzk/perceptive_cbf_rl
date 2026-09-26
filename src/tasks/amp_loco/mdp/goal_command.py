@@ -321,9 +321,13 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     # walk_path_progress reward. ~0 on an episode's new path (a path change is not
     # motion), mirroring prev_distance/distance_delta in GoToGoalCommand.
     self._path_s_delta = torch.zeros(self.num_envs, device=self.device)
+    # Lateral (perpendicular) distance from the robot to its closest point on the
+    # path (m); read by the walk_path_adherence reward. 0 = exactly on the route.
+    self._path_lat_err = torch.zeros(self.num_envs, device=self.device)
     self._path_epoch_seen = torch.full(
       (self.num_envs,), -1, dtype=torch.long, device=self.device
     )
+    self._PATH_VIZ_SEGMENTS = 40  # path segments drawn ahead in the viewer
     self.metrics["cbf_active_frac"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["cbf_min_h"] = torch.zeros(self.num_envs, device=self.device)
 
@@ -396,6 +400,10 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
     u = (((robot_xy - p0) * seg).sum(dim=-1) / l2).clamp(0.0, 1.0)
     s_new = cum[ar, i] + u * seg.norm(dim=-1)
+    # Lateral deviation from the route (perpendicular distance to the clamped
+    # projection point on the current segment).
+    closest = p0 + u.unsqueeze(-1) * seg
+    self._path_lat_err = (robot_xy - closest).norm(dim=-1)
     # Per-step progress (m). On a new path _path_s was zeroed above and the robot
     # sits at the path origin, so the delta is ~0 -- a path change never reads as
     # motion.
@@ -415,6 +423,46 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self.goal_pos_w[:] = goal_xy
     self.is_standing_env[:] = False
     self.is_inplace_env[:] = False
+
+  def _debug_vis_impl(self, visualizer: "DebugVisualizer") -> None:
+    super()._debug_vis_impl(visualizer)  # goal marker + command arrow
+    # Path-follow mode: draw the env's random walk path as a polyline of
+    # cylinders (a couple of segments behind the robot for context, up to
+    # _PATH_VIZ_SEGMENTS ahead), plus a marker at the robot's current progress
+    # point. The path never enters the observation -- this is a viewer-only aid.
+    if not self.cfg.path_follow or not hasattr(self._env, "_walk_path_pts"):
+      return
+    env_indices = visualizer.get_env_indices(self.num_envs)
+    if not env_indices:
+      return
+    pts = self._env._walk_path_pts.cpu().numpy()
+    count = self._env._walk_path_n.cpu().numpy()
+    seg_idx = self._path_seg_idx.cpu().numpy()
+    base = self.robot.data.root_link_pos_w.cpu().numpy()
+    for batch in env_indices:
+      if np.linalg.norm(base[batch]) < 1e-6:
+        continue
+      i0 = max(0, int(seg_idx[batch]) - 2)
+      i1 = min(int(count[batch]), i0 + self._PATH_VIZ_SEGMENTS + 3)
+      poly = pts[batch, i0:i1]
+      z = 0.03
+      for k in range(len(poly) - 1):
+        visualizer.add_cylinder(
+          start=(float(poly[k, 0]), float(poly[k, 1]), z),
+          end=(float(poly[k + 1, 0]), float(poly[k + 1, 1]), z),
+          radius=0.02,
+          color=(0.2, 0.8, 0.3, 0.9),
+        )
+      # Robot's current progress point on the path (query at _path_s).
+      prog, _ = walk_path_query(
+        self._env,
+        torch.tensor([batch], device=self.device),
+        self._path_s[batch : batch + 1],
+      )
+      prog = prog[0].cpu().numpy()
+      visualizer.add_sphere(
+        (float(prog[0]), float(prog[1]), z), 0.06, color=(0.2, 0.5, 0.9, 0.9)
+      )
 
   def _update_command(self) -> None:
     # Back-offset mode: every step pin the goal back_offset metres behind the robot

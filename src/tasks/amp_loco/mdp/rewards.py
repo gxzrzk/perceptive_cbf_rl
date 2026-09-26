@@ -366,6 +366,32 @@ def walk_path_progress_reward(
   return rate.clamp(-clip, clip)
 
 
+def walk_path_adherence_reward(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  std: float = 0.5,
+) -> torch.Tensor:
+  """Dense reward for staying ON the random walk path (lateral adherence).
+
+  ``exp(-d^2 / std^2)`` where ``d`` is the robot's perpendicular distance to the
+  closest point on its polyline path (``_path_lat_err``, refreshed every step by
+  the path-follow command). Peaks at 1 on the centerline, ~0.37 at ``std`` (0.5
+  m), ~0.02 at 2*std.
+
+  Complements :func:`walk_path_progress_reward` (which rewards motion ALONG the
+  route but is blind to lateral drift -- a dodge can shove the robot sideways and
+  progress still pays out while it wanders back): this term is what pulls the
+  robot BACK onto the route afterward, and what teaches it to dodge WITHIN the
+  corridor (walls flank the path at 0.6-1.0 m, so a std of 0.5 m tolerates a
+  ~0.5 m sidestep at ~0.37 reward but punishes leaving the corridor entirely).
+  It pays out fully when standing still on the path -- keeping the robot ON the
+  route is this term's only job; forward motion is walk_path_progress's job.
+  """
+  command = env.command_manager.get_term(command_name)
+  d = command._path_lat_err
+  return torch.exp(-torch.square(d) / std**2)
+
+
 def goal_reached_bonus(
   env: ManagerBasedRlEnv,
   command_name: str,

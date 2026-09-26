@@ -1117,10 +1117,11 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   Reward changes vs the standing task (a walking robot must NOT be rewarded for
   stillness): the two threat-gated anti-twitch terms
   (``dodge_stillness_when_safe``, ``dodge_action_rate_when_safe``) are dropped and
-  ``mimickit_dodge``'s stillness term is zeroed (vel_w=0); forward speed is
-  anchored by the kept velocity-tracking rewards, and route progress is rewarded
-  directly by ``walk_path_progress`` (arc-length rate along the path, replacing
-  the goal-distance term that degenerates to a constant under pure pursuit).
+  ``mimickit_dodge``'s stillness term is zeroed (vel_w=0). Walking is driven by a
+  trio: full-weight ``track_anchor_linear_velocity`` (speed profile),
+  ``walk_path_progress`` (arc-length rate ALONG the route, the dominant term at
+  weight 2.0 -- raised after the first run collapsed to stand-and-dodge), and
+  ``walk_path_adherence`` (lateral distance to the route -- stay on the path).
   """
   ev = lambda k, d: float(os.environ.get(k, d))
   cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=play)
@@ -1148,19 +1149,33 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   if "mimickit_dodge" in cfg.rewards:
     cfg.rewards["mimickit_dodge"].params["vel_w"] = 0.0
 
-  # --- Replace the (dead in path mode) goal_distance with PATH PROGRESS. The
+  # --- WALK INCENTIVES (raised after the 2026-09-24 run collapsed to
+  # stand-and-dodge: path progress rate was 0.07 m/s vs the 1.3 m/s command --
+  # standing collected ~2.0/step for free while walking paid at most ~1.15 and
+  # added wall/ball risk, so survival pressure won. These three terms flip the
+  # economics so walking the route clearly out-earns standing in place). ---
+  # 1) Full-weight velocity anchor (the 0.5 was inherited from the STANDING task,
+  # where it only needed to hold a stand; here it is the speed profile anchor).
+  cfg.rewards["track_anchor_linear_velocity"].weight = ev("WALK_TRACK_LIN_WEIGHT", 1.0)
+  # 2) PATH PROGRESS (replaces goal_distance, which is dead in path mode: the
   # pure-pursuit goal rides 2 m ahead, so exp(-d^2/std^2) is a constant ~0.17 with
-  # no gradient; instead reward the arc-length RATE along the random path (m/s,
-  # symmetric: backsliding is penalized) -- "advance along the route toward its
-  # end". Complements velocity tracking: tracking rewards matching the commanded
-  # velocity vector, this rewards actually making route progress in the path
-  # frame (e.g. rejoining and pushing forward after a dodge knocks the robot
-  # sideways). ~1.3 m/s at cruise -> ~0.65/step at the default weight.
+  # no gradient). Arc-length RATE along the random path (m/s, symmetric:
+  # backsliding is penalized) -- "advance along the route toward its end".
+  # Weight 2.0: ~2.6/step at the 1.3 m/s cruise, the single biggest walk term.
   cfg.rewards.pop("goal_distance", None)
   cfg.rewards["walk_path_progress"] = RewardTermCfg(
     func=mdp.walk_path_progress_reward,
-    weight=ev("WALK_PATH_PROGRESS_WEIGHT", 0.5),
+    weight=ev("WALK_PATH_PROGRESS_WEIGHT", 2.0),
     params={"command_name": "twist"},
+  )
+  # 3) PATH ADHERENCE: exp(-d^2/0.5^2) on the lateral distance to the route --
+  # "stay ON the path". Pulls the robot back onto the route after a dodge shoves
+  # it sideways and teaches dodging WITHIN the corridor (walls flank the path at
+  # 0.6-1.0 m; std 0.5 tolerates a ~0.5 m sidestep but punishes leaving it).
+  cfg.rewards["walk_path_adherence"] = RewardTermCfg(
+    func=mdp.walk_path_adherence_reward,
+    weight=ev("WALK_PATH_ADHERENCE_WEIGHT", 0.5),
+    params={"command_name": "twist", "std": ev("WALK_PATH_ADHERENCE_STD", 0.5)},
   )
 
   # --- RSI from the walk-augmented set (see _WALLWALK_RESET_DIR): the amp_dodge
