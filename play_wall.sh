@@ -39,12 +39,14 @@ fi
 EXP_NAME="${EXP_NAME:-state_wall_link}"
 EXP_DIR="logs/rsl_rl/${EXP_NAME}"
 
-# No explicit checkpoint path -> newest model_*.pt under the RUN dir (if set) or the experiment dir.
+# No explicit checkpoint path -> newest model_*.pt under the RUN dir (if set) or the
+# experiment dir. "Newest" = highest ITERATION NUMBER in the filename (sort -V), NOT
+# file mtime: logs synced from a training server all share the copy time, so mtime
+# order is arbitrary transfer order and can pick e.g. model_8000 over model_24999.
 if [[ -z "$CKPT" ]]; then
   SEARCH_DIR="$EXP_DIR"
   [[ -n "${RUN:-}" ]] && SEARCH_DIR="${EXP_DIR}/${RUN}"
-  CKPT="$(find "$SEARCH_DIR" -name 'model_*.pt' -printf '%T@ %p\n' 2>/dev/null \
-            | sort -n | tail -1 | cut -d' ' -f2-)"
+  CKPT="$(find "$SEARCH_DIR" -name 'model_*.pt' 2>/dev/null | sort -V | tail -1)"
   if [[ -z "$CKPT" ]]; then
     echo "[play_wall.sh] No model_*.pt under ${SEARCH_DIR}. Pass a checkpoint path as arg 1," >&2
     echo "[play_wall.sh] or use '--agent zero' to watch the untrained scene." >&2

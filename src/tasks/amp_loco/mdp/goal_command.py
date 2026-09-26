@@ -448,8 +448,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       z = 0.03
       for k in range(len(poly) - 1):
         visualizer.add_cylinder(
-          start=(float(poly[k, 0]), float(poly[k, 1]), z),
-          end=(float(poly[k + 1, 0]), float(poly[k + 1, 1]), z),
+          start=np.array([poly[k, 0], poly[k, 1], z]),
+          end=np.array([poly[k + 1, 0], poly[k + 1, 1], z]),
           radius=0.02,
           color=(0.2, 0.8, 0.3, 0.9),
         )
@@ -461,7 +461,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       )
       prog = prog[0].cpu().numpy()
       visualizer.add_sphere(
-        (float(prog[0]), float(prog[1]), z), 0.06, color=(0.2, 0.5, 0.9, 0.9)
+        np.array([prog[0], prog[1], z]), 0.06, color=(0.2, 0.5, 0.9, 0.9)
       )
 
   def _update_command(self) -> None:
