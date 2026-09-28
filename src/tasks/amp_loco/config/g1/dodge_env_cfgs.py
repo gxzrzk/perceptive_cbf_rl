@@ -1135,6 +1135,11 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   ev = lambda k, d: float(os.environ.get(k, d))
   cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=play)
 
+  # --- Longer episodes than the standing task (20 s -> 25 s): pairs with the
+  # longer throw interval (4-9 s) so an episode still carries ~3-6 throws, and
+  # gives the robot ~32 m of path per episode to be scored on.
+  cfg.episode_length_s = ev("WALK_EPISODE_LENGTH_S", 25.0)
+
   # --- Path-follow walk command: pure-pursuit goal on the random walk path every
   # step -> a constant cruise (kp 1.5 * lookahead 2.0 = 3.0, clamped to
   # max_lin_vel_x = 1.3 m/s) that steers through the path's curves via the
@@ -1228,14 +1233,16 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   cfg.events["throw_ball_on_dwell"].params["aim_noise_lateral_scale"] = ev(
     "WALK_THROW_LAT_NOISE", 0.05
   )
-  # --- LONGER throw interval than the standing task (1-4 s -> 3-7 s): the 2026-09-28
+  # --- LONGER throw interval than the standing task (1-4 s -> 4-9 s): the 2026-09-28
   # run showed the threat duty cycle plateauing at ~45% (a ball looming nearly half
   # the time), leaving ~1.5 s safe windows -- barely the velocity spin-up time, so
-  # the policy rationally never enters cruise. At 3-7 s (mean 5 s, ~1.1 s threat) the
-  # duty cycle drops to ~20% and safe windows (~4 s) fit spin-up + cruise + dodge.
+  # the policy rationally never enters cruise. At 4-9 s (mean 6.5 s, ~1.1 s threat)
+  # the duty cycle drops to ~17% and safe windows (~5.4 s) comfortably fit spin-up
+  # + cruise + dodge. (History: 1-4 -> 3-7 -> 4-9 as walking kept losing to the
+  # dodge stance; tune via the env vars.)
   walk_interval = (
-    ev("WALK_THROW_INTERVAL_MIN", 3.0),
-    ev("WALK_THROW_INTERVAL_MAX", 7.0),
+    ev("WALK_THROW_INTERVAL_MIN", 4.0),
+    ev("WALK_THROW_INTERVAL_MAX", 9.0),
   )
   cfg.events["throw_ball_on_dwell"].params["throw_interval_range"] = walk_interval
   cfg.events["reset_dodge_state"].params["throw_interval_range"] = walk_interval
