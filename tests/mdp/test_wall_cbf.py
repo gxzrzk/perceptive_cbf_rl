@@ -247,15 +247,15 @@ def _path_distance_and_station(env, points_xy: torch.Tensor):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_walls_scattered_ahead_on_path():
     """Walk-path placement: wall i sits at arc-length station U(2.5,4)+3i along the
-    random path, offset 0.6-1.0 m perpendicular to the local tangent (station/distance
+    random path, offset 1.1-1.5 m perpendicular to the local tangent (station/distance
     measured against the polyline, toleranced for curve geometry)."""
     env = _build_wallwalk_env()
 
     assert env._wall_pos_w.shape == (env.num_envs, 3, 3)
     for i in range(3):
         dist, station = _path_distance_and_station(env, env._wall_pos_w[:, i, :2])
-        assert torch.all(dist >= 0.6 - 0.15) and torch.all(dist <= 1.0 + 0.05), (
-            f"wall_{i} distance-to-path out of ~[0.6, 1.0]: "
+        assert torch.all(dist >= 1.1 - 0.15) and torch.all(dist <= 1.5 + 0.05), (
+            f"wall_{i} distance-to-path out of ~[1.1, 1.5]: "
             f"min {dist.min():.3f}, max {dist.max():.3f}"
         )
         lo, hi = 2.5 + i * 3.0, 4.0 + i * 3.0
@@ -268,7 +268,7 @@ def test_wallwalk_walls_scattered_ahead_on_path():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_recycle_moves_walked_past_walls_ahead():
     """A wall > 1 m behind the robot teleports to a path station 7-10 m ahead of the
-    robot's path progress, offset 0.5-1.2 m from the path (along_path mode)."""
+    robot's path progress, offset 0.9-1.4 m from the path (along_path mode)."""
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -278,7 +278,12 @@ def test_wallwalk_recycle_moves_walked_past_walls_ahead():
 
     # Drag wall_0 to 3 m BEHIND the robot (leave wall_1/2 untouched).
     env._wall_pos_w[:, 0, :2] = robot.data.root_link_pos_w[:, :2] - 3.0 * fwd
-    mdp.recycle_walls_ahead(env, None, wall_names=_WALLWALK_NAMES, along_path=True)
+    # Pass the task's actual recycle lateral range (the function default is the
+    # legacy 0.5-1.2; the wallwalk cfg registers 1.1-1.6).
+    mdp.recycle_walls_ahead(
+        env, None, wall_names=_WALLWALK_NAMES, along_path=True,
+        lateral_range=(1.1, 1.6),
+    )
 
     dist, station = _path_distance_and_station(env, env._wall_pos_w[:, 0, :2])
     s_robot = env.command_manager.get_term("twist")._path_s  # ~0 right after reset
@@ -286,8 +291,8 @@ def test_wallwalk_recycle_moves_walked_past_walls_ahead():
         f"recycled wall_0 station should be ~7-10 m ahead of s_robot, got "
         f"min {station.min():.3f}, max {station.max():.3f} (s_robot ~ {s_robot.mean():.3f})"
     )
-    assert torch.all(dist >= 0.5 - 0.15) and torch.all(dist <= 1.2 + 0.05), (
-        f"recycled wall_0 distance-to-path out of ~[0.5, 1.2]: "
+    assert torch.all(dist >= 1.1 - 0.15) and torch.all(dist <= 1.6 + 0.05), (
+        f"recycled wall_0 distance-to-path out of ~[1.1, 1.6]: "
         f"min {dist.min():.3f}, max {dist.max():.3f}"
     )
     # wall_1/2 were still ahead -> untouched.

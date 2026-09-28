@@ -269,6 +269,210 @@ def test_walk_path_adherence_reward():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_throw_along_path_launches_from_path_ahead():
+    """along_path throw: the ball launches from a point ON the walk path at station
+    s_robot + U(2,3), and its velocity points back down the corridor at the robot."""
+    import src.tasks.amp_loco.mdp as mdp
+    from tests.mdp.test_wall_cbf import _path_distance_and_station
+
+    env = _build_wallwalk_env()
+    robot = env.scene["robot"]
+    ball = env.scene["ball"]
+    cmd = env.command_manager.get_term("twist")
+    ar = torch.arange(env.num_envs, device=env.device)
+
+    s0 = cmd._path_s.clone()
+    env._dodge_throw_once = True  # force a throw at every env on the next call
+    mdp.throw_ball_on_dwell(
+        env, None,
+        throw_interval_range=(1.0, 4.0),
+        dist_range=(2.0, 3.0),
+        height_range=(1.5, 2.3),
+        flight_time_range=(0.58, 0.63),
+        along_path=True,
+    )
+    _refresh(env, ball)
+    launch = ball.data.root_link_pos_w  # (N, 3)
+    vel_xy = ball.data.root_link_lin_vel_w[:, :2]
+
+    # 1. Launch point lies ON the path, at station ~s0 + dist (dist in [2, 3]).
+    d_path, station = _path_distance_and_station(env, launch[:, :2])
+    assert d_path.max() < 0.05, (
+        f"launch point should be on the path, max off-path dist {d_path.max():.3f}"
+    )
+    assert torch.all(station >= s0 + 2.0 - 1.0) and torch.all(station <= s0 + 3.0 + 1.0), (
+        f"launch station out of ~[s0+2, s0+3]: min {(station - s0).min():.2f}, "
+        f"max {(station - s0).max():.2f} ahead"
+    )
+    # 2. Ball flies back AT the robot (velocity xy ~ direction launch -> robot).
+    to_robot = robot.data.root_link_pos_w[:, :2] - launch[:, :2]
+    cos = (
+        (vel_xy * to_robot).sum(dim=-1)
+        / (vel_xy.norm(dim=-1) * to_robot.norm(dim=-1)).clamp_min(1e-6)
+    )
+    assert torch.all(cos > 0.85), (
+        f"ball should fly back at the robot, min cos(vel, to_robot) {cos.min():.3f}"
+    )
+    # 3. And roughly AGAINST the path travel direction (oncoming down the corridor).
+    _, tan_yaw = mdp.walk_path_query(env, ar, station)
+    tan = torch.stack([torch.cos(tan_yaw), torch.sin(tan_yaw)], dim=-1)
+    cos_tan = (vel_xy * tan).sum(dim=-1) / vel_xy.norm(dim=-1).clamp_min(1e-6)
+    assert (cos_tan < -0.5).float().mean() > 0.8, (
+        f"ball should come back along the corridor (against the tangent), "
+        f"fraction with cos<-0.5: {(cos_tan < -0.5).float().mean():.2f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_walk_path_progress_when_safe_gated():
+    """walk_path_progress_when_safe: pays forward progress when threat=0, and is
+    exactly 0 when threat=1 (never pulls against a dodge)."""
+    import src.tasks.amp_loco.mdp as mdp
+
+    env = _build_wallwalk_env()
+    robot = env.scene["robot"]
+    ar = torch.arange(env.num_envs, device=env.device)
+    cmd = env.command_manager.get_term("twist")
+
+    # Ball parked after reset -> no threat.
+    env.command_manager.compute(dt=env.step_dt)
+    assert not cmd._dodge_threat.any(), "test expects no looming ball after reset"
+
+    # Teleport 0.5 m forward along the path -> rate 25 m/s, capped at v_max=1.5.
+    target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
+    pose = robot.data.root_link_pose_w.clone()
+    pose[:, :2] = target_xy
+    robot.write_root_link_pose_to_sim(pose)
+    _refresh(env, robot)
+    env.command_manager.compute(dt=env.step_dt)
+
+    r_safe = mdp.walk_path_progress_when_safe(env)
+    assert torch.all(r_safe > 1.4), (
+        f"forward progress while safe should pay ~v_max (1.5), min {r_safe.min():.3f}"
+    )
+
+    # Force the threat flag -> the SAME progress reads exactly 0.
+    cmd._dodge_threat[:] = True
+    r_threat = mdp.walk_path_progress_when_safe(env)
+    assert torch.all(r_threat == 0.0), (
+        f"under threat the term must vanish, got max {r_threat.abs().max():.3f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_walk_path_stillness_when_safe_gated():
+    """walk_path_stillness_when_safe (cost): ~1 when parked on the path with no
+    threat, decays after a forward teleport, and exactly 0 under threat."""
+    import src.tasks.amp_loco.mdp as mdp
+
+    env = _build_wallwalk_env()
+    robot = env.scene["robot"]
+    ar = torch.arange(env.num_envs, device=env.device)
+    cmd = env.command_manager.get_term("twist")
+
+    env.command_manager.compute(dt=env.step_dt)
+    assert not cmd._dodge_threat.any(), "test expects no looming ball after reset"
+
+    # Parked at the path origin -> stillness cost ~1.
+    c0 = mdp.walk_path_stillness_when_safe(env)
+    assert torch.all(c0 > 0.9), (
+        f"parked robot should read full stillness cost, min {c0.min():.3f}"
+    )
+
+    # Teleport 0.5 m forward (rate 25 m/s) -> cost decays to ~0.
+    target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
+    pose = robot.data.root_link_pose_w.clone()
+    pose[:, :2] = target_xy
+    robot.write_root_link_pose_to_sim(pose)
+    _refresh(env, robot)
+    env.command_manager.compute(dt=env.step_dt)
+    c1 = mdp.walk_path_stillness_when_safe(env)
+    assert c1.max() < 0.05, (
+        f"fast-moving robot should read ~0 stillness cost, max {c1.max():.3f}"
+    )
+
+    # Under threat the cost vanishes EVEN WHILE MOVING (rate is still the teleport
+    # delta): planting for a dodge is free.
+    cmd._dodge_threat[:] = True
+    c2 = mdp.walk_path_stillness_when_safe(env)
+    assert torch.all(c2 == 0.0), (
+        f"under threat the stillness cost must vanish, got max {c2.abs().max():.3f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
+def test_throw_along_path_aim_stays_in_corridor():
+    """Corridor-tethered aim: even with the robot dodged 1.2 m OFF the path (beyond
+    the corridor band), the ball's aim is pulled back inside +-0.6 m of the path, so
+    the trajectory can never be blocked by a flanking wall."""
+    import src.tasks.amp_loco.mdp as mdp
+    from tests.mdp.test_wall_cbf import _path_distance_and_station
+
+    env = _build_wallwalk_env()
+    robot = env.scene["robot"]
+    ball = env.scene["ball"]
+    cmd = env.command_manager.get_term("twist")
+    ar = torch.arange(env.num_envs, device=env.device)
+
+    # Shove the robot 1.2 m perpendicular to the path (outside the +-0.6 aim band).
+    proj_xy, tan_yaw = mdp.walk_path_query(env, ar, cmd._path_s)
+    perp = torch.stack([-torch.sin(tan_yaw), torch.cos(tan_yaw)], dim=-1)
+    side = torch.where(
+        torch.rand(env.num_envs, device=env.device) < 0.5, -1.0, 1.0
+    ).unsqueeze(-1)
+    pose = robot.data.root_link_pose_w.clone()
+    pose[:, :2] = proj_xy + side * 1.2 * perp
+    robot.write_root_link_pose_to_sim(pose)
+    # Zero the leftover RSI clip velocities: they point in arbitrary directions and
+    # the tangent-only lead would otherwise drag the aim along-track (behind the
+    # path start), which inflates the distance-to-polyline metric without any wall
+    # relevance (wall safety is about the LATERAL offset, not the along-track one).
+    robot.write_root_link_velocity_to_sim(
+        torch.zeros(env.num_envs, 6, device=env.device)
+    )
+    _refresh(env, robot)
+
+    env._dodge_throw_once = True
+    mdp.throw_ball_on_dwell(
+        env, None,
+        throw_interval_range=(1.0, 4.0),
+        dist_range=(2.0, 3.0),
+        height_range=(1.5, 2.3),
+        flight_time_range=(0.58, 0.63),
+        along_path=True,
+    )
+    _refresh(env, ball)
+    launch = ball.data.root_link_pos_w[:, :2]
+    vel_xy = ball.data.root_link_lin_vel_w[:, :2]
+
+    # The ball arrives at the aim point at t_flight in [0.58, 0.63] s (velocity =
+    # disp/t_flight). Sample only [0, 0.58] -- guaranteed inside the flight for
+    # every env, so no extrapolation past the target (which diverges laterally).
+    t = torch.linspace(0.0, 0.58, 59, device=env.device).unsqueeze(0)  # (1, T)
+    traj = launch.unsqueeze(1) + vel_xy.unsqueeze(1) * t.unsqueeze(-1)  # (N, T, 2)
+    d_to_path = []
+    for j in range(traj.shape[1]):
+        d_j, _ = _path_distance_and_station(env, traj[:, j])
+        d_to_path.append(d_j)
+    d_to_path = torch.stack(d_to_path, dim=1)  # (N, T)
+    # The trajectory should NEVER wander outside band (0.4) + curve sagitta (~0.26)
+    # + lateral-noise slack (0.15) -- still inside the ~1.05 m wall inner edge.
+    assert d_to_path.max() < 0.4 + 0.26 + 0.2, (
+        f"trajectory leaves the corridor band: max off-path dist {d_to_path.max():.3f}"
+    )
+    # And it must still be a genuine shot TOWARD the robot's station: with the
+    # robot 1.2 m off-line and the aim clamped to the 0.4 band, the closest pass is
+    # ~0.8 m lateral + along-track jitter (~0.3 at 3 sigma) -- assert < 1.7 (i.e.
+    # the ball is not wildly short/long/misdirected; an off-line robot is BY
+    # DESIGN only reachable once it rejoins the corridor).
+    d_to_robot = (traj - robot.data.root_link_pos_w[:, :2].unsqueeze(1)).norm(dim=-1)
+    assert d_to_robot.min(dim=1).values.max() < 1.7, (
+        f"ball should still pass near the (off-line) robot's station, min-pass "
+        f"{d_to_robot.min(dim=1).values.max():.3f}"
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_path_debug_vis_draws_polyline():
     """The command's debug-vis draws the walk path: a chain of path cylinders plus
     a progress-point sphere (and the inherited goal marker) for each visualized env."""

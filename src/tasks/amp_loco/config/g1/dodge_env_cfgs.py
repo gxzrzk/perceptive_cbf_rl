@@ -162,12 +162,13 @@ _DODGE_RESET_DIR = os.path.normpath(
 )
 
 # RSI motion dir for the WALLWALK task: ``amp_dodge_walk`` = the full amp_dodge set
-# PLUS 10 walking clips (walk forward/arc/sideway/backward + jog forward, symlinked
-# from amp/WalkandRun). The amp_dodge prior contains ZERO locomotion clips (dodges +
-# one-leg idles at 0.03-0.39 m/s + short jumps at 0.24-0.57 m/s), so without this the
-# robot would NEVER reset into a mid-walk state for a task whose whole point is
-# sustained 1.3 m/s walking. ~37% of frames are walking -> ~37% of episodes start
-# mid-gait, matching the walk-vs-dodge time split of the task.
+# PLUS all 17 WalkandRun locomotion clips (walk/jog forward/backward/sideways/arc +
+# idle turns, symlinked from amp/WalkandRun). The amp_dodge prior alone contains ZERO
+# locomotion clips (dodges + one-leg idles at 0.03-0.39 m/s + short jumps at
+# 0.24-0.57 m/s), so without this the robot would NEVER reset into a mid-walk state
+# for a task whose whole point is sustained 1.3 m/s walking. ~45% of frames are
+# locomotion -> ~45% of episodes start mid-gait, matching the walk-vs-dodge time
+# split of the task.
 _WALLWALK_RESET_DIR = os.path.normpath(
   os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
@@ -987,6 +988,18 @@ def _apply_wall_overrides(
   )
 
   # --- Events: randomize the wall poses on reset; pin them every step. ---
+  # Lateral (off-path) wall distances. The walk_path corridor is WIDER than the
+  # standing task's beside-wall: two opposite-side walls at the old 0.6 m floor
+  # pinched the corridor to ~1.2 m (too narrow to dodge through). Widened twice
+  # (0.6-1.0 -> 0.9-1.3 -> 1.1-1.5): worst-case opposite-side channel is now
+  # >= 2.2 m, leaving room to dodge a ball BETWEEN the walls without hugging
+  # either one. The standing task keeps 0.6-1.0 (the RSI arm-swing floor).
+  if placement == "walk_path":
+    reset_lat = (ev("WALL_PATH_DIST_MIN", 1.1), ev("WALL_PATH_DIST_MAX", 1.5))
+    recycle_lat = (ev("WALL_PATH_DIST_MIN", 1.1), ev("WALL_PATH_DIST_MAX", 1.6))
+  else:
+    reset_lat = (ev("WALL_DIST_MIN", 0.6), ev("WALL_DIST_MAX", 1.0))
+    recycle_lat = (ev("WALL_DIST_MIN", 0.6), ev("WALL_DIST_MAX", 1.2))
   if placement == "walk_path":
     # Generate the random walk path FIRST (dict order = application order for
     # reset events) so reset_wall_pose below can place walls along it.
@@ -1009,12 +1022,10 @@ def _apply_wall_overrides(
     params={
       "wall_names": wall_names,
       "robot_name": "robot",
-      # (0.6, 1.0) m: close enough to constrain the dodge space, far enough that
-      # the RSI reset poses (arm swings) never start already touching the wall.
-      "lateral_dist_range": (
-        ev("WALL_DIST_MIN", 0.6),
-        ev("WALL_DIST_MAX", 1.0),
-      ),
+      # (0.6, 1.0) m beside / (0.9, 1.3) m along-path: close enough to constrain
+      # the dodge space, far enough that the RSI reset poses (arm swings) never
+      # start already touching the wall.
+      "lateral_dist_range": reset_lat,
       "x_offset_range": (
         ev("WALL_X_OFF_MIN", -0.5),
         ev("WALL_X_OFF_MAX", 0.5),
@@ -1047,10 +1058,7 @@ def _apply_wall_overrides(
           ev("WALL_RECYCLE_AHEAD_MIN", 7.0),
           ev("WALL_RECYCLE_AHEAD_MAX", 10.0),
         ),
-        "lateral_range": (
-          ev("WALL_DIST_MIN", 0.6),
-          ev("WALL_DIST_MAX", 1.2),
-        ),
+        "lateral_range": recycle_lat,
         "behind_margin": 1.0,
         "along_path": placement == "walk_path",
       },
@@ -1109,10 +1117,11 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   (``path_follow`` command: pure-pursuit lookahead goal on the path -> a constant
   ~max_lin_vel_x cruise that steers through the curves) instead of standing at
   home. ``WALLWALK_NUM_WALLS`` (default 3) walls are scattered ALONG THE PATH at
-  episode start (flanking it: yaw = local tangent, perpendicular offset 0.6-1.0 m,
+  episode start (flanking it: yaw = local tangent, perpendicular offset 0.9-1.3 m,
   random side) and RECYCLED ahead along the path once the robot walks past them
-  (endless obstacle corridor that follows the curve). Balls are still thrown on
-  the timed 1-4 s trigger, led at the walking robot.
+  (endless obstacle corridor that follows the curve). Balls are thrown on the
+  timed 1-4 s trigger FROM THE PATH AHEAD (``along_path``): they fly back down
+  the corridor, oncoming along the travel direction, led at the walking robot.
 
   Reward changes vs the standing task (a walking robot must NOT be rewarded for
   stillness): the two threat-gated anti-twitch terms
@@ -1168,7 +1177,24 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
     weight=ev("WALK_PATH_PROGRESS_WEIGHT", 2.0),
     params={"command_name": "twist"},
   )
-  # 3) PATH ADHERENCE: exp(-d^2/0.5^2) on the lateral distance to the route --
+  # 2b) THREAT-GATED STILLNESS COST (the stick to 2's carrot): standing parked on
+  # the path between throws now ACTIVELY bleeds reward, not just forfeits the
+  # progress bonus. Vanishes under threat, so planting for a dodge is free.
+  cfg.rewards["walk_path_stillness_when_safe"] = RewardTermCfg(
+    func=mdp.walk_path_stillness_when_safe,
+    weight=ev("WALK_PATH_STILLNESS_WEIGHT", -1.0),
+    params={"command_name": "twist"},
+  )
+  # 3) THREAT-GATED PROGRESS (mirror of the standing task's
+  # dodge_stillness_when_safe -- there "safe => stand still", here "safe => eat
+  # distance"): EXTRA forward-progress bonus while no ball looms, vanishing the
+  # moment a ball is airborne+approaching so it never pulls against a dodge.
+  cfg.rewards["walk_path_progress_when_safe"] = RewardTermCfg(
+    func=mdp.walk_path_progress_when_safe,
+    weight=ev("WALK_PATH_PROGRESS_SAFE_WEIGHT", 1.0),
+    params={"command_name": "twist"},
+  )
+  # 4) PATH ADHERENCE: exp(-d^2/0.5^2) on the lateral distance to the route --
   # "stay ON the path". Pulls the robot back onto the route after a dodge shoves
   # it sideways and teaches dodging WITHIN the corridor (walls flank the path at
   # 0.6-1.0 m; std 0.5 tolerates a ~0.5 m sidestep but punishes leaving it).
@@ -1184,6 +1210,35 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   # (g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg).
   cfg.events["init_motion_loader"].params["motion_dir"] = _WALLWALK_RESET_DIR
   cfg.events["reset_from_motion"].params["motion_dir"] = _WALLWALK_RESET_DIR
+
+  # --- Throws come down the CORRIDOR: launch from the point on the walk path
+  # dist_range metres (arc length) AHEAD of the robot, so the ball flies back along
+  # the travel direction (oncoming, between the flanking walls) instead of from the
+  # heading-relative frontal cone. Distance/height/flight-time/lead/noise unchanged,
+  # so the reaction window is the same -- only the bearing becomes the path line.
+  cfg.events["throw_ball_on_dwell"].params["along_path"] = True
+  # Corridor-tethered aim: clamp the aim's lateral offset into a +-0.4 m band so a
+  # shot can never be blocked by a flanking wall. Wall inner edges are >= ~1.05 m;
+  # worst-case trajectory excursion is band (0.4) + curve sagitta (~0.26 at the
+  # tightest 26 deg/2 m bend) + 3-sigma lateral noise (0.15) + ball radius (0.125)
+  # ~= 0.94 m < 1.05 m. Lateral aim jitter 0.05 m (narrow left-right spread).
+  cfg.events["throw_ball_on_dwell"].params["corridor_max_lateral"] = ev(
+    "WALK_THROW_CORRIDOR_LAT", 0.4
+  )
+  cfg.events["throw_ball_on_dwell"].params["aim_noise_lateral_scale"] = ev(
+    "WALK_THROW_LAT_NOISE", 0.05
+  )
+  # --- LONGER throw interval than the standing task (1-4 s -> 3-7 s): the 2026-09-28
+  # run showed the threat duty cycle plateauing at ~45% (a ball looming nearly half
+  # the time), leaving ~1.5 s safe windows -- barely the velocity spin-up time, so
+  # the policy rationally never enters cruise. At 3-7 s (mean 5 s, ~1.1 s threat) the
+  # duty cycle drops to ~20% and safe windows (~4 s) fit spin-up + cruise + dodge.
+  walk_interval = (
+    ev("WALK_THROW_INTERVAL_MIN", 3.0),
+    ev("WALK_THROW_INTERVAL_MAX", 7.0),
+  )
+  cfg.events["throw_ball_on_dwell"].params["throw_interval_range"] = walk_interval
+  cfg.events["reset_dodge_state"].params["throw_interval_range"] = walk_interval
 
   num_walls = int(ev("WALLWALK_NUM_WALLS", 3))
   cfg = _apply_wall_overrides(

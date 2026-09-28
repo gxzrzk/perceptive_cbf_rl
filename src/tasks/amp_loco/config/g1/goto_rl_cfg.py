@@ -22,12 +22,12 @@ _DODGE_MOTION_DIR = os.path.normpath(
   )
 )
 
-# WallWalk AMP discriminator dataset: the full amp_dodge set PLUS 10 walking clips
-# (walk forward/arc/sideway/backward + jog forward, symlinked from amp/WalkandRun).
-# amp_dodge alone has ZERO locomotion clips, so the style prior actively fought the
-# 1.3 m/s cruise this task requires; with the walk clips in, the discriminator
-# recognizes a walking gait as in-distribution. The matching env cfg resets (RSI)
-# from the same combined dir.
+# WallWalk AMP discriminator dataset: the full amp_dodge set PLUS all 17 WalkandRun
+# locomotion clips (walk/jog forward/backward/sideways/arc + idle turns, symlinked
+# from amp/WalkandRun, ~45% of frames). amp_dodge alone has ZERO locomotion clips,
+# so the style prior actively fought the 1.3 m/s cruise this task requires; with
+# the walk clips in, the discriminator recognizes a walking gait as in-distribution.
+# The matching env cfg resets (RSI) from the same combined dir.
 _WALLWALK_MOTION_DIR = os.path.normpath(
   os.path.join(
     os.path.dirname(os.path.abspath(__file__)),

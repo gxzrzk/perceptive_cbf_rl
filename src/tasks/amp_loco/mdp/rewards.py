@@ -366,6 +366,68 @@ def walk_path_progress_reward(
   return rate.clamp(-clip, clip)
 
 
+def walk_path_progress_when_safe(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  v_max: float = 1.5,
+  clip_lo: float = 2.0,
+) -> torch.Tensor:
+  """Threat-gated path-progress reward: push FORWARD along the path ONLY when safe.
+
+  ``r = (1 - threat) * clamp(progress_rate, -clip_lo, v_max)`` where
+  ``progress_rate = _path_s_delta / dt`` (m/s along the route) and ``threat`` =
+  ``command._dodge_threat`` (privileged, reward-only: 1 while a ball is airborne
+  and approaching, else 0).
+
+  The walk-task mirror of the standing task's ``dodge_stillness_when_safe`` (which
+  rewards stillness when safe). Here, between throws the ball is parked (threat=0)
+  and the robot should be EATING DISTANCE, so forward progress pays a bonus; the
+  moment a ball looms (threat=1) the term vanishes, so it never pulls against a
+  dodge -- including a dodge that steps BACKWARD along the path (negative rate,
+  but gated to zero). Unlike the always-on ``walk_path_progress_reward`` (which
+  keeps the route-progress objective live through the dodge, symmetric), this is
+  the extra carrot that makes "safe time = walking time" unambiguous:
+
+  * threat=0 (ball parked / flying away) -> bonus for advancing, penalty for
+    backsliding -- the dominant safe-time drive together with walk_path_progress.
+  * threat=1 (ball incoming) -> 0 regardless of motion -> dodging is free.
+
+  ``v_max`` caps the payable rate just above the 1.3 m/s cruise so the term never
+  incentivizes outrunning the velocity command; ``clip_lo`` bounds the symmetric
+  backslide penalty (spikes from resets/teleports).
+  """
+  command = env.command_manager.get_term(command_name)
+  threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
+  rate = (command._path_s_delta / env.step_dt).clamp(min=-clip_lo, max=v_max)
+  return (1.0 - threat) * rate
+
+
+def walk_path_stillness_when_safe(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  rate_scale: float = 0.4,
+) -> torch.Tensor:
+  """Threat-gated STILLNESS COST: penalize NOT moving along the path when safe.
+
+  ``c = (1 - threat) * exp(-rate^2 / rate_scale^2)`` where ``rate`` is the
+  arc-length progress rate (m/s). Equals 1 for a robot parked on the path between
+  throws, ~0.37 at ``rate_scale`` (0.4 m/s), ~0 at 2*scale. Return as a COST (use
+  a NEGATIVE weight).
+
+  Companion to :func:`walk_path_progress_when_safe` (the carrot). That term pays
+  for forward progress when safe, but standing still when safe only forfeits the
+  carrot -- and the 2026-09-28 run showed the policy happily pays that price to
+  keep a planted dodge stance between throws. This term makes safe-time standing
+  an ACTIVE loss: between throws (threat=0, ball parked) the robot must keep
+  eating distance or bleed reward every step. The moment a ball looms (threat=1)
+  the cost vanishes, so planting for a dodge -- or standing after one -- is free.
+  """
+  command = env.command_manager.get_term(command_name)
+  threat = command._dodge_threat.float()
+  rate = command._path_s_delta / env.step_dt
+  return (1.0 - threat) * torch.exp(-torch.square(rate) / rate_scale**2)
+
+
 def walk_path_adherence_reward(
   env: ManagerBasedRlEnv,
   command_name: str = "twist",

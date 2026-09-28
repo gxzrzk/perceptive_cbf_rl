@@ -426,6 +426,9 @@ def throw_ball_on_dwell(
     omnidirectional: bool = False,
     launch_speed_range: tuple[float, float] | None = None,
     target_z_range: tuple[float, float] = (0.3, 1.3),
+    along_path: bool = False,
+    corridor_max_lateral: float = 0.4,
+    aim_noise_lateral_scale: float = 0.05,
 ) -> None:
     """Step event: throw a ball at envs whose robot is ready (see trigger below).
 
@@ -438,6 +441,13 @@ def throw_ball_on_dwell(
     airtime for a flat ~2 m toss (~0.62 s vs ~0.48 s aiming at the pelvis). The flight time
     is capped so the ball can't fall to the ground before reaching the robot. It never
     rises (vz0=0), descending across the body -> camera-visible, not a lob.
+
+    ``along_path`` (WallWalk): launch from the walk-path point ``dist`` metres (arc
+    length) AHEAD of the robot and CORRIDOR-TETHER the aim -- the target is composed
+    in the path frame (tangent-only lead, lateral offset clamped to
+    ``+-corridor_max_lateral``, lateral jitter ``aim_noise_lateral_scale`` <<
+    ``aim_noise_scale``), so the ball always flies down the wall corridor and can
+    never be blocked by a flanking wall. See the aim code for details.
     """
     robot: Entity = env.scene[robot_name]
     ball: Entity = env.scene[ball_name]
@@ -567,13 +577,28 @@ def throw_ball_on_dwell(
 
     # --- Launch point in the robot's frontal cone (above the pelvis); target the PELVIS. ---
     dist = _uniform(*dist_range)
+    if along_path:
+        # ALONG-PATH throw (WallWalk random-path task): launch from the point ON the
+        # env's walk path at arc-length station s_robot + dist (dist = U(dist_range)
+        # along the path), so the ball flies back down the corridor toward the robot
+        # -- oncoming along the travel direction instead of from the heading cone.
+        # Everything else (height, flight time, lead, aim noise, ballistic model) is
+        # unchanged. The command extends the path past s_robot + 13 m every step, and
+        # this step event runs AFTER the command update, so the query always lands on
+        # generated path. Note dodge_ball_state_b is relative ball state, so the
+        # state-oracle actor is unaffected by where the launch came from.
+        cmd_term = env.command_manager.get_term(command_name)
+        s_launch = cmd_term._path_s[throw_ids] + dist
+        path_start_xy, _path_tan = walk_path_query(env, throw_ids, s_launch)
     if launch_speed_range is not None:
         # --- Omnidirectional fast throw: launch from a random bearing at dist_range and solve the
         # elevation that reaches the (led/jittered) aim point at a sampled SPEED. The aim model is
         # REUSED from the default path (robot xy + velocity lead + aim_noise); only the launch
         # bearing (full 360deg when omnidirectional), distance, and velocity model differ. The
         # target z spans the body (target_z_range) so throws threaten head->legs. Direct/flat arc. ---
-        if omnidirectional:
+        if along_path:
+            start_xy = path_start_xy                                       # on the walk path ahead
+        elif omnidirectional:
             bearing = _uniform(-math.pi, math.pi)                          # world-frame 360deg
             off_xy = torch.stack([dist * torch.cos(bearing), dist * torch.sin(bearing)], dim=-1)
             start_xy = root_pos[:, 0:2] + off_xy
@@ -617,7 +642,10 @@ def throw_ball_on_dwell(
     else:
         high = torch.full((n,), bool(force_high), dtype=torch.bool, device=device)
     start = torch.empty(n, 3, device=device)
-    start[:, 0:2] = root_pos[:, 0:2] + offset_w[:, 0:2]
+    if along_path:
+        start[:, 0:2] = path_start_xy  # on the walk path ahead (along-path throw)
+    else:
+        start[:, 0:2] = root_pos[:, 0:2] + offset_w[:, 0:2]
     start[:, 2] = torch.where(high, _uniform(*high_launch_height_range), _uniform(*height_range))
 
     # Reaction window (flight time). DESCENDING throws cap it so the ball can't fall below
@@ -634,11 +662,40 @@ def throw_ball_on_dwell(
     # MimicKit's dodgeball). Only the AIM shifts -- the launch point (start) stays in the
     # frontal cone, so the ball still comes from the front (camera-visible).
     target_xy = root_pos[:, 0:2].clone()
-    if lead_target:
-        root_vel_xy = robot.data.root_link_lin_vel_w[throw_ids, :2]
-        target_xy = target_xy + root_vel_xy * t_flight.unsqueeze(-1)
-    if aim_noise_scale > 0.0:
-        target_xy = target_xy + aim_noise_scale * torch.randn_like(target_xy)
+    if along_path:
+        # CORRIDOR-TETHERED aim (WallWalk): an untethered shot at a robot that has
+        # dodged to the corridor edge (~1 m off the path) crosses the flanking
+        # walls (inner edge ~1.05 m, 2 m tall -- the ball at 1.5-2.3 m cannot clear
+        # them) and never arrives. So the aim is composed in the PATH frame at the
+        # robot's station: the ALONG-track component is the robot's offset plus a
+        # tangent-only velocity lead, and the LATERAL component is clamped into a
+        # +-corridor_max_lateral band (well inside the walls). Lateral noise is
+        # narrower than along-track noise -- the ball always flies down the
+        # corridor. A wall-hugging robot is still reached once it rejoins the
+        # corridor (and hugging is already priced by wall_link_cbf + adherence).
+        proj_xy, tan_yaw = walk_path_query(env, throw_ids, cmd_term._path_s[throw_ids])
+        tan = torch.stack([torch.cos(tan_yaw), torch.sin(tan_yaw)], dim=-1)  # (n, 2)
+        perp = torch.stack([-tan[:, 1], tan[:, 0]], dim=-1)
+        off = target_xy - proj_xy
+        along = (off * tan).sum(dim=-1)
+        lat = (off * perp).sum(dim=-1)
+        if lead_target:
+            v_xy = robot.data.root_link_lin_vel_w[throw_ids, :2]
+            v_along = (v_xy * tan).sum(dim=-1)
+            along = along + v_along * t_flight  # tangent-only lead (no lateral lead)
+        lat = lat.clamp(-corridor_max_lateral, corridor_max_lateral)
+        target_xy = (
+            proj_xy + tan * along.unsqueeze(-1) + perp * lat.unsqueeze(-1)
+        )
+        if aim_noise_scale > 0.0:
+            target_xy = target_xy + tan * (aim_noise_scale * torch.randn(n, device=device)).unsqueeze(-1)
+            target_xy = target_xy + perp * (aim_noise_lateral_scale * torch.randn(n, device=device)).unsqueeze(-1)
+    else:
+        if lead_target:
+            root_vel_xy = robot.data.root_link_lin_vel_w[throw_ids, :2]
+            target_xy = target_xy + root_vel_xy * t_flight.unsqueeze(-1)
+        if aim_noise_scale > 0.0:
+            target_xy = target_xy + aim_noise_scale * torch.randn_like(target_xy)
 
     # Optional deterministic lateral aim offset (body-frame (forward, left) metres), set by a
     # viewer/recorder to aim the throw off-center and induce a SIDEWAYS dodge. No-op when unset
