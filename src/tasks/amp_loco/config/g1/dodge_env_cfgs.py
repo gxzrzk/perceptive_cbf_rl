@@ -1254,6 +1254,57 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
   return cfg
 
 
+def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+  """32 x 14 m classroom: 24 desk/chair pairs, 3 m aisle, 2.5 m row clearance."""
+  from src.assets.objects.classroom import get_furniture_cfg
+  from src.tasks.amp_loco.mdp.classroom import reset_classroom
+
+  cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
+  old_names = cfg.events["pin_wall"].params["wall_names"]
+  cfg.scene.entities = {k: v for k, v in cfg.scene.entities.items() if k not in old_names}
+  cfg.scene.sensors = tuple(s for s in cfg.scene.sensors if s.name not in
+                            {f"{n}_robot_contact" for n in old_names})
+  cfg.events.pop("recycle_walls_ahead", None)
+  layout, assets = [], []
+  # Pair extends from x-1.2 (chair back) to x+0.4 (desk front).
+  # 4.1 m row pitch therefore gives exactly 2.5 m clear cross aisles.
+  for row in range(6):
+    for y in (-5.8, -2.1, 2.1, 5.8):
+      x = 4.0 + row * 4.1
+      layout.extend(((x, y, 0.38, 0.0), (x - 0.95, y, 0.45, 0.0)))
+      assets.extend((get_furniture_cfg("desk"), get_furniture_cfg("chair")))
+  for half, pose in (
+    ((16.0, 0.08, 1.5), (14.0, -7.0, 1.5, 0.0)),
+    ((16.0, 0.08, 1.5), (14.0, 7.0, 1.5, 0.0)),
+    ((0.08, 7.0, 1.5), (-2.0, 0.0, 1.5, 0.0)),
+    ((0.08, 7.0, 1.5), (30.0, 0.0, 1.5, 0.0)),
+  ):
+    layout.append(pose)
+    assets.append(get_wall_cfg(half_extents=half, rgba=(0.82, 0.85, 0.88, 1.0)))
+  cfg = _apply_wall_overrides(cfg, num_walls=len(assets), obs_k=6)
+  names = cfg.events["pin_wall"].params["wall_names"]
+  for name, asset, pose in zip(names, assets, layout, strict=True):
+    # Separate furniture during model compilation, before reset events run.
+    asset.init_state.pos = pose[:3]
+    def placed_spec(spec_fn=asset.spec_fn, pos=pose[:3]):
+      spec = spec_fn()
+      spec.body("wall").pos = pos
+      return spec
+    asset.spec_fn = placed_spec
+    cfg.scene.entities[name] = asset
+  cfg.events["reset_wall_pose"] = EventTermCfg(
+    func=reset_classroom, mode="reset",
+    params={"wall_names": names, "layout": tuple(layout)},
+  )
+  cfg.events["reset_walk_path"].params.update(turn_max=0.0, initial_len=40.0)
+  cfg.commands["twist"].max_lin_vel_x = 0.8
+  cfg.episode_length_s = 25.0
+  cfg.events["throw_ball_on_dwell"].params.update(
+    omnidirectional=False, dist_range=(3.0, 5.0))
+  cfg.scene.env_spacing = 40.0
+  return cfg
+
+
 @dataclass(kw_only=True)
 class G1DodgeDepthEnvCfg(ManagerBasedRlEnvCfg):
   """Depth dodge env cfg + a CLI-overridable depth temporal-sampling knob.

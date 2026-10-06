@@ -7,6 +7,7 @@ from .dodge_env_cfgs import (
   g1_amp_dodge_mimickit_flat_env_cfg,
   g1_amp_dodge_mimickit_wall_flat_env_cfg,
   g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
+  g1_amp_dodge_mimickit_classroom_flat_env_cfg,
 )
 from .goto_rl_cfg import (
   g1_amp_dodge_depth_single_ppo_runner_cfg,
@@ -85,5 +86,15 @@ register_mjlab_task(
   env_cfg=g1_amp_dodge_depth_single_ballonly_flat_env_cfg(),
   play_env_cfg=g1_amp_dodge_depth_single_ballonly_flat_env_cfg(play=True),
   rl_cfg=g1_amp_dodge_depth_single_ppo_runner_cfg(),
+  runner_cls=AMPOnPolicyRunner,
+)
+
+_classroom_runner = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
+_classroom_runner.experiment_name = "g1_amp_dodge_mimickit_classroom"
+register_mjlab_task(
+  task_id="Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat",
+  env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(),
+  play_env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=True),
+  rl_cfg=_classroom_runner,
   runner_cls=AMPOnPolicyRunner,
 )
