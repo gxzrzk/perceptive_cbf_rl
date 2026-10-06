@@ -1257,7 +1257,7 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
 def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   """32 x 14 m classroom: 24 desk/chair pairs, 3 m aisle, 2.5 m row clearance."""
   from src.assets.objects.classroom import get_furniture_cfg
-  from src.tasks.amp_loco.mdp.classroom import reset_classroom
+  from src.tasks.amp_loco.mdp.classroom import reset_classroom, reset_classroom_robot
 
   cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
   old_names = cfg.events["pin_wall"].params["wall_names"]
@@ -1296,11 +1296,19 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     func=reset_classroom, mode="reset",
     params={"wall_names": names, "layout": tuple(layout)},
   )
-  cfg.events["reset_walk_path"].params.update(turn_max=0.0, initial_len=40.0)
+  # This reset slot follows RSI, so the randomized pose preserves its gait state.
+  cfg.events["reset_walk_path"] = EventTermCfg(
+    func=reset_classroom_robot, mode="reset", params={},
+  )
   cfg.commands["twist"].max_lin_vel_x = 0.8
   cfg.episode_length_s = 25.0
   cfg.events["throw_ball_on_dwell"].params.update(
     omnidirectional=False, dist_range=(3.0, 5.0))
+  # Keep the reset ball outside the classroom until the throw event launches it.
+  # Parking below the floor would create plane contacts that push it back up.
+  hidden_ball_pos = (0.0, 1000.0, 0.15)
+  cfg.scene.entities["ball"].init_state.pos = hidden_ball_pos
+  cfg.events["reset_dodge_state"].params["park_offset"] = hidden_ball_pos
   cfg.scene.env_spacing = 40.0
   return cfg
 

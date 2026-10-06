@@ -14,7 +14,7 @@ def test_classroom_clearance_and_wiring():
     assert 'recycle_walls_ahead' not in cfg.events
     assert cfg.commands['twist'].rel_standing_envs == 0
     assert cfg.commands['twist'].rel_inplace_throw_envs == 0
-    assert cfg.events['reset_walk_path'].params['turn_max'] == 0
+    assert cfg.events['reset_walk_path'].func.__name__ == 'reset_classroom_robot'
     assert cfg.observations['ball_state'].terms['wall_state'].params['k'] == 6
     # Inner desk edges define the central aisle.
     assert (2.1 - 0.6) * 2 == pytest.approx(3.0)
