@@ -122,6 +122,13 @@ def g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
   return cfg
 
 
+def g1_amp_dodge_mimickit_classroom_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
+  """State-oracle classroom runner with the WallWalk locomotion AMP prior."""
+  cfg = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
+  cfg.experiment_name = "g1_amp_dodge_mimickit_classroom"
+  return cfg
+
+
 def g1_amp_dodge_depth_mimickit_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
   """Runner cfg for the depth-obs + MimicKit-reward dodge task.
 

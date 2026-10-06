@@ -442,6 +442,9 @@ def throw_ball_on_dwell(
     is capped so the ball can't fall to the ground before reaching the robot. It never
     rises (vz0=0), descending across the body -> camera-visible, not a lob.
 
+    ``omnidirectional`` samples a uniform 360-degree bearing for either the timed
+    or fixed-speed ballistic mode (when ``along_path`` is disabled).
+
     ``along_path`` (WallWalk): launch from the walk-path point ``dist`` metres (arc
     length) AHEAD of the robot and CORRIDOR-TETHER the aim -- the target is composed
     in the path frame (tangent-only lead, lateral offset clamped to
@@ -627,10 +630,17 @@ def throw_ball_on_dwell(
         root_vel[:, 0:3] = vel
         ball.write_root_link_velocity_to_sim(root_vel, env_ids=throw_ids)
         return
-    angle = _uniform(-angle_deg, angle_deg) * (math.pi / 180.0)
-    lateral = dist * torch.tan(angle)  # +y = robot's left
-    offset_b = torch.stack([dist, lateral, torch.zeros_like(dist)], dim=-1)
-    offset_w = quat_apply(yq, offset_b)
+    if omnidirectional:
+        bearing = _uniform(-math.pi, math.pi)
+        offset_w = torch.stack(
+            [dist * torch.cos(bearing), dist * torch.sin(bearing), torch.zeros_like(dist)],
+            dim=-1,
+        )
+    else:
+        angle = _uniform(-angle_deg, angle_deg) * (math.pi / 180.0)
+        lateral = dist * torch.tan(angle)  # +y = robot's left
+        offset_b = torch.stack([dist, lateral, torch.zeros_like(dist)], dim=-1)
+        offset_w = quat_apply(yq, offset_b)
     # --- Per-throw TYPE: mix two threats so the policy must both sidestep AND duck. ---
     # * LOW-ARC (high_throw_fraction): launched LOW (high_launch_height_range, ~waist) with an
     #   UPWARD velocity so it arcs up and arrives at TORSO/HEAD height (high_target_z_range) just

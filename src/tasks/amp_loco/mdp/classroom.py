@@ -65,26 +65,54 @@ def reset_classroom_robot(env, env_ids):
   robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
   robot.write_root_link_velocity_to_sim(velocity, env_ids=env_ids)
 
-  # Head toward the farther end, then loop through the clear front/rear areas.
-  # The long repeated route prevents generic path extension leaving the room.
   _ensure_stash(env)
-  pts = env._walk_path_pts
-  local = torch.zeros(n, 26, 2, device=device)
-  local[:, 0] = torch.stack((x, y), -1)
-  end_x = torch.where(x < 13.5, 27.0, 0.0)
-  side_y = torch.where(lane_y != 0, -lane_y,
-                       torch.where(torch.rand(n, device=device) < 0.5, -3.95, 3.95))
-  local[:, 1] = torch.stack((end_x, y), -1)
-  for i in range(2, 26):
-    if i % 2 == 0:
-      next_x, next_y = local[:, i - 1, 0], side_y
-      side_y = -side_y
-    else:
-      next_x, next_y = 27.0 - local[:, i - 1, 0], local[:, i - 1, 1]
-    local[:, i] = torch.stack((next_x, next_y), -1)
-  pts[env_ids, :26] = local + origins[:, None, :2]
+  local = generate_classroom_route(x, y, lane)
+  count = local.shape[1]
+  env._walk_path_pts[env_ids, :count] = local + origins[:, None, :2]
   lengths = torch.linalg.vector_norm(local[:, 1:] - local[:, :-1], dim=-1)
   env._walk_path_cumlen[env_ids, 0] = 0
-  env._walk_path_cumlen[env_ids, 1:26] = lengths.cumsum(-1)
-  env._walk_path_n[env_ids] = 26
+  env._walk_path_cumlen[env_ids, 1:count] = lengths.cumsum(-1)
+  env._walk_path_n[env_ids] = count
   env._walk_path_epoch[env_ids] += 1
+
+
+def generate_classroom_route(x, y, lane, count=80):
+  """Random walk on the three longitudinal aisles and seven cross aisles.
+
+  Select only adjacent junctions, excluding immediate reversal. Each centerline
+  has at least 1.25 m clearance to furniture; the initial leg stays in its lane.
+  """
+  n, device = len(x), x.device
+  # Cross-aisle centers between the desk front and the next row's chair back.
+  stations = torch.tensor((0.0, 5.65, 9.75, 13.85, 17.95, 22.05, 27.0), device=device)
+  # Spawn lane indices are 0=center, 1=left, 2=right; graph lanes are sorted.
+  lanes = torch.tensor((-3.95, 0.0, 3.95), device=device)
+  lane_idx = torch.tensor((1, 0, 2), device=device)[lane]
+  difference = stations[None] - x[:, None]
+  # Randomize forward/backward first travel; keep the first leg >=0.8 m long.
+  forward = torch.rand(n, device=device) < 0.5
+  valid = torch.where(forward[:, None], difference >= 0.8, difference <= -0.8)
+  fallback = difference.abs() >= 0.8
+  valid = torch.where(valid.any(-1, keepdim=True), valid, fallback)
+  station_idx = difference.abs().masked_fill(~valid, float('inf')).argmin(-1)
+  local = torch.zeros(n, count, 2, device=device)
+  local[:, 0] = torch.stack((x, y), -1)
+  local[:, 1] = torch.stack((stations[station_idx], lanes[lane_idx]), -1)
+  previous = torch.full((n,), -1, device=device, dtype=torch.long)
+  for i in range(2, count):
+    # Neighbor choices: backward/forward in this lane, or adjacent lane at this junction.
+    sx = torch.stack((station_idx - 1, station_idx + 1, station_idx, station_idx), -1)
+    ly = torch.stack((lane_idx, lane_idx, lane_idx - 1, lane_idx + 1), -1)
+    legal = (sx >= 0) & (sx < len(stations)) & (ly >= 0) & (ly < len(lanes))
+    node = sx * len(lanes) + ly
+    legal &= node != previous[:, None]
+    if i == 2:
+      first_forward = stations[station_idx] > x
+      legal[:, 0] &= ~first_forward
+      legal[:, 1] &= first_forward
+    choice = torch.rand(n, 4, device=device).masked_fill(~legal, -1).argmax(-1)
+    previous = station_idx * len(lanes) + lane_idx
+    station_idx = sx.gather(1, choice[:, None]).squeeze(-1)
+    lane_idx = ly.gather(1, choice[:, None]).squeeze(-1)
+    local[:, i] = torch.stack((stations[station_idx], lanes[lane_idx]), -1)
+  return local

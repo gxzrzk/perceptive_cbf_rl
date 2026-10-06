@@ -1300,10 +1300,13 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.events["reset_walk_path"] = EventTermCfg(
     func=reset_classroom_robot, mode="reset", params={},
   )
+  # Shorter lookahead limits corner cutting at cross-aisle intersections.
+  cfg.commands["twist"].path_lookahead = 0.8
   cfg.commands["twist"].max_lin_vel_x = 0.8
   cfg.episode_length_s = 25.0
   cfg.events["throw_ball_on_dwell"].params.update(
-    omnidirectional=False, dist_range=(3.0, 5.0))
+    omnidirectional=True, along_path=False, launch_speed_range=None,
+    dist_range=(3.0, 5.0))
   # Keep the reset ball outside the classroom until the throw event launches it.
   # Parking below the floor would create plane contacts that push it back up.
   hidden_ball_pos = (0.0, 1000.0, 0.15)

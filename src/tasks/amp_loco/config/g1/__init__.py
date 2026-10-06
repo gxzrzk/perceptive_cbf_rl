@@ -13,6 +13,7 @@ from .goto_rl_cfg import (
   g1_amp_dodge_depth_single_ppo_runner_cfg,
   g1_amp_dodge_mimickit_ppo_runner_cfg,
   g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg,
+  g1_amp_dodge_mimickit_classroom_ppo_runner_cfg,
 )
 from .rl_cfg import g1_amp_ppo_runner_cfg
 
@@ -75,6 +76,19 @@ register_mjlab_task(
   runner_cls=AMPOnPolicyRunner,
 )
 
+# STATE ORACLE + CLASSROOM: fixed desk/chair layout with random safe spawn pose,
+# random routes through longitudinal/cross aisles, and 360-degree timed throws.
+# Furniture participates in collision termination and per-link CBF clearance;
+# both actor and critic observe the nearest six obstacles. The AMP discriminator
+# and RSI resets use the same walk-augmented motion set as WallWalk.
+register_mjlab_task(
+  task_id="Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat",
+  env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(),
+  play_env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=True),
+  rl_cfg=g1_amp_dodge_mimickit_classroom_ppo_runner_cfg(),
+  runner_cls=AMPOnPolicyRunner,
+)
+
 # FIXED / GIMBAL CAMERA: single head-mounted depth camera with ball-only masked
 # depth (BallOnlyDepthObs): obs = ball at real depth, all else far. Mirrors the
 # representation produced by the hardware EfficientTAM ball segmenter, which
@@ -86,15 +100,5 @@ register_mjlab_task(
   env_cfg=g1_amp_dodge_depth_single_ballonly_flat_env_cfg(),
   play_env_cfg=g1_amp_dodge_depth_single_ballonly_flat_env_cfg(play=True),
   rl_cfg=g1_amp_dodge_depth_single_ppo_runner_cfg(),
-  runner_cls=AMPOnPolicyRunner,
-)
-
-_classroom_runner = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
-_classroom_runner.experiment_name = "g1_amp_dodge_mimickit_classroom"
-register_mjlab_task(
-  task_id="Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat",
-  env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(),
-  play_env_cfg=g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=True),
-  rl_cfg=_classroom_runner,
   runner_cls=AMPOnPolicyRunner,
 )
