@@ -23,6 +23,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
 
+# CUDA compilation can exhaust the small system /tmp partition. Keep temporary
+# files and Warp kernels on the project disk; honor explicit user overrides.
+export TMPDIR="${TMPDIR:-$REPO_ROOT/.cache/tmp}"
+export WARP_CACHE_PATH="${WARP_CACHE_PATH:-$REPO_ROOT/.cache/warp}"
+mkdir -p "$TMPDIR" "$WARP_CACHE_PATH"
+
 TASK="${TASK:-Unitree-G1-AMP-Dodge-MimicKit-Flat}"
 NUM_ENVS="${NUM_ENVS:-8192}"
 STAND_RATIO="${STAND_RATIO:-0.2}"

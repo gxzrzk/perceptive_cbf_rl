@@ -278,7 +278,14 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
 
   def __init__(self, cfg: DodgeGoToGoalCommandCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg, env)
+    if cfg.turn_before_walk:
+      if not cfg.simple_heading:
+        raise ValueError("turn_before_walk requires simple_heading")
+      if not 0 <= cfg.walk_full_speed_angle < cfg.walk_stop_angle <= math.pi / 2:
+        raise ValueError("walk angles must satisfy 0 <= full < stop <= pi/2")
     self.ball: Entity = env.scene[cfg.ball_name]
+    # Share the heading gate with the safe-time stillness cost.
+    self._walk_forward_scale = torch.ones(self.num_envs, device=self.device)
     # Global geom id of the ball collision sphere, so the CBF can read the per-env ball
     # radius (randomized each episode by the `randomize_ball_size` event) and widen its
     # clearance for bigger balls. Resolved by name (scene prefixes entity geoms).
@@ -387,7 +394,22 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       seg = p1 - p0
       l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
       u = ((robot_xy - p0) * seg).sum(dim=-1) / l2
-      adv = (u > 1.0) & (self._path_seg_idx < count - 2)
+      # Near a corner, prefer the adjacent segment once the robot has entered
+      # it and is closer to it. Do not search the whole route: it can revisit
+      # the same intersection much later in the episode.
+      has_next = i < count - 2
+      p2 = pts[ar, torch.minimum(i + 2, count - 1)]
+      next_seg = p2 - p1
+      next_u = ((robot_xy - p1) * next_seg).sum(-1) / (
+        next_seg.square().sum(-1).clamp_min(1e-9)
+      )
+      current_closest = p0 + u.clamp(0, 1)[:, None] * seg
+      next_closest = p1 + next_u.clamp(0, 1)[:, None] * next_seg
+      current_dist = (robot_xy - current_closest).norm(dim=-1)
+      next_dist = (robot_xy - next_closest).norm(dim=-1)
+      near_corner = (robot_xy - p1).norm(dim=-1) <= self.cfg.path_switch_radius
+      entered_next = (next_u > 0.0) & (next_dist + 1e-4 < current_dist)
+      adv = ((u >= 1.0) | (near_corner & entered_next)) & has_next
       if not adv.any():
         break
       self._path_seg_idx = torch.where(adv, self._path_seg_idx + 1, self._path_seg_idx)
@@ -508,6 +530,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     super()._update_command()  # fills self.vel_command_b with the nominal command
     self.vel_command_nominal_b = self.vel_command_b.clone()
     if not self.cfg.cbf_enabled:
+      self._dodge_threat.zero_()
+      self._apply_walk_heading_gate()
       return
 
     yq = yaw_quat(self.robot.data.root_link_quat_w)
@@ -572,8 +596,41 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     if self.cfg.cbf_filter_command:
       self.vel_command_b[:, :2] = u_safe_b
 
+    # Use THIS step's threat flag, including the first frame of an incoming ball.
+    self._apply_walk_heading_gate()
     self.metrics["cbf_active_frac"] = threat.float()
     self.metrics["cbf_min_h"] = h
+
+
+  def _apply_walk_heading_gate(self) -> None:
+    """Turn first when safe; smoothly restore forward walking as yaw aligns."""
+    self._walk_forward_scale.fill_(1.0)
+    if not self.cfg.turn_before_walk:
+      return
+    direction = self.goal_pos_w - self.robot.data.root_link_pos_w[:, :2]
+    yaw_error = wrap_to_pi(
+      torch.atan2(direction[:, 1], direction[:, 0]) - self.robot.data.heading_w
+    ).abs()
+    fraction = (
+      (self.cfg.walk_stop_angle - yaw_error)
+      / (self.cfg.walk_stop_angle - self.cfg.walk_full_speed_angle)
+    ).clamp(0.0, 1.0)
+    scale = fraction.square() * (3.0 - 2.0 * fraction)
+    moving = (
+      (self.distance_to_goal >= self.cfg.arrive_radius)
+      & ~self.is_standing_env & ~self.is_inplace_env
+    )
+    forward = (self.cfg.kp * self.distance_to_goal).clamp(
+      min=0.0, max=self.cfg.max_lin_vel_x
+    ) * scale * moving
+    safe = ~self._dodge_threat
+    # Keep the parent's yaw command and its arrived/standing/in-place zeroing.
+    # On threat rows preserve the original (possibly CBF-filtered) xy commands.
+    for command in (self.vel_command_b, self.vel_command_nominal_b):
+      command[:, 0] = torch.where(safe, forward, command[:, 0])
+      command[:, 1] = torch.where(safe, 0.0, command[:, 1])
+    # Only waive stillness for deliberate turning, not an arrived/stalled goal.
+    self._walk_forward_scale = torch.where(safe & moving, scale, 1.0)
 
 
 @dataclass(kw_only=True)
@@ -595,6 +652,13 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   heading). The nominal command becomes a constant FORWARD walk at
   ``min(kp * forward_offset, max_lin_vel_x)`` m/s, so the robot keeps advancing while
   dodging. Overrides home_goal. Used by the walk-and-dodge wall task."""
+  turn_before_walk: bool = False
+  """When safe, command forward-only walking gated by goal heading alignment.
+  Incoming threats retain the original lateral/backward command freedoms."""
+  walk_full_speed_angle: float = math.pi / 6
+  """Yaw error (radians) below which forward speed is unrestricted."""
+  walk_stop_angle: float = math.pi / 2
+  """Yaw error (radians) at/above which safe walking becomes turning in place."""
   path_follow: bool = False
   """If True, follow the env's random walk path (mdp/walk_path.py, generated at
   reset by the ``reset_walk_path`` event): every step the goal is pinned to a
@@ -606,6 +670,9 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   path_lookahead: float = 2.0
   """Pure-pursuit lookahead distance (m) along the path. >> arrive_radius so the
   command never decays to zero; small enough that the goal hugs the curves."""
+  path_switch_radius: float = 0.0
+  """Allow early transition to the adjacent segment within this endpoint radius.
+  Zero keeps the crossing-only behavior; the classroom enables corner recovery."""
   path_wall_ahead: float = 11.0
   """Extra path length (m) kept generated beyond the lookahead -- must exceed the
   wall-recycle event's ahead_range max (10 m) so recycled walls always land on

@@ -858,6 +858,62 @@ def dodge_wall_state_b(
   return all_feats[:, :kk].reshape(env.num_envs, 3 * kk)  # (N, 3k)
 
 
+def dodge_obstacle_geometry_b(
+  env: ManagerBasedRlEnv,
+  robot_name: str = "robot",
+  wall_names: tuple[str, ...] = ("wall",),
+  k: int = 1,
+) -> torch.Tensor:
+  """Nearest upright collision boxes in the robot yaw frame, shape ``[B, 9*k]``.
+
+  Each row contains centre xyz, local half-extents xyz, sin/cos of relative yaw,
+  and horizontal root-to-footprint distance. Rank by footprint distance (not
+  centre distance), retaining long walls whose surface is nearby. This distance
+  is zero inside the footprint; it is not clearance for the robot's whole body.
+  Geom poses/sizes come from the simulation, including any geom-local offset.
+  """
+  if not 1 <= k <= len(wall_names):
+    raise ValueError("k must be between 1 and the number of obstacles")
+  # Resolve names once; all per-step geometry operations are batched on device.
+  if not hasattr(env, "_obstacle_geometry_ids"):
+    env._obstacle_geometry_ids = {}
+  key = tuple(wall_names)
+  if key not in env._obstacle_geometry_ids:
+    env._obstacle_geometry_ids[key] = torch.tensor(
+      [env.sim.mj_model.geom(f"{name}/wall_collision").id for name in key],
+      device=env.device, dtype=torch.long,
+    )
+  ids = env._obstacle_geometry_ids[key]
+  robot = env.scene[robot_name]
+  rel_w = env.sim.data.geom_xpos[:, ids] - robot.data.root_link_pos_w[:, None, :]
+  half = env.sim.model.geom_size[:, ids, :]
+  rotation = env.sim.data.geom_xmat[:, ids].reshape(env.num_envs, len(key), 3, 3)
+  obstacle_yaw = torch.atan2(rotation[..., 1, 0], rotation[..., 0, 0])
+  c, s = obstacle_yaw.cos(), obstacle_yaw.sin()
+  local_xy = torch.stack((
+    c * rel_w[..., 0] + s * rel_w[..., 1],
+    -s * rel_w[..., 0] + c * rel_w[..., 1],
+  ), dim=-1)
+  surface_distance = (local_xy.abs() - half[..., :2]).clamp_min(0).norm(dim=-1)
+
+  heading = robot.data.heading_w[:, None]
+  c, s = heading.cos(), heading.sin()
+  rel_b = torch.stack((
+    c * rel_w[..., 0] + s * rel_w[..., 1],
+    -s * rel_w[..., 0] + c * rel_w[..., 1],
+    rel_w[..., 2],
+  ), dim=-1)
+  relative_yaw = obstacle_yaw - heading
+  features = torch.cat((
+    rel_b, half, relative_yaw.sin().unsqueeze(-1),
+    relative_yaw.cos().unsqueeze(-1), surface_distance.unsqueeze(-1),
+  ), dim=-1)
+  # Stable ties preserve scene order; ordinary rank changes can still swap slots.
+  order = surface_distance.argsort(dim=1, stable=True)[:, :k]
+  nearest = features.gather(1, order.unsqueeze(-1).expand(-1, -1, 9))
+  return nearest.reshape(env.num_envs, 9 * k)
+
+
 def dodge_cbf_state_b(
   env: ManagerBasedRlEnv,
   command_name: str = "twist",

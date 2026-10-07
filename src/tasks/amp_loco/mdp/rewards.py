@@ -409,7 +409,8 @@ def walk_path_stillness_when_safe(
 ) -> torch.Tensor:
   """Threat-gated STILLNESS COST: penalize NOT moving along the path when safe.
 
-  ``c = (1 - threat) * exp(-rate^2 / rate_scale^2)`` where ``rate`` is the
+  ``c = (1 - threat) * forward_scale * exp(-rate^2 / rate_scale^2)``;
+  ``forward_scale`` defaults to 1, or the turn-before-walk heading gate. ``rate`` is the
   arc-length progress rate (m/s). Equals 1 for a robot parked on the path between
   throws, ~0.37 at ``rate_scale`` (0.4 m/s), ~0 at 2*scale. Return as a COST (use
   a NEGATIVE weight).
@@ -425,7 +426,34 @@ def walk_path_stillness_when_safe(
   command = env.command_manager.get_term(command_name)
   threat = command._dodge_threat.float()
   rate = command._path_s_delta / env.step_dt
-  return (1.0 - threat) * torch.exp(-torch.square(rate) / rate_scale**2)
+  # Classroom navigation deliberately pauses translation while turning. Apply
+  # the same continuous heading gate so that following that command is not idle.
+  forward_scale = getattr(command, "_walk_forward_scale", 1.0)
+  return (1.0 - threat) * forward_scale * torch.exp(-torch.square(rate) / rate_scale**2)
+
+
+
+def walk_goal_heading_when_safe(
+  env: ManagerBasedRlEnv,
+  command_name: str = "twist",
+  robot_name: str = "robot",
+) -> torch.Tensor:
+  """Signed facing reward for the path-follow goal (the yellow viewer marker).
+
+  Cosine of yaw error: front +1, side 0, back -1. Gate off during an incoming
+  ball threat, leaving emergency evasive motions free of this orientation cost.
+  A coincident goal has no defined bearing and contributes zero.
+  """
+  command = env.command_manager.get_term(command_name)
+  robot = env.scene[robot_name]
+  direction = command.goal_pos_w - robot.data.root_link_pos_w[:, :2]
+  distance = torch.linalg.vector_norm(direction, dim=-1)
+  heading = robot.data.heading_w
+  forward = torch.stack((torch.cos(heading), torch.sin(heading)), dim=-1)
+  alignment = (forward * direction).sum(-1) / distance.clamp_min(1e-6)
+  alignment = alignment.clamp(-1.0, 1.0)
+  alignment = torch.where(distance > 1e-6, alignment, torch.zeros_like(alignment))
+  return (1.0 - command._dodge_threat.float()) * alignment
 
 
 def walk_path_adherence_reward(

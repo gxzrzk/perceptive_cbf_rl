@@ -126,6 +126,10 @@ def g1_amp_dodge_mimickit_classroom_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
   """State-oracle classroom runner with the WallWalk locomotion AMP prior."""
   cfg = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
   cfg.experiment_name = "g1_amp_dodge_mimickit_classroom"
+  # The matching env disables dt scaling. Keep the style score in [0, 1]
+  # before mixing, giving exactly 0.75 * task_sum + 0.25 * style_score.
+  cfg.amp_reward_coef = 1.0
+  cfg.amp_task_reward_lerp = 0.75
   return cfg
 
 

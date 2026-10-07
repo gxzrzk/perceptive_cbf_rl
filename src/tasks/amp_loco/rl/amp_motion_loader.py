@@ -94,6 +94,8 @@ class AMPLoader:
       )
 
       n_steps = body_pos_w.shape[0]
+      if n_steps < 2:
+        raise ValueError(f"AMP motion {motion_path} needs at least two frames")
       pos_b = torch.zeros(
         (n_steps, self._num_bodies, 3), dtype=torch.float32, device=device
       )
@@ -151,33 +153,50 @@ class AMPLoader:
 
     self.time_step_total = self._body_pos_b_list[0].shape[0]
     self.motion_total_time = self.time_step_total / self.fps
+    self._build_sampling_cache()
 
   @property
   def observation_dim(self) -> int:
     return (3 + 6 + 3 + 3) * self._num_bodies
 
+  def _build_sampling_cache(self) -> None:
+    """Pack clips once so each training batch needs only batched GPU gathers."""
+    lengths = [pos.shape[0] for pos in self._body_pos_b_list]
+    if not lengths or min(lengths) < 2:
+      raise ValueError("AMP sampling requires nonempty clips with at least two frames")
+    device = self._body_pos_b_list[0].device
+    self._motion_lengths = torch.tensor(lengths, dtype=torch.long, device=device)
+    self._motion_offsets = self._motion_lengths.cumsum(0) - self._motion_lengths
+    self._motion_frames = torch.cat([
+      torch.cat([
+        pos.flatten(1), ori.flatten(1), lin.flatten(1), ang.flatten(1),
+      ], dim=-1)
+      for pos, ori, lin, ang in zip(
+        self._body_pos_b_list, self._body_ori_b_list,
+        self._body_lin_vel_b_list, self._body_ang_vel_b_list, strict=True,
+      )
+    ], dim=0)
+
   def feed_forward_generator(self, num_mini_batch: int, mini_batch_size: int):
-    num_motions = len(self._body_pos_b_list)
-    for batch_idx in range(num_mini_batch):
-      motion_idx = batch_idx % num_motions
-      pos = self._body_pos_b_list[motion_idx]
-      ori = self._body_ori_b_list[motion_idx]
-      lin = self._body_lin_vel_b_list[motion_idx]
-      ang = self._body_ang_vel_b_list[motion_idx]
-      n = pos.shape[0]
+    """Mix all clips in every batch, with counts differing by at most one.
 
-      idx = torch.randint(0, n, (mini_batch_size,), device=pos.device).clamp(max=n - 1)
-      next_idx = (idx + 1).clamp(max=n - 1)
-
-      def _flatten(p, o, l, a, sel):
-        return torch.cat(
-          [
-            p[sel].reshape(mini_batch_size, -1),
-            o[sel].reshape(mini_batch_size, -1),
-            l[sel].reshape(mini_batch_size, -1),
-            a[sel].reshape(mini_batch_size, -1),
-          ],
-          dim=-1,
-        )
-
-      yield _flatten(pos, ori, lin, ang, idx), _flatten(pos, ori, lin, ang, next_idx)
+    Remainder slots go to randomly chosen clips, and sample order is shuffled.
+    Frames are drawn uniformly from valid adjacent pairs within each chosen clip;
+    neither clip boundaries nor artificial final-frame self-pairs are sampled.
+    When a batch is smaller than the clip count, sample a random subset without
+    replacement rather than increasing the requested training batch size.
+    """
+    if mini_batch_size < 1 or num_mini_batch < 0:
+      raise ValueError("mini_batch_size must be positive and num_mini_batch nonnegative")
+    num_motions = self._motion_lengths.numel()
+    device = self._motion_frames.device
+    slots = torch.arange(mini_batch_size, device=device) % num_motions
+    for _ in range(num_mini_batch):
+      # Randomize which clips get the extra slots when the batch is indivisible.
+      motion_order = torch.randperm(num_motions, device=device)
+      motion_ids = motion_order[slots]
+      motion_ids = motion_ids[torch.randperm(mini_batch_size, device=device)]
+      pair_counts = self._motion_lengths[motion_ids] - 1
+      local_frame = (torch.rand(mini_batch_size, device=device) * pair_counts).long()
+      frame_ids = self._motion_offsets[motion_ids] + local_frame
+      yield self._motion_frames[frame_ids], self._motion_frames[frame_ids + 1]

@@ -22,7 +22,7 @@ world and throws it on a standing dwell. Those come next.
 """
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
@@ -35,6 +35,7 @@ from mjlab.managers.observation_manager import (
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import CameraSensorCfg, ContactMatch, ContactSensorCfg
+from mjlab.utils.spec_config import CollisionCfg
 
 import src.tasks.amp_loco.mdp as mdp
 from src.assets.objects import get_ball_cfg, get_wall_cfg
@@ -1255,11 +1256,18 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
 
 
 def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """32 x 14 m classroom: 24 desk/chair pairs, 3 m aisle, 2.5 m row clearance."""
-  from src.assets.objects.classroom import get_furniture_cfg
-  from src.tasks.amp_loco.mdp.classroom import reset_classroom, reset_classroom_robot
+  """25.1 x 9.6 m classroom: 15 pairs, unchanged 2.6/2.2 m aisle clearance."""
+  from src.assets.objects.classroom import (
+    get_furniture_cfg, get_static_wall_cfg, CLASSROOM_ROWS, CLASSROOM_COLUMN_Y,
+    CLASSROOM_ROW_START, CLASSROOM_ROW_PITCH,
+    CLASSROOM_X_BOUNDS, CLASSROOM_Y_BOUNDS,
+  )
+  from src.tasks.amp_loco.mdp.classroom import initialize_static_classroom, reset_classroom_robot
 
   cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
+  # Classroom PPO mixes the unscaled weighted task sum with AMP style:
+  # reward = 0.75 * sum(weight_i * term_i) + 0.25 * style_score.
+  cfg.scale_rewards_by_dt = False
   old_names = cfg.events["pin_wall"].params["wall_names"]
   cfg.scene.entities = {k: v for k, v in cfg.scene.entities.items() if k not in old_names}
   cfg.scene.sensors = tuple(s for s in cfg.scene.sensors if s.name not in
@@ -1267,22 +1275,30 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.events.pop("recycle_walls_ahead", None)
   layout, assets = [], []
   # Pair extends from x-1.2 (chair back) to x+0.4 (desk front).
-  # 4.1 m row pitch therefore gives exactly 2.5 m clear cross aisles.
-  for row in range(6):
-    for y in (-5.8, -2.1, 2.1, 5.8):
-      x = 4.0 + row * 4.1
+  # 3.8 m row pitch therefore gives exactly 2.2 m clear cross aisles.
+  for row in range(CLASSROOM_ROWS):
+    for y in CLASSROOM_COLUMN_Y:
+      x = CLASSROOM_ROW_START + row * CLASSROOM_ROW_PITCH
       layout.extend(((x, y, 0.38, 0.0), (x - 0.95, y, 0.45, 0.0)))
       assets.extend((get_furniture_cfg("desk"), get_furniture_cfg("chair")))
+  x_min, x_max = CLASSROOM_X_BOUNDS
+  y_min, y_max = CLASSROOM_Y_BOUNDS
+  cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
+  hx, hy = (x_max - x_min) / 2, (y_max - y_min) / 2
   for half, pose in (
-    ((16.0, 0.08, 1.5), (14.0, -7.0, 1.5, 0.0)),
-    ((16.0, 0.08, 1.5), (14.0, 7.0, 1.5, 0.0)),
-    ((0.08, 7.0, 1.5), (-2.0, 0.0, 1.5, 0.0)),
-    ((0.08, 7.0, 1.5), (30.0, 0.0, 1.5, 0.0)),
+    ((hx, 0.08, 1.5), (cx, y_min, 1.5, 0.0)),
+    ((hx, 0.08, 1.5), (cx, y_max, 1.5, 0.0)),
+    ((0.08, hy, 1.5), (x_min, cy, 1.5, 0.0)),
+    ((0.08, hy, 1.5), (x_max, cy, 1.5, 0.0)),
   ):
     layout.append(pose)
-    assets.append(get_wall_cfg(half_extents=half, rgba=(0.82, 0.85, 0.88, 1.0)))
-  cfg = _apply_wall_overrides(cfg, num_walls=len(assets), obs_k=6)
+    assets.append(get_static_wall_cfg(half_extents=half, rgba=(0.82, 0.85, 0.88, 1.0)))
+  cfg = _apply_wall_overrides(cfg, num_walls=len(assets), obs_k=8)
   names = cfg.events["pin_wall"].params["wall_names"]
+  cfg.observations["ball_state"].terms["wall_state"] = ObservationTermCfg(
+    func=mdp.dodge_obstacle_geometry_b,
+    params={"robot_name": "robot", "wall_names": names, "k": 8},
+  )
   for name, asset, pose in zip(names, assets, layout, strict=True):
     # Separate furniture during model compilation, before reset events run.
     asset.init_state.pos = pose[:3]
@@ -1292,8 +1308,10 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
       return spec
     asset.spec_fn = placed_spec
     cfg.scene.entities[name] = asset
-  cfg.events["reset_wall_pose"] = EventTermCfg(
-    func=reset_classroom, mode="reset",
+  cfg.events.pop("pin_wall")
+  cfg.events.pop("reset_wall_pose")
+  cfg.events["initialize_static_classroom"] = EventTermCfg(
+    func=initialize_static_classroom, mode="startup",
     params={"wall_names": names, "layout": tuple(layout)},
   )
   # This reset slot follows RSI, so the randomized pose preserves its gait state.
@@ -1302,17 +1320,50 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   )
   # Shorter lookahead limits corner cutting at cross-aisle intersections.
   cfg.commands["twist"].path_lookahead = 0.8
+  cfg.commands["twist"].path_switch_radius = 0.8
+  cfg.commands["twist"].turn_before_walk = True
+  cfg.commands["twist"].simple_heading = True
   cfg.commands["twist"].max_lin_vel_x = 0.8
+  # Stronger safe-time incentive to leave the planted dodge stance and walk.
+  cfg.rewards["walk_path_stillness_when_safe"].weight = float(
+    os.environ.get("WALK_PATH_STILLNESS_WEIGHT", -2.0)
+  )
+  cfg.rewards["walk_goal_heading_when_safe"] = RewardTermCfg(
+    func=mdp.walk_goal_heading_when_safe,
+    weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 1.0)),
+    params={"command_name": "twist", "robot_name": "robot"},
+  )
   cfg.episode_length_s = 25.0
   cfg.events["throw_ball_on_dwell"].params.update(
     omnidirectional=True, along_path=False, launch_speed_range=None,
     dist_range=(3.0, 5.0))
+  # Bit 1 keeps ordinary robot/scenery collisions. Only the robot accepts
+  # ball bit 2; ball affinity 0 prevents the reverse mask test enabling scenery.
+  ball_bit = 2
+  cfg.scene.entities["ball"].collisions = (
+    CollisionCfg(geom_names_expr=("ball_collision",), contype=ball_bit, conaffinity=0),
+  )
+  cfg.scene.entities["robot"].collisions = tuple(
+    replace(
+      collision,
+      conaffinity=(
+        {pattern: value | ball_bit for pattern, value in collision.conaffinity.items()}
+        if isinstance(collision.conaffinity, dict)
+        else collision.conaffinity | ball_bit
+      ),
+    )
+    for collision in cfg.scene.entities["robot"].collisions
+  )
   # Keep the reset ball outside the classroom until the throw event launches it.
-  # Parking below the floor would create plane contacts that push it back up.
+  # It remains out of view while falling; each timed throw resets pose/velocity.
   hidden_ball_pos = (0.0, 1000.0, 0.15)
   cfg.scene.entities["ball"].init_state.pos = hidden_ball_pos
   cfg.events["reset_dodge_state"].params["park_offset"] = hidden_ball_pos
-  cfg.scene.env_spacing = 40.0
+  # Preserve contact capacity for simultaneous robot/scenery contacts.
+  cfg.sim.njmax = max(cfg.sim.njmax or 0, 2048)
+  # Warp worlds are isolated. Share a local origin so compile-time static
+  # geom transforms/BVH remain valid in every world (no post-compile shifts).
+  cfg.scene.env_spacing = 0.0
   return cfg
 
 

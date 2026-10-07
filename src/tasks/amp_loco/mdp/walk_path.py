@@ -57,14 +57,27 @@ __all__ = [
 ]
 
 
-def _ensure_stash(env: "ManagerBasedRlEnv") -> None:
+def _ensure_stash(env: "ManagerBasedRlEnv", max_points: int = WALK_PATH_MAX_POINTS) -> None:
   pts = getattr(env, _WALK_PATH_PTS_ATTR, None)
   if pts is None or pts.shape[0] != env.num_envs:
     device = env.device
-    setattr(env, _WALK_PATH_PTS_ATTR, torch.zeros(env.num_envs, WALK_PATH_MAX_POINTS, 2, device=device))
-    setattr(env, _WALK_PATH_CUMLEN_ATTR, torch.zeros(env.num_envs, WALK_PATH_MAX_POINTS, device=device))
+    capacity = max(WALK_PATH_MAX_POINTS, max_points)
+    setattr(env, _WALK_PATH_PTS_ATTR, torch.zeros(env.num_envs, capacity, 2, device=device))
+    setattr(env, _WALK_PATH_CUMLEN_ATTR, torch.zeros(env.num_envs, capacity, device=device))
     setattr(env, _WALK_PATH_N_ATTR, torch.zeros(env.num_envs, dtype=torch.long, device=device))
     setattr(env, _WALK_PATH_EPOCH_ATTR, torch.zeros(env.num_envs, dtype=torch.long, device=device))
+  elif pts.shape[1] < max_points:
+    # Rounded classroom routes need more vertices. Preserve other environments
+    # when only a subset resets into a longer route.
+    old_capacity = pts.shape[1]
+    expanded = pts.new_zeros(env.num_envs, max_points, 2)
+    expanded[:, :old_capacity] = pts
+    cum = getattr(env, _WALK_PATH_CUMLEN_ATTR)
+    expanded_cum = cum.new_zeros(env.num_envs, max_points)
+    expanded_cum[:, :old_capacity] = cum
+    setattr(env, _WALK_PATH_PTS_ATTR, expanded)
+    setattr(env, _WALK_PATH_CUMLEN_ATTR, expanded_cum)
+
 
 
 def _fresh_root_yaw(env: "ManagerBasedRlEnv", robot: "Entity", env_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
