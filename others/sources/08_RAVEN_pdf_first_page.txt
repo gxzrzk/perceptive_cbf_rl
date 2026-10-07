@@ -1,0 +1,86 @@
+RA VEN: Reinforcement-Adaptive Visibility-Graph Planning for Robust
+Humanoid Navigation with Collision-Free MPC
+Ruochen Hou 1, Shiqi Wang 1, Beom Jun Kim 1, Hanzhang Fang 1, Mehak Singal 1, and Dennis W. Hong 1
+Abstract— Humanoid navigation in dynamic environments
+requires long-horizon planning while respecting short-horizon
+dynamic and safety constraints. Classical visibility-graph plan-
+ners combined with model predictive control (MPC) can ef-
+ficiently generate collision-free trajectories, but their perfor-
+mance depends on manually tuned parameters and accurate
+system modeling. In real robotic systems, control delays, state-
+estimation noise, and locomotion uncertainties can cause over-
+shoot and constraint violations even when the nominal path is
+geometrically optimal. We propose RA VEN, a hierarchical rein-
+forcement learning (RL)–MPC framework for robust humanoid
+navigation. Unlike prior approaches that use learning to tune
+cost weights or replace planning entirely, RA VEN employs RL
+to adapt thegeometric constructionof a visibility-graph planner
+by modifying obstacle inflation and related graph parameters.
+By directly reshaping the free-space geometry, the learned
+planner alters the topology of the global path to compensate for
+delay and tracking imperfections. A collision-free MPC layer
+then tracks the planned trajectory while explicitly enforcing
+velocity bounds and obstacle-avoidance constraints. By training
+under realistic delays and observation noise, RA VEN learns
+planning adaptations that improve robustness while retain-
+ing explicit long-horizon geometric planning and constrained
+optimization, in contrast to end-to-end learning approaches.
+We evaluate RA VEN against a manually tuned visibility-graph
+MPC baseline and a pure RL navigation policy. Results demon-
+strate reduced overshoot near obstacles, improved robustness
+in narrow passages, and more reliable navigation under delay
+and noise. These findings indicate that reinforcement-adaptive
+graph construction combined with constrained MPC provides
+an effective and interpretable alternative to end-to-end learning
+for robust humanoid navigation.
+I. INTRODUCTION
+The promise of humanoid robotics lies in their potential
+to navigate the complex, vertical, and unstructured environ-
+ments designed for humans. However, realizing this agility
+in the real world exposes a fundamental friction between
+idealized geometric planning and unordered dynamic execu-
+tion. Classical navigation stacks often pair a global planner,
+such as a visibility graph, with a local Model Predictive
+Control (MPC) tracking layer. While geometrically opti-
+mal in theory, these pipelines assume near-perfect system
+modeling. In reality, deploying these systems on physical
+humanoids introduces control delays, state-estimation noise,
+and locomotion uncertainties. When a robot inevitably lags
+behind its nominal path, a trajectory that perfectly grazes an
+obstacle in simulation can quickly devolve into suboptimal
+repetitions near the obstacle boundary.
+1Robotics and Mechanisms Laboratory (RoMeLa), Department of Me-
+chanical and Aerospace Engineering, University of California, Los Ange-
+les, CA 90095, USA.{houruochen, edmond.wang, bj007,
+hfang09, mehaksingal, dennishong}@ucla.edu
+To address navigation under these real-world uncertainties,
+the field has largely bifurcated into two distinct paradigms.
+Fig. 1: The RA VEN framework deployed on the T1 Booster biped navigating
+among obstacles in a half-sized RoboCup soccer field. Hexagons indicate
+the adaptive obstacle inflation regions, whose radii are determined by the
+RL meta policy to account for control delays and tracking uncertainties.
+On one hand, end-to-end Deep Reinforcement Learning
+(DRL) approaches, such as [1]–[3], train monolithic neural
+networks to map raw perception directly to motor commands.
+While these methods exhibit remarkable agility and emergent
+skills, they suffer from a severe lack of interpretability, mak-
+ing it nearly impossible to formally verify safety constraints
+or diagnose failures in critical scenarios. Furthermore, while
+heavily utilized on quadrupedal platforms - which are inher-
+ently statically stable and less prone to hardware damage -
+humanoid robots demand stricter, mathematically guaranteed
+safety margins alongside agile navigation.
+On the other hand, classical graph-search and MPC-
+based planning frameworks [4], [5] provide interpretable
+long-horizon planning, explicit constraint handling, and pre-
+dictable behavior. However, the real-world efficacy is bottle-
+necked by static, manually tuned geometric heuristics - most
+notably, obstacle inflation radii. A fixed inflation parame-
+ter cannot universally account for varying speeds, narrow
+passages, or fluctuating system delays, forcing a painful
+compromise between conservative sluggish navigation and
+aggressive, collision-prone trajectories. Neither extreme is
+sustainable for robust deployment.
+Bridging this divide requires a hybrid architecture that
+leverages the complementary strengths of both methods
+arXiv:2607.15701v1  [cs.RO]  17 Jul 2026

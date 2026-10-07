@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whole-Body Planning for Humanoids Navigating Confined Spaces</title>
+<meta name="description" content="Project page for an IEEE Humanoids 2026 submission on whole-body planning for humanoid robots navigating confined spaces via self-collision avoidance references.">
+
+<!-- Tailwind CSS via CDN -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+        },
+      },
+    },
+  };
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+<style>
+  body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
+  .font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  section { scroll-margin-top: 5.5rem; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 antialiased">
+
+<!-- ================= STICKY NAV ================= -->
+<nav class="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md">
+  <div class="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
+    <a href="#top" class="text-sm font-semibold tracking-tight text-slate-100 hover:text-cyan-400 transition-colors">
+      WBP in Confined Spaces
+    </a>
+    <div class="hidden items-center gap-6 text-sm font-medium text-slate-400 md:flex">
+        <a href="#motivation" class="hover:text-cyan-400 transition-colors">Motivation</a>
+        <a href="#method" class="hover:text-cyan-400 transition-colors">Method</a>
+      <a href="#benchmark-matrix" class="hover:text-cyan-400 transition-colors">Benchmarks</a>
+      <a href="#citation" class="hover:text-cyan-400 transition-colors">Citation</a>
+    </div>
+    <span class="rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 text-xs font-semibold text-cyan-400">
+      Under Review
+    </span>
+  </div>
+</nav>
+
+<!-- ================= SECTION 1: HEADER & ABSTRACT ================= -->
+<header id="top" class="relative overflow-hidden">
+  <div class="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,rgba(34,211,238,0.15),rgba(2,6,23,0))]"></div>
+
+  <div class="mx-auto max-w-5xl px-6 pb-16 pt-20 text-center">
+    <p class="mb-6 text-xs font-semibold uppercase tracking-[0.2em] text-cyan-400">
+      IEEE-RAS International Conference on Humanoid Robots (Humanoids) 2026 &middot; Under Review
+    </p>
+
+    <h1 class="mx-auto max-w-4xl text-3xl font-extrabold leading-tight tracking-tight text-slate-50 sm:text-4xl lg:text-5xl">
+      Whole-Body Planning for Humanoids Navigating Confined Spaces via Self-Collision Avoidance References
+    </h1>
+
+    <p class="mx-auto mt-6 max-w-xl text-base italic text-slate-400">
+      Anonymous during double-anonymous review.
+    </p>
+
+    <!-- Quick Access Links -->
+    <div class="mt-8 flex flex-wrap items-center justify-center gap-3">
+      <a href="#" aria-disabled="true" title="Paper PDF — link coming soon"
+         class="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 px-5 py-2.5 text-sm font-medium text-slate-400 opacity-60">
+        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+        Paper PDF
+        <span class="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">Soon</span>
+      </a>
+
+      <a href="#" aria-disabled="true" title="arXiv — link coming soon"
+         class="inline-flex cursor-not-allowed items-center gap-2 rounded-full border border-slate-700 bg-slate-800/60 px-5 py-2.5 text-sm font-medium text-slate-400 opacity-60">
+        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        arXiv
+        <span class="rounded-full bg-slate-700 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-300">Soon</span>
+      </a>
+
+      <a href="#benchmark-matrix"
+         class="inline-flex items-center gap-2 rounded-full border border-cyan-500/40 bg-cyan-500/10 px-5 py-2.5 text-sm font-medium text-cyan-300 transition-colors hover:bg-cyan-500/20">
+        <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+          <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        Video Summary
+      </a>
+    </div>
+
+    <!-- Highlight Statement -->
+    <p class="mx-auto mt-10 max-w-3xl text-base text-justify">
+      We present a Whole-Body Planning framework for humanoid locomotion in
+      <span class="text-cyan-400">severely confined spaces</span> without relying on human demonstrations.
+      By combining <span class="text-cyan-400">convex relaxations</span> with
+      <span class="text-cyan-400">differentiable collision constraints</span>, our morphology-aware optimization
+      pipeline synthesizes geometry-aware kinematic guides into dynamically feasible trajectories. These plans
+      enable rapid training of a <span class="text-cyan-400">residual RL policy</span> capable of robust online
+      tracking under sensor noise and dynamic uncertainties.
+    </p>
+
+    <!-- Overview Video -->
+    <div id="motivation" class="mx-auto mt-8 max-w-3xl scroll-mt-[5.5rem]">
+      <div class="overflow-hidden rounded-2xl border border-cyan-500/30 bg-black shadow-2xl shadow-cyan-500/10">
+        <video
+          class="aspect-video w-full"
+          autoplay loop muted playsinline controls preload="metadata">
+          <source src="videos/results-demo.mp4" type="video/mp4">
+          Your browser does not support the video tag.
+        </video>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- Key Contributions Section -->
+<section class="max-w-4xl mx-auto my-8 px-4">
+  <div class="bg-slate-900/80 border border-slate-800 rounded-xl p-6 shadow-lg">
+    <h2 class="text-xs uppercase tracking-widest text-cyan-400 font-semibold mb-6">
+      Key Contributions
+    </h2>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-slate-300">
+
+    <!-- Contribution 1 -->
+    <div class="flex flex-col gap-2 p-4 bg-slate-950/50 rounded-lg border border-slate-800/60">
+      <span class="text-cyan-400 font-bold text-base">01. Geometry-Aware Kinematic References</span>
+      <p class="text-justify leading-relaxed">
+        Extends constrained particle planning to rigid bodies, generating kinematically feasible seeds that discover diverse locomotion styles for self-collision avoidance in <strong>confined spaces</strong>.
+      </p>
+    </div>
+
+    <!-- Contribution 2 -->
+    <div class="flex flex-col gap-2 p-4 bg-slate-950/50 rounded-lg border border-slate-800/60">
+      <span class="text-cyan-400 font-bold text-base">02. Dynamically Consistent Planning</span>
+      <p class="text-justify leading-relaxed">
+        Introduces a <strong>morphology-aware</strong> optimization pipeline that transcribes complex, collision-free kinematic references into dynamically consistent whole-body trajectories.
+      </p>
+    </div>
+
+    <!-- Contribution 3 -->
+    <div class="flex flex-col gap-2 p-4 bg-slate-950/50 rounded-lg border border-slate-800/60">
+      <span class="text-cyan-400 font-bold text-base">03. Closed-Loop Tracking Policy</span>
+      <p class="text-justify leading-relaxed">
+          Deploys a <strong>sample-efficient</strong> residual policy to robustly track generated whole-body plans in simulation despite sensor noise, modeling uncertainties, and dynamics randomization.
+      </p>
+    </div>
+
+    <!-- Contribution 4 -->
+    <div class="flex flex-col gap-2 p-4 bg-slate-950/50 rounded-lg border border-slate-800/60">
+      <span class="text-cyan-400 font-bold text-base">04. Long-Horizon Confined-Space Benchmark</span>
+      <p class="text-justify leading-relaxed">
+        Validates long-horizon plans (12–18s) on the G1 humanoid across three confined environments <strong>exceeding NIST standards</strong>, successfully operating where baseline planners fail to converge.
+      </p>
+    </div>
+
+    </div>
+  </div>
+</section>
+
+<main class="mx-auto max-w-6xl space-y-24 px-6 pb-28">
+
+  <!-- ================= SECTION 2: METHOD OVERVIEW ================= -->
+  <section id="method">
+    <div class="mb-10 text-center">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">Whole-Body Planning (WBP) Pipeline</h2>
+      <p class="mx-auto mt-10 max-w-3xl text-base text-justify">
+        A three-stage optimization pipeline that progressively refines a plan from environment-aware trajectory
+        optimization to a dynamically feasible, collision-aware whole-body motion, tracked online by a residual
+        policy.
+      </p>
+    </div>
+
+    <div class="mx-auto max-w-4xl">
+      <div class="overflow-hidden rounded-2xl border border-slate-800 bg-black shadow-2xl shadow-black/30">
+        <video
+          class="aspect-video w-full"
+          autoplay loop muted playsinline controls preload="metadata">
+          <source src="videos/WBP-clips-pipeline.mp4" type="video/mp4">
+          Your browser does not support the video tag.
+        </video>
+      </div>
+
+      <div class="mt-6 rounded-2xl border border-slate-800 bg-slate-900/50 p-6">
+        <ul class="space-y-3 text-sm leading-relaxed text-slate-300 text-justify">
+          <li>
+            <span class="font-semibold text-cyan-400">Stage 1 &mdash; Environment-Aware TO:</span>
+            Uses convex relaxation to plan smooth, reachable end-effector (hands, knees, feet) and torso paths that avoid collisions with surrounding obstacles.
+          </li>
+          <li>
+            <span class="font-semibold text-cyan-400">Stage 2 &mdash; SCA Refinement:</span>
+            Applies primitive proxy geometries and differentiable collision detection to adjust key limb trajectories (e.g., modifying right leg and torso paths to prevent self-contact).
+          </li>
+          <li>
+            <span class="font-semibold text-cyan-400">Stage 3 &mdash; Whole-Body Planning:</span>
+              Generates a dynamically feasible motion plan using the fully articulated <strong>WBP Collisions</strong> model, enforcing joint limits, torque limits, refined self-collision avoidance, and friction wrench cones.
+              The <strong>Visual Mesh</strong> provides a clearer view of the resulting motion.
+          </li>
+<!--          <li>-->
+<!--            <span class="font-semibold text-cyan-400">Motion Controller:</span>-->
+<!--            Residual policy tracking the computed plan.-->
+<!--          </li>-->
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SECTION 3: KEY RESULTS SUMMARY (placeholder) ================= -->
+<!--  <section id="results">-->
+<!--    <div class="mb-10 text-center">-->
+<!--      <h2 class="text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">Key Results Summary</h2>-->
+<!--      <p class="mx-auto mt-3 max-w-2xl text-sm text-slate-400">-->
+<!--        Key results video &mdash; high-level overview of results across all benchmark environments.-->
+<!--      </p>-->
+<!--    </div>-->
+
+<!--    <div class="mx-auto max-w-4xl">-->
+<!--      <div class="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/30 text-slate-600">-->
+<!--        <svg class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">-->
+<!--          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-2.72a.75.75 0 011.28.53v7.38a.75.75 0 01-1.28.53l-4.72-2.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />-->
+<!--        </svg>-->
+<!--        <p class="text-sm font-medium">Key results video placeholder</p>-->
+<!--        <p class="text-xs text-slate-700">Coming soon</p>-->
+<!--      </div>-->
+<!--    </div>-->
+<!--  </section>-->
+
+  <!-- ================= SECTION 4: BENCHMARK ENVIRONMENTS (INTERACTIVE MATRIX) ================= -->
+  <section id="benchmark-matrix">
+    <div class="mb-10 text-center">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">Benchmark Environments</h2>
+        <p class="mx-auto mt-10 max-w-3xl text-base text-justify">
+            We evaluate our WBP and Control framework on three challenging confined environments:
+        </p>
+      <img src="img/confined-environments.png" alt="Diagrams of the three benchmark environments: Tilted Stairs, Unobstructed Hole, and Obstructed Hole."
+           class="mx-auto mt-6 max-w-2xl w-full rounded-2xl border border-slate-800 bg-slate-900/50 p-4 shadow-xl shadow-black/20">
+        <p class="mx-auto mt-10 max-w-3xl text-base text-justify">
+            Toggle between the environments, contact sequences, multi-robot view, and domain randomization to visualize the
+            respective motions using the learned controller in the MuJoCo simulator.
+        </p>
+    </div>
+
+    <div class="mx-auto max-w-4xl">
+
+      <!-- Controls -->
+      <div class="mb-6 flex flex-col gap-4 rounded-2xl border border-slate-800 bg-slate-900/50 p-5">
+
+        <!-- Environment tabs -->
+        <div class="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
+          <span class="text-sm font-medium text-slate-300">Select Environment:</span>
+          <div id="env-tabs" class="inline-flex flex-wrap gap-1 rounded-xl border border-slate-700 bg-slate-800/60 p-1" role="tablist" aria-label="Environment">
+            <button data-env="stairs" class="env-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">Tilted Stairs</button>
+            <button data-env="unobstructed" class="env-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">Unobstructed Hole</button>
+            <button data-env="obstructed" class="env-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">Obstructed Hole</button>
+          </div>
+        </div>
+
+        <!-- Contact sequence toggle -->
+        <div class="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
+          <span class="text-sm font-medium text-slate-300">Contact Sequence:</span>
+          <div id="seq-tabs" class="inline-flex gap-1 rounded-xl border border-slate-700 bg-slate-800/60 p-1" role="radiogroup" aria-label="Contact Sequence">
+            <button data-seq="seq1" class="seq-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">Sequence 1</button>
+            <button data-seq="seq2" class="seq-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">Sequence 2</button>
+          </div>
+        </div>
+
+        <!-- View mode toggle -->
+        <div class="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
+          <span class="text-sm font-medium text-slate-300">View Mode:</span>
+          <div id="view-tabs" class="inline-flex gap-1 rounded-xl border border-slate-700 bg-slate-800/60 p-1" role="radiogroup" aria-label="View Mode">
+            <button data-view="swarm" class="view-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">👥 16-Robot Instances</button>
+            <button data-view="single" class="view-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">🤖 Single-Robot Detail</button>
+          </div>
+        </div>
+
+        <!-- DR toggle -->
+        <div class="flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
+          <span class="text-sm font-medium text-slate-300">Domain Rand (DR):</span>
+          <div id="dr-tabs" class="inline-flex gap-1 rounded-xl border border-slate-700 bg-slate-800/60 p-1" role="radiogroup" aria-label="Domain Randomization">
+            <button data-dr="off" class="dr-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">🔴 DR OFF</button>
+            <button data-dr="on" class="dr-btn rounded-lg px-4 py-2 text-sm font-medium transition-colors">🟢 DR ON</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Video player -->
+      <div class="overflow-hidden rounded-2xl border border-slate-800 bg-black shadow-2xl shadow-black/30">
+        <video id="matrix-video" class="aspect-video w-full" autoplay loop muted playsinline controls preload="metadata">
+          Your browser does not support the video tag.
+        </video>
+      </div>
+
+      <!-- Caption bar -->
+      <div class="mt-4 rounded-xl border border-slate-800 bg-slate-900/50 px-5 py-3 text-center">
+        <p id="matrix-caption" class="font-mono text-xs text-cyan-300 sm:text-sm"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SECTION 5: DETAILED MOTION ANALYSIS (placeholder) ================= -->
+<!--  <section id="motion-analysis">-->
+<!--    <div class="mb-10 text-center">-->
+<!--      <h2 class="text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">Detailed Motion Analysis</h2>-->
+<!--      <p class="mx-auto mt-3 max-w-2xl text-sm text-slate-400">-->
+<!--        Single-robot deep-dive &mdash; frame-by-frame breakdown of a representative confined-space traversal.-->
+<!--      </p>-->
+<!--    </div>-->
+
+<!--    <div class="mx-auto max-w-4xl">-->
+<!--      <div class="flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/30 text-slate-600">-->
+<!--        <svg class="h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">-->
+<!--          <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-2.72a.75.75 0 011.28.53v7.38a.75.75 0 01-1.28.53l-4.72-2.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" />-->
+<!--        </svg>-->
+<!--        <p class="text-sm font-medium">Deep-dive videos placeholder</p>-->
+<!--        <p class="text-xs text-slate-700">Coming soon</p>-->
+<!--      </div>-->
+<!--    </div>-->
+<!--  </section>-->
+
+  <!-- ================= SECTION 6: CITATION & BIBTEX (placeholder) ================= -->
+  <section id="citation">
+    <div class="mb-10 text-center">
+      <h2 class="text-2xl font-bold tracking-tight text-slate-50 sm:text-3xl">Citation</h2>
+      <p class="mx-auto mt-3 max-w-2xl text-sm text-slate-400">
+        BibTeX entry will be provided upon publication.
+      </p>
+    </div>
+
+    <div class="mx-auto max-w-3xl">
+      <div class="rounded-2xl border-2 border-dashed border-slate-800 bg-slate-900/30 p-6">
+        <pre class="overflow-x-auto font-mono text-xs leading-relaxed text-slate-600 sm:text-sm">@inproceedings{anonymous2026wbp,
+  title     = {Whole-Body Planning for Humanoids Navigating Confined
+               Spaces via Self-Collision Avoidance References},
+  author    = {Anonymous},
+  booktitle = {TBD},
+  year      = {2026},
+  note      = {Under double-anonymous review &mdash; citation coming soon}
+}</pre>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="border-t border-slate-800/80 py-10">
+  <p class="text-center text-xs text-slate-600">
+    Submitted for double-anonymous review to IEEE Humanoids 2026.
+  </p>
+</footer>
+
+<script>
+  // ---------------------------------------------------------------
+  // Video matrix: maps [environment][contact sequence][DR] -> view-mode clips
+  // ---------------------------------------------------------------
+  const videoMatrix = {
+    stairs: {
+      seq1: {
+        dr_off: { swarm: "videos/WBP-clips-stairs-noDR.mp4", single: "videos/WBP-clips-stairs-noDR-single.mp4" },
+        dr_on: { swarm: "videos/WBP-clips-stairs-DR.mp4", single: "videos/WBP-clips-stairs-DR-single.mp4" }
+      }
+    },
+    unobstructed: {
+      seq1: {
+        dr_off: { swarm: "videos/WBP-clips-unobstructed-cs0-noDR.mp4", single: "videos/WBP-clips-unobstructed-cs0-noDR-single.mp4" },
+        dr_on: { swarm: "videos/WBP-clips-unobstructed-cs0-DR.mp4", single: "videos/WBP-clips-unobstructed-cs0-DR-single.mp4" }
+      },
+      seq2: {
+        dr_off: { swarm: "videos/WBP-clips-unobstructed-cs1-noDR.mp4", single: "videos/WBP-clips-unobstructed-cs1-noDR-single.mp4" },
+        dr_on: { swarm: "videos/WBP-clips-unobstructed-cs1-DR.mp4", single: "videos/WBP-clips-unobstructed-cs1-DR-single.mp4" }
+      }
+    },
+    obstructed: {
+      seq1: {
+        dr_off: { swarm: "videos/WBP-clips-obstructed-cs0-noDR.mp4", single: "videos/WBP-clips-obstructed-cs0-noDR-single.mp4" },
+        dr_on: { swarm: "videos/WBP-clips-obstructed-cs0-DR.mp4", single: "videos/WBP-clips-obstructed-cs0-DR-single.mp4" }
+      },
+      seq2: {
+        dr_off: { swarm: "videos/WBP-clips-obstructed-cs1-noDR.mp4", single: "videos/WBP-clips-obstructed-cs1-noDR-single.mp4" },
+        dr_on: { swarm: "videos/WBP-clips-obstructed-cs1-DR.mp4", single: "videos/WBP-clips-obstructed-cs1-DR-single.mp4" }
+      }
+    }
+  };
+
+  const envLabels = {
+    stairs: "Stairs",
+    unobstructed: "Unobstructed Hole",
+    obstructed: "Obstructed Hole"
+  };
+
+  const seqLabels = {
+    seq1: "Contact Sequence 1",
+    seq2: "Contact Sequence 2"
+  };
+
+  const viewLabels = {
+    swarm: "16-Robot Instances",
+    single: "Single-Robot Detail"
+  };
+
+  const state = { env: "stairs", seq: "seq1", view: "swarm", dr: false };
+
+  const videoEl = document.getElementById("matrix-video");
+  const captionEl = document.getElementById("matrix-caption");
+  const envTabsEl = document.getElementById("env-tabs");
+  const seqTabsEl = document.getElementById("seq-tabs");
+  const viewTabsEl = document.getElementById("view-tabs");
+  const drTabsEl = document.getElementById("dr-tabs");
+
+  const ACTIVE_CLASSES = ["bg-cyan-500", "text-slate-950", "shadow"];
+  const INACTIVE_CLASSES = ["text-slate-300", "hover:bg-slate-700/60"];
+
+  function setActive(btn, isActive) {
+    if (isActive) {
+      btn.classList.add(...ACTIVE_CLASSES);
+      btn.classList.remove(...INACTIVE_CLASSES);
+    } else {
+      btn.classList.remove(...ACTIVE_CLASSES);
+      btn.classList.add(...INACTIVE_CLASSES);
+    }
+  }
+
+  function updateUI() {
+    // Environment tabs
+    envTabsEl.querySelectorAll(".env-btn").forEach((btn) => {
+      setActive(btn, btn.dataset.env === state.env);
+    });
+
+    // Contact sequence tabs (Sequence 2 disabled for Stairs)
+    seqTabsEl.querySelectorAll(".seq-btn").forEach((btn) => {
+      const seq = btn.dataset.seq;
+      const isAvailable = !!videoMatrix[state.env][seq];
+
+      if (!isAvailable) {
+        btn.disabled = true;
+        btn.setAttribute("aria-disabled", "true");
+        btn.title = `${seqLabels[seq]} is not available for ${envLabels[state.env]}`;
+        btn.classList.add("opacity-30", "cursor-not-allowed");
+        btn.classList.remove(...ACTIVE_CLASSES, ...INACTIVE_CLASSES);
+      } else {
+        btn.disabled = false;
+        btn.removeAttribute("aria-disabled");
+        btn.title = "";
+        btn.classList.remove("opacity-30", "cursor-not-allowed");
+        setActive(btn, seq === state.seq);
+      }
+    });
+
+    // View mode tabs
+    viewTabsEl.querySelectorAll(".view-btn").forEach((btn) => {
+      setActive(btn, btn.dataset.view === state.view);
+    });
+
+    // DR tabs
+    drTabsEl.querySelectorAll(".dr-btn").forEach((btn) => {
+      setActive(btn, btn.dataset.dr === (state.dr ? "on" : "off"));
+    });
+  }
+
+  function updateCaption() {
+    captionEl.textContent =
+      `Current View: ${envLabels[state.env]} | ${seqLabels[state.seq]} | ${viewLabels[state.view]} | Domain Randomization: ${state.dr ? "ON" : "OFF"}`;
+  }
+
+  function updateVideo(preserveTime) {
+    const entry = videoMatrix[state.env][state.seq][state.dr ? "dr_on" : "dr_off"];
+    const nextSrc = entry[state.view];
+
+    if (videoEl.currentSrc && videoEl.currentSrc.endsWith(nextSrc)) return;
+
+    const wasPlaying = !videoEl.paused;
+    const savedTime = preserveTime ? videoEl.currentTime : 0;
+
+    const onLoadedMetadata = () => {
+      if (preserveTime && savedTime < videoEl.duration) {
+        videoEl.currentTime = savedTime;
+      }
+      if (wasPlaying) videoEl.play().catch(() => {});
+      videoEl.removeEventListener("loadedmetadata", onLoadedMetadata);
+    };
+
+    videoEl.addEventListener("loadedmetadata", onLoadedMetadata);
+    videoEl.src = nextSrc;
+    videoEl.load();
+  }
+
+  function selectEnv(env) {
+    if (env === state.env) return;
+    state.env = env;
+    if (!videoMatrix[env][state.seq]) state.seq = "seq1";
+    updateUI();
+    updateCaption();
+    updateVideo(false);
+  }
+
+  function selectSeq(seq) {
+    if (seq === state.seq || !videoMatrix[state.env][seq]) return;
+    state.seq = seq;
+    updateUI();
+    updateCaption();
+    updateVideo(false);
+  }
+
+  function selectView(view) {
+    if (view === state.view) return;
+    state.view = view;
+    updateUI();
+    updateCaption();
+    updateVideo(true);
+  }
+
+  function selectDR(dr) {
+    const isOn = dr === "on";
+    if (isOn === state.dr) return;
+    state.dr = isOn;
+    updateUI();
+    updateCaption();
+    updateVideo(true);
+  }
+
+  envTabsEl.querySelectorAll(".env-btn").forEach((btn) => {
+    btn.addEventListener("click", () => selectEnv(btn.dataset.env));
+  });
+
+  seqTabsEl.querySelectorAll(".seq-btn").forEach((btn) => {
+    btn.addEventListener("click", () => selectSeq(btn.dataset.seq));
+  });
+
+  viewTabsEl.querySelectorAll(".view-btn").forEach((btn) => {
+    btn.addEventListener("click", () => selectView(btn.dataset.view));
+  });
+
+  drTabsEl.querySelectorAll(".dr-btn").forEach((btn) => {
+    btn.addEventListener("click", () => selectDR(btn.dataset.dr));
+  });
+
+  // Initialize
+  updateUI();
+  updateCaption();
+  videoEl.src = videoMatrix[state.env][state.seq].dr_off.swarm;
+</script>
+
+</body>
+</html>

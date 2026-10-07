@@ -1,0 +1,346 @@
+LP-NavOA: Integrated Local Navigation and Obstacle Avoidance
+for Humanoid Robots under Limited Perception 1 Yukun Luo College of Intelligence Science and Technology National University of Defense Technology Changsha, China 2 Jianjun Ma College of Intelligence Science and Technology National University of Defense Technology Changsha, China Affiliation: 4 Jinzhe Li College of Intelligence Science and Technology National University of Defense Technology Changsha, China 5 Kaihong Huang College of Intelligence Science and Technology National University of Defense Technology Changsha, China 6 Peng Li College of Intelligence Science and Technology National University of Defense Technology Changsha, China Abstract Humanoid local navigation in cluttered environments must jointly resolve
+obstacle avoidance, sparse-goal recovery, and stable whole-body
+locomotion under short-range and partially observable sensing. Explicit
+planner-control decompositions introduce latency and can mismatch agile
+humanoid command-tracking limits, while purely reactive controllers may
+lose the goal after obstacle occlusion. We present LP-NavOA, a
+limited-perception navigation and obstacle-avoidance framework for
+humanoid robots. A raycast-conditioned perception-action proximal policy
+optimization (PPO) locomotion backbone is
+first trained with a robot-centered circular heading-speed command and a
+shared command-side safety filter. With this backbone frozen,
+A-star and waypoint teachers generate rollouts for distilling a
+recurrent local planner that overwrites only the heading command at
+deployment, leaving the whole-body policy intact. At runtime, LP-NavOA uses
+proprioception, short-range local range sensing, and a body-frame goal
+direction, requiring no global map, waypoint stream, or external
+planner. In MuJoCo open-wall and indoor layouts, the distilled planner
+produces obstacle bypassing and post-avoidance goal recovery, raising
+teacher-calibrated on-time arrival from 38–40% to 85–97% and reducing
+brush/contact-heavy progress relative to a backbone-only controller.
+Ablations show that dynamic route shaping, teacher-active data
+collection, and the circular command interface are important for
+navigation efficiency and for training the 3.0 m/s backbone. A Unitree
+G1 deployment analysis demonstrates hardware executability without continuous
+joystick steering. Keywords: humanoid robot, local navigation, obstacle avoidance, limited perception, reinforcement learning I Introduction Humanoid robots fit human-scale spaces, but local navigation is tightly
+coupled with whole-body locomotion. A policy must decide when to walk,
+turn, slow down, or return toward a hidden goal while preserving balance
+and contact quality. Under partial observability [ 1 ] ,
+short-range sensing may reveal an obstacle without resolving when to
+continue bypassing or resume goal seeking. Classical pipelines separate mapping, planning, and control with
+explicit planners such as A-star and dynamic
+windows [ 2 , 3 ] . These interfaces are
+interpretable but awkward for agile legged systems, where simplified
+planning abstractions meet latency, body sway, and command-tracking
+limits. Learned navigation systems have reduced some of these
+costs [ 4 , 5 , 6 ] , and recent
+work extends the same trend to humanoid visual
+navigation [ 7 ] . In parallel, reinforcement learning
+has produced robust legged locomotion under increasingly realistic
+dynamics, from agile motor skills [ 8 ] to blind
+locomotion over challenging terrain [ 9 ] and perceptive
+locomotion in the wild [ 10 ] . Rapid motor adaptation
+pushes this line further by handling unmodelled dynamics directly at
+deployment [ 11 ] , a property that humanoid systems have
+begun to inherit alongside real-world whole-body
+control [ 12 ] , expressive whole-body
+tracking [ 13 ] , and large-scale imitation from human
+motion [ 14 ] . Scalable simulators such as Isaac Gym
+have made massively parallel training practical [ 15 ] ,
+with curricula that learn to walk in minutes [ 16 ] ;
+lightweight MuJoCo-based systems such as mjlab further expose
+manager-based robot-learning workflows for GPU-accelerated policy
+training [ 17 ] . Building on this style of simulation
+infrastructure, recent studies pursue collision-free high-speed
+locomotion [ 18 ] , extreme parkour [ 19 ] ,
+and rapid-locomotion benchmarks [ 20 ] . Yet
+goal-directed local navigation still requires recovering the sparse
+goal after avoidance, not only reacting to the nearest obstacle. We separate training instruments from the inference
+interface . Planners, privileged scans, and waypoint curricula generate
+safe supervision, but the deployed controller keeps only raycast and
+goal-direction inputs. A proximal policy optimization (PPO) backbone
+learns a compact heading-speed command [ 21 ] ;
+frozen-backbone rollouts under planner or waypoint teachers then
+provide behavior-cloning data for a recurrent local
+planner [ 22 , 23 , 24 ] . The
+result is a compact steering layer that preserves the learned
+locomotion interface while adding memory-based decisions about when to
+bypass an obstacle and when to recover the sparse goal. LP-NavOA makes three contributions: • We design a planner-free limited-perception navigation interface
+that uses local range observations and goal state to steer a frozen
+whole-body locomotion foundation policy through heading commands. • We introduce a planner-supervised training pipeline that combines
+circular heading-speed PPO, waypoint/planner supervision, dynamic route
+shaping, and teacher-active rollouts to distill obstacle bypassing and
+post-avoidance goal recovery into the deployment policy. • We validate the system in MuJoCo open-wall and indoor layouts with
+timing, brush/contact, and collision diagnostics, and include a Unitree
+G1 deployment-feasibility check of the compact interface. II Method II-A Framework Overview: Planner-Supervised Training and Planner-Free Inference We consider a Unitree G1 humanoid in MuJoCo that must reach sparse
+planar goals in unknown static-obstacle layouts using only
+proprioception, short-range raycasts, and relative goal direction at
+deployment. Three information boundaries define the system. The locomotion
+backbone π θ ​ ( a t ∣ o t , c t ) \pi_{\theta}(a_{t}\!\mid\!o_{t},c_{t}) maps proprioception,
+raycasts, and c t = [ Δ ​ ψ t , v t ] c_{t}=[\Delta\psi_{t},v_{t}] to normalized joint action a t a_{t} .
+Training-time teachers provide intermediate waypoints for curricula and
+data collection. A
+recurrent local planner f ϕ ​ ( o t , h t − 1 ) f_{\phi}(o_{t},h_{t-1}) predicts a bounded steering command
+from inference-time observations and recurrent memory h t − 1 h_{t-1} , then
+overwrites only the heading component. The two learning stages are θ = arg ⁡ max θ ​ 𝔼 π θ ​ [ ∑ t γ ​ r t ] , ϕ = arg ⁡ min ϕ ​ 𝔼 𝒟 π θ ​ [ ℓ ⁡ ( f ϕ , y t ) ] , \theta\!=\!\arg\max_{\theta}\mathbb{E}_{\pi_{\theta}}\!\left[\textstyle\sum_{t}\gamma r_{t}\right],\quad\phi\!=\!\arg\min_{\phi}\mathbb{E}_{\mathcal{D}_{\pi_{\theta}}}\!\left[\ell(f_{\phi},y_{t})\right], (1) where θ \theta and ϕ \phi are backbone and planner parameters, γ \gamma is the discount factor, r t r_{t} is the
+locomotion reward, and 𝒟 π θ \mathcal{D}_{\pi_{\theta}} is collected by
+rolling out the frozen backbone under teachers. Each dataset sample
+contains o t o_{t} , recurrent state, and teacher label y t y_{t} , equal to Δ ​ ψ t \Delta\psi_{t} for odometry and [ Δ ​ ψ t , v t ] [\Delta\psi_{t},v_{t}] for dead reckoning, where v t v_{t} is forward
+body-frame velocity; ℓ \ell is the masked behavior-cloning error. The first
+stage learns how to walk under commands; the second learns which heading command to send without planner waypoints.
+Fig. summarizes this deployment
+interface: planner and waypoint information is absent at runtime, the
+local planner reads only deployment-available observations and recurrent
+state, and its output modifies the heading component before the shared
+command-side safety filter passes the command to the frozen PPO backbone. Fig. 1: Planner-free inference interface of LP-NavOA. The recurrent
+steering module overwrites only the heading command, while the frozen PPO
+backbone converts the filtered command and local observations into
+full-body joint targets. II-B Perception-Action PPO Training for the Locomotion Backbone The first stage trains a perception-action locomotion policy rather than
+a global planner. The actor maps proprioception, three local raycast
+views, and the compact command to whole-body joint targets: o t = [ ω t , g t , c t , q t − q 0 , q ˙ t , a t − 1 , b t , ρ t , ρ t , ρ t ] , o_{t}=\bigl[\omega_{t},g_{t},c_{t},q_{t}-q_{0},\dot{q}_{t},a_{t-1},b_{t},\rho_{t},\rho_{t},\rho_{t}\bigr], (2) where superscripts b b and w w denote body and world frames, ω t \omega_{t} is body angular velocity, g t g_{t} is gravity projected
+into the body frame, q t − q 0 q_{t}-q_{0} and q ˙ t \dot{q}_{t} are joint offsets and
+velocities, a t − 1 a_{t-1} is the previous normalized action, and b t b_{t} is
+the gait/order phase feature. The tensors ρ t , ρ t , ρ t ∈ [ 0 , 1 ] \rho_{t},\rho_{t},\rho_{t}\in[0,1] are front, left,
+and right normalized raycast grids; smaller entries are nearer obstacles
+and 1 is the 4 m range limit. The PD controller receives q t = q 0 + s a ⊙ a t q_{t}=q_{0}+s_{a}\odot a_{t} , with nominal pose q 0 q_{0} ,
+per-joint scale s a s_{a} , elementwise product ⊙ \odot , and normalized
+joint action a t ∈ [ − 1 , 1 ] a_{t}\in[-1,1] , where D D is the action dimension. The critic is asymmetric and additionally
+observes a yaw-aligned downward terrain scan during training. II-B 1 Circular goal command The command must teach smooth goal-directed locomotion before navigation
+teachers are introduced. We therefore sample the target heading around
+the current robot yaw, θ t \displaystyle\theta_{t} ← wrap [ − π , π ] ​ ( ψ t + U ⁡ ( − θ max , θ max ) ) , \displaystyle\leftarrow\mathrm{wrap}_{[-\pi,\pi]}\bigl(\psi_{t}+U(-\theta_{\max},\theta_{\max})\bigr), (3) p t \displaystyle p_{t} = p t + R ⁡ [ cos ⁡ θ t , sin ⁡ θ t ] , \displaystyle=p_{t}+R[\cos\theta_{t},\sin\theta_{t}], and the policy receives [ Δ ​ ψ t , v t ] [\Delta\psi_{t},v_{t}] with Δ ​ ψ t = wrap ⁡ ( θ t − ψ t ) \Delta\psi_{t}=\mathrm{wrap}(\theta_{t}-\psi_{t}) . Here ψ t \psi_{t} and p t p_{t} are robot yaw and planar world position, p t p_{t} is the sampled goal point, U ⁡ ( a , b ) U(a,b) is a
+uniform sample, R R is the goal radius, and θ max \theta_{\max} bounds
+the angular spread around the robot heading. The wrap operation makes Δ ​ ψ t \Delta\psi_{t} the signed shortest heading error in [ − π , π ] [-\pi,\pi] . This converts sparse goal tracking into
+heading-and-speed tracking; obstacle curricula later reuse the same
+two-dimensional
+interface [ 25 ] . II-B 2 Rewards, safety filter, and teacher-active curricula Tracking targets are ω t = clip ⁡ ( k ψ ​ Δ ​ ψ t , − ω max , ω max ) \omega_{t}\!=\!\mathrm{clip}(k_{\psi}\Delta\psi_{t},-\omega_{\max},\omega_{\max}) and v t = v t ​ cos ⁡ Δ ​ ψ t + v t ​ sin ⁡ Δ ​ ψ t v_{t}\!=\!v_{t}\cos\Delta\psi_{t}+v_{t}\sin\Delta\psi_{t} ,
+with exponential rewards for yaw-rate and goal-directed velocity
+tracking. Here k ψ k_{\psi} maps heading error to yaw-rate command, ω max \omega_{\max} is the yaw-rate limit, ( v t , v t ) (v_{t},v_{t}) is planar base
+velocity in the heading frame, v t v_{t} is its component along
+the commanded goal direction, and v t v_{t} is the target speed. A
+command-side safety filter caps forward speed from front-ray
+stopping time and damps unsafe yaw commands. It is shared by all
+inference conditions, so comparisons measure steering rather than
+low-level emergency logic. The reachable-goal curriculum is staged:
+flat circular-goal locomotion first learns the command interface,
+A-star-guided visual generalization then introduces obstacle
+bypassing through intermediate waypoints, and an optional final stage
+adapts the same policy to rougher terrain. Across these stages,
+teachers may change the commanded heading, but the policy still sees
+only [ Δ ​ ψ t , v t ] [\Delta\psi_{t},v_{t}] . II-C Teacher-Distilled Local Planner for Goal Recovery After the backbone is frozen, the local planner chooses the heading
+command from goal direction, local raycasts, and short-horizon
+memory [ 1 ] . It addresses the gap left by pure
+reactive avoidance: deciding when to bypass and when to return toward
+the sparse goal. The student observes only inference-time signals, o t = [ η t , ν t , ρ t , ρ t , ρ t , ξ t ] , \displaystyle o_{t}=\bigl[\eta_{t},\nu_{t},\rho_{t},\rho_{t},\rho_{t},\xi_{t}\bigr], (4) ξ t = [ d b , t / 10 , d b , t / 10 , cos ⁡ β t , sin ⁡ β t ] . \displaystyle\xi_{t}=\bigl[d_{b,t}/10,d_{b,t}/10,\cos\beta_{t},\sin\beta_{t}\bigr]. where η t = [ cos ⁡ ψ t , sin ⁡ ψ t ] \eta_{t}=[\cos\psi_{t},\sin\psi_{t}] encodes yaw, ν t \nu_{t} is
+selected joint velocities (DR) or measured body-frame velocity
+(odometry), and ξ t \xi_{t} stores the body-frame offset to the current key
+goal, divided by 10, plus unit bearing ( cos ⁡ β t , sin ⁡ β t ) (\cos\beta_{t},\sin\beta_{t}) , with β t = atan2 ⁡ ( d b , t , d b , t ) \beta_{t}=\mathrm{atan2}(d_{b,t},d_{b,t}) . Raycast features are
+fused with the state by a multilayer perceptron (MLP) and gated
+recurrent unit (GRU) [ 26 ] : z t \displaystyle z_{t} = E ρ ( ρ t ) , s ∈ { f , ℓ , r } , \displaystyle=E_{\rho}(\rho_{t}),\quad s\in\{f,\ell,r\}, (5) h t \displaystyle h_{t} = GRUCell ⁡ ( φ ⁡ ( [ η t , ν t , z t , z t , z t , ξ t ] ) , h t − 1 ) , \displaystyle=\mathrm{GRUCell}\bigl(\varphi([\eta_{t},\nu_{t},z_{t},z_{t},z_{t},\xi_{t}]),h_{t-1}\bigr), Δ ​ ψ t ^ \displaystyle\widehat{\Delta\psi_{t}} = Δ ​ ψ max ​ tanh ⁡ ( W ψ ​ h t ) . \displaystyle=\Delta\psi_{\max}\tanh(W_{\psi}h_{t}). Here s s indexes front/left/right raycast groups, E ρ E_{\rho} is the
+shared CNN encoder, and z t z_{t} is its 32-D range feature, φ \varphi is the fusion MLP, h t ∈ ℝ h_{t}\in\mathbb{R} is recurrent memory, and W ψ W_{\psi} is the yaw-output head. The tanh bound
+limits Δ ​ ψ t ^ \widehat{\Delta\psi_{t}} to [ − Δ ​ ψ max , Δ ​ ψ max ] [-\Delta\psi_{\max},\Delta\psi_{\max}] , where Δ ​ ψ max \Delta\psi_{\max} is the maximum steering angle. The dead-reckoning variant
+also predicts forward velocity for goal integration; the odometry variant
+removes that head. II-C 1 Route-shaping teacher control For distillation, the frozen backbone is rolled out under planner or
+waypoint teachers. The active waypoint is the intermediate bypass target;
+the key goal is the sparse task goal recovered after avoidance. The
+teacher target blends their signed body-frame bearings: Δ ​ ψ t = α t ​ Δ ​ ψ t + ( 1 − α t ) ​ Δ ​ ψ t . \Delta\psi_{t}=\alpha_{t}\Delta\psi_{t}+(1-\alpha_{t})\Delta\psi_{t}. (6) The gate α t ∈ [ 0 , 1 ] \alpha_{t}\in[0,1] uses the same raycasts: α t = 0 \alpha_{t}=0 selects the bypass waypoint and α t = 1 \alpha_{t}=1 selects the key goal. Let d max = 4 ​ m d_{\max}=4\,\mathrm{m} , d t = d max ​ min ⁡ ρ t d_{t}=d_{\max}\min\rho_{t} be forward
+clearance, and d t d_{t} the minimum left/right clearance on
+the key-goal side. In the default distance-based mode, α ~ t = σ ⁡ ( k α ​ ( d t − d turn ) ) , α t = { 0 , d t < d block , α ~ t , otherwise , \tilde{\alpha}_{t}=\sigma\!\left(k_{\alpha}(d_{t}-d_{\mathrm{turn}})\right),\quad\alpha_{t}=\begin{cases}0,&d_{t}<d_{\mathrm{block}},\\
+\tilde{\alpha}_{t},&\mathrm{otherwise},\end{cases} (7) where σ \sigma is the logistic sigmoid, k α k_{\alpha} is transition
+sharpness, d turn d_{\mathrm{turn}} is the release clearance, and d block d_{\mathrm{block}} is the goal-side blocking threshold.
+The raw gate is smoothed with an asymmetric EMA α t = α t − 1 + μ t ​ ( α t − α t − 1 ) \alpha_{t}=\alpha_{t-1}+\mu_{t}(\alpha_{t}-\alpha_{t-1}) , μ t = μ up \mu_{t}\!=\!\mu_{\mathrm{up}} if α t > α t − 1 \alpha_{t}\!>\!\alpha_{t-1} else μ down \mu_{\mathrm{down}} , which reduces label chatter. The gate α t \alpha_{t} is close to zero when the waypoint should dominate near an
+obstacle and moves toward one when clearances permit direct key-goal
+recovery. These
+quantities define both the supervised yaw target and, by default, the
+heading command injected into the frozen backbone during data
+collection. Thus α t \alpha_{t} shapes the rollout route rather than
+merely renaming labels; the student never observes α t \alpha_{t} and is
+trained with masked recurrent behavior cloning.
+Fig. explains the resulting supervision
+trade-off. Waypoint-only control keeps the label tied to teacher
+waypoints, so the student can replay a teacher-route template when those
+points are absent instead of grounding avoidance in the observed
+obstacle geometry. Key-goal-only control points through blocked space
+and provides no bypass supervision. Dynamic route shaping addresses both
+failure modes by using waypoint bearing only as an obstacle-conditioned
+bypass cue and releasing toward the sparse goal when clearance opens. Fig. 2: Route-shaping teacher control in the open-wall setting.
+Waypoint-only supervision can become route-template replay when teacher
+points are unavailable, while key-goal-only supervision gives no bypass
+target. The dynamic target ties bypassing to observed obstacle clearance
+and then releases the command toward sparse-goal recovery. III Experiments III-A Command-Form Ablation for Fast Backbone Training Before evaluating navigation, we test whether the command interface can
+train the fast locomotion primitive that the later planner relies on.
+The flat-terrain PPO ablation changes only the goal-command generator:
+it tests whether fixed world-frame waypoints can train the high-speed
+tracking skill needed by the later navigation stack. The circular condition uses the robot-centered command in
+( ), so the target remains a local heading
+and speed command as the robot moves. The fixed-sequence condition replaces it with four world-frame goals at nominal offsets ( 0 , 2.5 ) (0,2.5) , ( 0 , 5.0 ) (0,5.0) , ( 0 , 7.5 ) (0,7.5) , ( 0 , 10.0 ) (0,10.0) m, each scattered by
+approximately ± 2.0 \pm 2.0 m laterally and ± 0.5 \pm 0.5 m longitudinally at
+reset. Both conditions share the reward body, runner, 8192
+environments, 1600 PPO iterations, and a three-stage velocity curriculum
+ending at v max = 3.0 v_{\max}=3.0 m/s, where v max v_{\max} is the final
+commanded-speed cap. Table reports reward-independent
+metrics over three training seeds: velocity RMSE along the active goal
+direction, rollout completion, hard termination rate, and the largest
+speed bin with mean velocity error below 0.5 m/s and fall rate below
+5%. TABLE I: Command-form ablation for fast backbone training at v max = 3.0 v_{\max}=3.0 m/s. Entries are mean ± \pm std over three training
+seeds and report reward-independent velocity tracking, rollout
+completion, hard terminations, and the largest trackable speed bin. Command Vel. RMSE (m/s) Rollout compl. (%) Fall rate (%) Trackable speed (m/s) Circular moving goal 0.52 ± \pm 0.02 99.51 ± \pm 0.15 0.49 ± \pm 0.15 3.00 ± \pm 0.00 Fixed scattered sequence 1.36 ± \pm 0.03 40.07 ± \pm 2.95 0.09 ± \pm 0.04 1.44 ± \pm 0.10 The circular command remains trackable at 3.0 m/s with 0.52 m/s RMSE
+and 99.51% rollout completion. The fixed sequence rarely falls, but
+its trackable speed is only 1.44 m/s and only 40.07% of rollouts
+complete, showing that the circular command is a training interface for
+the fast backbone rather than a notational convenience. III-B Simulation Evaluation of Obstacle Avoidance and Goal-Directed Navigation The formal simulation benchmark evaluates the frozen backbone with
+planner-assisted teachers and planner-free local-planner inference in
+the same MuJoCo G1 simulator. The official navigation scope is two
+obstacle families: open straight-wall , where the robot approaches a wall at
+0.5–1.2 m/s and must bypass it, and indoor obstacle layout ,
+with room boundaries, a central wall, and box obstacles. III-B 1 Policy conditions and metrics R1 (Backbone-only) sends the heading command directly toward
+the active key goal and acts as a sanity-check lower bound in
+wall-obstructed scenes. Ours (DR) uses the frozen backbone
+and learned planner in planner-free (NoPP) inference with
+dead-reckoning (DR) state. Ours (Odom) uses the same steering
+interface but computes the relative goal from odometry, removes the
+velocity head, and excludes joint velocities. T1 (Teacher, PP) keeps the teacher active under planner-present (PP) inference and is
+used only as a calibration reference, not as a
+method row in Table . All conditions share raycast
+sensors, episode limits, and the same command-side safety filter. Timeout-based final-goal completion is intentionally not used as the
+success criterion: the simulator leaves enough time for a failed first
+approach to circle back to the target, a behavior with little practical
+value in crowded indoor spaces. We therefore evaluate whether the robot
+reaches the goal on its first useful approach and without scraping
+through the safety envelope. The objective reference time is T 0 = L obj / v cmd T_{0}=L_{\mathrm{obj}}/v_{\mathrm{cmd}} , with nominal obstacle-aware
+route length L obj L_{\mathrm{obj}} and commanded speed v cmd v_{\mathrm{cmd}} .
+The displayed T-rel. on-time metric uses the same task/seed T1
+stream as calibration: successful teacher-present episodes define the
+98% threshold of d eff = T ep ​ v cmd d_{\mathrm{eff}}=T_{\mathrm{ep}}v_{\mathrm{cmd}} , where T ep T_{\mathrm{ep}} is episode time and d eff d_{\mathrm{eff}} is the
+corresponding effective distance. Thus T-rel. on-time is the percentage
+of episodes reaching the goal within the T1-calibrated effective-distance
+budget. Expressed as time, this T-rel. window is
+about 25–26 s for the open-wall task and 23–31 s for the indoor task,
+roughly 5–12 s longer than the nominal best-path time depending on the
+seed and layout. Table reports T-rel. on-time together
+with the observed overhead Δ ​ t = T ep − T 0 \Delta t=T_{\mathrm{ep}}-T_{0} , so the
+reader can see how many seconds each method spends beyond T 0 T_{0} . Any brush combines sustained safety-envelope braking and body/foot contact brush; contact brush counts body or foot obstacle contact below hard
+collision termination, and hard collision is a termination-level
+collision. Table quantifies how much of the teacher behavior is
+retained by the planner-free recurrent local planner while the frozen
+whole-body controller, sensors, episode limits, and safety filter remain
+fixed. TABLE II: Formal v6 navigation quality on open-wall and indoor layouts.
+Percentage columns are mean ± \pm std over seeds 0 , 1 , 2 0,1,2 ; the timing
+column reports T-rel. on-time arrival with the mean overhead Δ ​ t = T ep − T 0 \Delta t=T_{\mathrm{ep}}-T_{0} . Boldface marks the best displayed mean
+within each task block. Task Method T-rel. on-time / Δ ​ t \Delta t Any brush Contact brush Hard coll. Open wall R1 Backbone-only 38.3 ± \pm 5.2 / + 14.1 +14.1 s 70.9 ± \pm 7.7 69.7 ± \pm 7.4 0.3 ± \pm 0.1 Ours (DR) NoPP 85.1 ± \pm 1.3 / + 7.5 +7.5 s 24.0 ± \pm 1.7 9.5 ± \pm 2.0 0.2 ± \pm 0.2 Ours (Odom) NoPP 91.9 ± \pm 2.1 / + 6.1 +6.1 s 23.7 ± \pm 1.4 10.1 ± \pm 0.8 0.1 ± \pm 0.1 Indoor R1 Backbone-only 40.3 ± \pm 15.3 / + 14.4 +14.4 s 77.7 ± \pm 7.3 76.5 ± \pm 7.4 0.5 ± \pm 0.4 Ours (DR) NoPP 88.0 ± \pm 4.3 / + 7.4 +7.4 s 21.2 ± \pm 2.7 12.4 ± \pm 1.9 0.1 ± \pm 0.1 Ours (Odom) NoPP 96.6 ± \pm 2.6 / + 5.5 +5.5 s 9.7 ± \pm 2.1 4.9 ± \pm 1.6 0.0 ± \pm 0.0 The compact timing column exposes the main pattern. R1 often reaches
+the final goal eventually, but its mean overhead is about + 14 +14 s
+beyond the nominal best-path time and only about 38–40% of its runs
+arrive within the T1-calibrated budget. This happens because the shared
+safety envelope and jointly trained perception-action locomotion model
+already give the backbone a weak ability to avoid and edge around
+obstacles, but the behavior is indirect and frequently contact-heavy.
+The learned planners reduce the overhead to about + 5.5 +5.5 – + 7.5 +7.5 s,
+raising T-rel. on-time arrival to 85–97%. Brush diagnostics follow
+the same trend, while hard collisions remain rare; the benefit is
+therefore direct, timely arrival rather than simply avoiding
+catastrophic failure. Fig. supports this
+interpretation by pairing representative planner-free trajectories with
+navigation-quality diagnostics: the traces recover toward the goal after
+bypassing the obstacle, and the aggregate panel shows the corresponding
+gain in on-time arrival and reduction in brush/contact-heavy progress. Fig. 3: Representative planner-free trajectories and navigation-quality
+diagnostics. The figure links post-obstacle goal recovery in sample
+rollouts with the aggregate timing and brush/contact trends reported in
+Table . III-C Ablations on Route-Shaping Control, Odometry, and Safety Filtering The navigation ablation uses the open straight-wall task, where the
+distinction between obstacle avoidance and returning to the key goal
+is easiest to attribute. For the DR variant, target-shaping ablations
+compare waypoint-only and key-goal-only route targets against the
+dynamic route-shaping control in ( ).
+Table then quantifies the same variants for both
+dead-reckoning and odometry state, including delayed arrival, brush
+events, and the teacher-forced-to-planner-free transfer gap. The
+“no teacher forcing” row removes the default path in which this target
+is also injected into the frozen backbone during data collection. Both
+modes include a safety-filter stress test that disables the velocity
+envelope on the same checkpoint. Fig. provides the qualitative counterpart to these rows: key-goal-only
+control fails to learn a bypass around the occluded direct route,
+waypoint-only control tends to carry the teacher-route template into
+NoPP rollout, and dynamic route shaping supplies an obstacle-conditioned
+bypass-and-recover pattern. Fig. 4: Open-wall route-control ablation snapshots. Each panel compares
+the planner/waypoint teacher rollout (PP) with the corresponding
+planner-free local-planner rollout (NoPP), highlighting whether the
+learned policy reproduces bypassing and goal recovery. TABLE III: Open-wall route-control ablation over three seeds. T-rel. on-time uses the first-approach budget defined for Table ;
+T-rel. late is the complementary delayed-arrival rate among completed
+episodes, and PP–NoPP gap is the teacher-forced reference minus
+planner-free rollout completion. Boldface marks the best mean within
+each mode block. Mode Variant T-rel. on-time T-rel. late Any brush Hard coll. PP–NoPP gap DR Full 85.3 14.5 23.1 0.1 0.0 DR Waypoint-only control 72.6 22.3 33.0 0.3 4.9 DR Key-goal-only control 33.9 0.1 66.5 0.5 65.9 DR No teacher forcing 67.9 27.9 53.8 0.1 4.1 DR No safety filter 87.0 12.5 15.6 0.5 0.3 Odom Full 92.5 7.5 24.2 0.0 -0.1 Odom Waypoint-only control 89.8 10.2 19.1 0.0 -0.1 Odom Key-goal-only control 32.4 0.1 67.7 0.0 67.4 Odom No safety filter 95.7 4.2 16.8 0.1 -0.1 The ablation isolates three effects. Key-goal-only control fails in
+both modes: only about one third of runs arrive on time, and any-brush
+rates exceed 65%. Waypoint-only control avoids the direct-target
+failure mode, but its labels are anchored to teacher waypoints; once
+those waypoints are removed at NoPP inference, the student can reproduce
+a memorized detour template rather than condition avoidance on the
+currently observed obstacle. Dynamic route shaping is more efficient
+because it makes the waypoint bearing active only when local clearance
+indicates that bypassing is needed and otherwise returns supervision to
+the key goal. For DR, removing teacher-label-to-policy injection raises
+any brush from 23.1% to 53.8% and increases the PP–NoPP gap from
+0.0% to 4.1%, confirming that route shaping must affect the rollout
+state distribution. The no-safety-filter rows give the best simulated
+timing and brush rates, which indicates that the front local planner can
+already perform strong obstacle avoidance in MuJoCo. The safety filter
+is therefore retained mainly for real-robot deployment as a final
+braking layer: it may make simulated motion more conservative, but it
+provides the last line of defense against an unmodelled obstacle or
+sensing error. III-D Real-Robot Deployment Analysis We use the real-robot run as a deployment-feasibility check for the
+compact inference interface. The deployed stack pairs the
+raycast-conditioned locomotion backbone with the odometry-assisted front
+local planner; on hardware, odometry supports target recovery while
+local range observations remain in the locomotion loop. The check covers
+representative wall-occlusion layouts: frontal single-wall
+barriers of different lengths, an obliquely placed single-wall barrier,
+and a front–rear two-wall barrier configuration. In all cases, the
+commanded target is placed in front of the robot, so the policy must
+first select a feasible bypass direction and then recover toward the
+forward target after the occlusion is cleared. The recorded trials span
+commanded speeds from 0.5 to 1.0 m/s, and the available front-range
+trace records a closest observed clearance of 0.281 m. These deployment
+logs verify that the compact inference interface can issue executable
+bypass-and-recover steering commands on the Unitree G1 without
+continuous joystick guidance. Fig. shows
+one representative montage, trajectory, and sensor record; detailed
+videos are included with the open-source artifacts in the Appendix. (a) Real-robot avoidance montage. (b) Logged deployment trajectory. (c) Sensor. Fig. 5: Real-robot feasibility validation. After receiving a
+staged body-frame target and commanded speed, the planner-free steering
+policy approaches the obstacle, selects a bypass direction, and returns
+toward the target without continuous joystick steering. IV Conclusion We presented LP-NavOA, a limited-perception framework that integrates
+local navigation and obstacle avoidance for humanoid robots by placing a
+learned recurrent steering module above a frozen raycast-conditioned
+whole-body locomotion backbone. The central design is to use planners and waypoint teachers
+only during training, while deployment retains a compact interface:
+proprioception, local range sensing, body-frame goal direction, a
+command-side safety filter, and a heading command sent to the backbone.
+This separation lets the system inherit stable learned locomotion while
+adding memory-based decisions about when to bypass an obstacle and when
+to recover the sparse goal. The experiments show that this integrated steering layer changes the
+quality of navigation rather than merely the final timeout-based
+completion rate. On open-wall and indoor layouts, the distilled planner
+substantially improves T-rel. on-time arrival and reduces
+brush/contact-heavy progress compared with the backbone-only controller,
+while keeping hard collisions rare. The ablations further indicate that
+the circular heading-speed command is important for training the
+3.0 m/s backbone, and that dynamic route shaping plus teacher-active
+data collection are necessary for the planner-free student to reproduce
+obstacle-conditioned bypass and goal-recovery behavior without relying
+on explicit teacher waypoints at inference. The
+no-safety-filter results suggest that the learned local planner already
+handles most simulated obstacle avoidance; the command-side safety
+filter is retained primarily as a conservative deployment safeguard. The Unitree G1 deployment check confirms executable planner-free
+steering on hardware; repeated trials, moving obstacles, and richer
+indoor layouts remain natural extensions. [Implementation Details] Table summarizes the reproducibility
+configuration. Source code, configuration files, and supplementary
+real-robot videos are available at https://shenqiqishi.github.io/LP-NavOA/ . TABLE IV: Reproducibility configuration for the simulated training and
+evaluation setup. Item Setting Open-source base mjlab manager-based RL environment,
+task registry, and PPO training/evaluation scripts. Robot / simulator Unitree G1 humanoid in MuJoCo. Range sensing Three VL53L8CX-style front/left/right raycast groups,
+each 8 × 8 8\times 8 , 45 FOV, 4 m range, base-aligned, 12 Hz. Backbone network Actor/critic MLP ( 512,256,128 ) (512,256,128) with ELU
+activations and observation normalization; each raycast group uses a
+small convolutional encoder. PPO training Clip 0.2, entropy 0.01, GAE γ = 0.99 , λ = 0.95 \gamma=0.99,\lambda=0.95 , adaptive LR 10 10 , 5 epochs, 4
+mini-batches, 24 steps per environment. Goal-command ablation 8192 parallel environments, 1600 iterations per
+seed, three train seeds, velocity curriculum ending at 3.0 m/s. Navigation evaluation Seeds 0 , 1 , 2 0,1,2 , 500 episodes per seed, 256
+parallel environments; formal scope limited to open straight-wall and
+indoor layouts. Training hardware Intel Core i9-14900K CPU and NVIDIA GeForce RTX
+4090D GPU. Table lists the principal locomotion reward
+terms; navigation comparisons keep the backbone and safety filter fixed. TABLE V: Principal locomotion reward terms used to train the G1
+backbone. Term Weight Role track_ang_vel_cmd 1.3–1.8 yaw-rate command tracking track_goal_velocity 2.0 goal-directed speed tracking flat_orientation_l2 -5.0 upright torso regulation is_terminated -200 fall or illegal termination penalty joint_pos_limits -10 joint-limit avoidance action_rate_l2 -0.05 smooth joint targets foot_slip -0.25 foot-slip suppression body_collision -1.0 obstacle/body contact penalty feet_collision -0.5 horizontal foot-impact penalty in_place_turn_bonus +1.0 large heading-error turning References [1] L. P. Kaelbling, M. L. Littman, and A. R. Cassandra (1998) Planning and acting in partially observable stochastic domains . Artificial Intelligence 101 ( 1–2 ), pp. 99–134 . External Links: Document Cited by: §I , §II-C . [2] P. E. Hart, N. J. Nilsson, and B. Raphael (1968) A formal basis for the heuristic determination of minimum cost paths . IEEE Transactions on Systems Science and Cybernetics 4 ( 2 ), pp. 100–107 . External Links: Document Cited by: §I . [3] D. Fox, W. Burgard, and S. Thrun (1997) The dynamic window approach to collision avoidance . IEEE Robotics & Automation Magazine 4 ( 1 ), pp. 23–33 . External Links: Document Cited by: §I . [4] G. Kahn, P. Abbeel, and S. Levine (2021) BADGR: an autonomous self-supervised learning-based navigation system . IEEE Robotics and Automation Letters 6 ( 2 ), pp. 1312–1319 . External Links: Document Cited by: §I . [5] D. Shah, A. Sridhar, N. Dashora, K. Stachowicz, K. Black, N. Hirose, and S. Levine (2023) ViNT: a foundation model for visual navigation . In Proceedings of the 7th Conference on Robot Learning (CoRL) , pp. 711–733 . Cited by: §I . [6] A. Sridhar, D. Shah, C. Glossop, and S. Levine (2024) NoMaD: goal masked diffusion policies for navigation and exploration . In Proceedings of the IEEE International Conference on Robotics and Automation (ICRA) , pp. 63–70 . External Links: Document Cited by: §I . [7] F. Huang, H. Mou, and Q. Li (2026) TNavRL: cross-modal transformer for humanoid visual navigation . IEEE Robotics and Automation Letters 11 ( 5 ), pp. 5374–5381 . External Links: Document Cited by: §I . [8] J. Hwangbo, J. Lee, A. Dosovitskiy, D. Bellicoso, V. Tsounis, V. Koltun, and M. Hutter (2019) Learning agile and dynamic motor skills for legged robots . Science Robotics 4 ( 26 ), pp. eaau5872 . External Links: Document Cited by: §I . [9] J. Lee, J. Hwangbo, L. Wellhausen, V. Koltun, and M. Hutter (2020) Learning quadrupedal locomotion over challenging terrain . Science Robotics 5 ( 47 ), pp. eabc5986 . External Links: Document Cited by: §I . [10] T. Miki, J. Lee, J. Hwangbo, L. Wellhausen, V. Koltun, and M. Hutter (2022) Learning robust perceptive locomotion for quadrupedal robots in the wild . Science Robotics 7 ( 62 ), pp. eabk2822 . External Links: Document Cited by: §I . [11] A. Kumar, Z. Fu, D. Pathak, and J. Malik (2021) RMA: rapid motor adaptation for legged robots . In Proceedings of Robotics: Science and Systems (RSS) , External Links: Document Cited by: §I . [12] I. Radosavovic, T. Xiao, B. Zhang, T. Darrell, J. Malik, and K. Sreenath (2024) Real-world humanoid locomotion with reinforcement learning . Science Robotics 9 ( 89 ), pp. eadi9579 . External Links: Document Cited by: §I . [13] X. Cheng, Y. Ji, J. Chen, R. Yang, G. Yang, and X. Wang (2024) Expressive whole-body control for humanoid robots . In Proceedings of Robotics: Science and Systems (RSS) , External Links: Document Cited by: §I . [14] Z. Fu, Q. Zhao, Q. Wu, G. Wetzstein, and C. Finn (2024) HumanPlus: humanoid shadowing and imitation from humans . In Proceedings of Machine Learning Research , Vol. 270 , Munich, Germany , pp. 2828–2844 . Cited by: §I . [15] V. Makoviychuk, L. Wawrzyniak, Y. Guo, M. Lu, K. Storey, M. Macklin, D. Hoeller, N. Rudin, A. Allshire, A. Handa, and G. State (2021) Isaac Gym: high performance GPU-based physics simulation for robot learning . arXiv preprint arXiv:2108.10470 . External Links: Document Cited by: §I . [16] N. Rudin, D. Hoeller, P. Reist, and M. Hutter (2022) Learning to walk in minutes using massively parallel deep reinforcement learning . In Proceedings of the 5th Conference on Robot Learning (CoRL) , pp. 91–100 . Cited by: §I . [17] K. Zakka, Q. Liao, B. Yi, L. Le Lay, K. Sreenath, and P. Abbeel (2026) Mjlab: a lightweight framework for GPU-accelerated robot learning . arXiv preprint arXiv:2601.22074 . External Links: Document Cited by: §I . [18] T. He, C. Zhang, W. Xiao, G. He, C. Liu, and G. Shi (2024) Agile but safe: learning collision-free high-speed legged locomotion . In Proceedings of Robotics: Science and Systems (RSS) , External Links: Document Cited by: §I . [19] X. Cheng, K. Shi, A. Agarwal, and D. Pathak (2024) Extreme parkour with legged robots . In Proceedings of the IEEE International Conference on Robotics and Automation (ICRA) , pp. 11443–11450 . External Links: Document Cited by: §I . [20] G. B. Margolis, G. Yang, K. Paigwar, T. Chen, and P. Agrawal (2024) Rapid locomotion via reinforcement learning . The International Journal of Robotics Research 43 ( 4 ), pp. 572–587 . External Links: Document Cited by: §I . [21] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov (2017) Proximal policy optimization algorithms . arXiv preprint arXiv:1707.06347 . External Links: Document Cited by: §I . [22] M. Bain and C. Sammut (1995) A framework for behavioural cloning . In Machine Intelligence 15 , pp. 103–129 . Cited by: §I . [23] S. Ross, G. J. Gordon, and J. A. Bagnell (2011) A reduction of imitation learning and structured prediction to no-regret online learning . In Proceedings of the 14th International Conference on Artificial Intelligence and Statistics (AISTATS) , pp. 627–635 . Cited by: §I . [24] D. Chen, B. Zhou, V. Koltun, and P. Krähenbühl (2020) Learning by cheating . In Proceedings of the Conference on Robot Learning (CoRL) , pp. 66–75 . Cited by: §I . [25] Y. Bengio, J. Louradour, R. Collobert, and J. Weston (2009) Curriculum learning . In Proceedings of the 26th International Conference on Machine Learning (ICML) , pp. 41–48 . External Links: Document Cited by: §II-B1 . [26] K. Cho, B. van Merriënboer, C. Gulcehre, D. Bahdanau, F. Bougares, H. Schwenk, and Y. Bengio (2014) Learning phrase representations using RNN encoder-decoder for statistical machine translation . In Proceedings of the Conference on Empirical Methods in Natural Language Processing (EMNLP) , pp. 1724–1734 . External Links: Document Cited by: §II-C .

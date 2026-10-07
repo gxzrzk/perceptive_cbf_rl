@@ -1,0 +1,71 @@
+International Journal of Control, Automation, and Systems VV(X) (YYYY) 1-13
+http://dx.doi.org/10.1007/s12555-xxx-xxxx-x
+ISSN:1598-6446 eISSN:2005-4092
+http://www.springer.com/12555
+Safety-Critical Whole-Body Control for Humanoid Robots via Input-to-
+State Safe Control Barrier Functions
+Kwanwoo Lee, Sanghyuk Park, Gyeongjae Park, Myeong-Ju Kim, and Jaeheung Park*
+Abstract:Safety-critical control is essential for humanoid robots operating in complex human-centered environ-
+ments, where physical safety constraints such as joint limits, self-collision avoidance, obstacle avoidance, and
+workspace boundaries must be satisfied during real-robot operation. However, existing approaches remain limited
+because kinematic safety guarantees can be degraded in the presence of unknown disturbances, such as model un-
+certainties, trajectory-tracking errors, and external perturbations. This paper presents a hierarchical safety-critical
+whole-body control framework for humanoid robots based on input-to-state safe control barrier functions (ISSf-
+CBFs). The proposed architecture integrates a kinematic-level whole-body controller (KinWBC), an ISSf-CBF
+safety filter, and a dynamic-level whole-body controller (DynWBC). KinWBC generates nominal joint-motion ref-
+erences from prioritized tasks; the ISSf-CBF filter minimally modifies these references to satisfy kinematic safety
+constraints under bounded disturbances; and DynWBC tracks the filtered references while enforcing full-body dy-
+namic feasibility and contact stability. Safety constraints are imposed on a whole-body kinematic model, and the
+ISSf-CBF parameters are conservatively tuned so that the resulting kinematic safety guarantees can be transferred
+to full-order humanoid dynamics under unknown disturbances. Simulation and real-robot experiments demonstrate
+that the proposed framework improves safety margins under model mismatch and reliably enforces multiple safety
+constraints in real time during locomotion, teleoperation, and single-leg balancing with hand control.
+Project website:https://kwlee365.github.io/SafeWBC-Website/
+Keywords:Humanoid robots, Input-to-state safe control barrier functions, Safety-critical control, Whole-body con-
+trol.
+1. INTRODUCTION
+1.1.Motivation
+Humanoid robots have attracted increasing attention as
+versatile platforms capable of performing diverse tasks
+in complex, human-centered environments. To operate
+safely in such environments, humanoid robots must per-
+form tasks while simultaneously accounting for hardware-
+related constraints, including joint limits, self-collision
+avoidance, and workspace boundaries, as well as safety
+constraints arising from robot-environment interactions,
+such as collision avoidance with nearby objects. Unsafe
+control actions may lead to hazardous interactions with
+the robot itself or nearby objects; therefore, safety-critical
+control is a fundamental requirement for real-world de-
+ployment. Existing approaches commonly rely on safety
+filters to modify nominal motions so that the result-
+ing motions satisfy safety constraints. However, in prac-
+tice, robotic systems are often subject to unknown dis-
+turbances, such as model uncertainties, trajectory-tracking
+errors, and external perturbations; thus, safety guarantees
+established at the kinematic level may be degraded during
+real-robot operation.
+This work aims to address this limitation by consis-
+tently transferring kinematically safe motion references
+to the full-order dynamics level, thereby achieving both
+safety assurance and task performance even in the pres-
+ence of unknown disturbances.
+1.2.Related Work
+Two representative approaches for enforcing safety
+constraints in whole-body control are Artificial Poten-
+tial Fields (APFs) [2] and Control Barrier Functions
+(CBFs) [3]. APF-based methods enforce safety by gen-
+erating repulsive control actions from the gradient of an
+artificial potential defined near constraint boundaries. As
+the robot approaches a boundary, this potential can vary
+sharply, leading to large changes in its gradient. Because
+this gradient is mapped directly into the control input,
+APF-based controllers may exhibit oscillatory behavior
+Kwanwoo Lee, Sanghyuk Park, Gyeongjae Park, and Jaeheung Park are with the Department of Intelligence and Information, Seoul National
+University, Republic of Korea (e-mails: {kwlee365, sang0823, rudwo1301, park73}@snu.ac.kr). Myeong-Ju Kim is with the Robotics Lab,
+Hyundai Motor Group, Republic of Korea (e-mail: myeong-ju@snu.ac.kr). Jaeheung Park is also with the Advanced Institute of Convergence
+Technology, Republic of Korea, and with ASRI, AIIS, Seoul National University, Republic of Korea. He is the corresponding author of this
+paper (e-mail: park73@snu.ac.kr).
+* Corresponding author.
+©ICROS, KIEE and Springer 2025
+arXiv:2605.25546v1  [cs.RO]  25 May 2026

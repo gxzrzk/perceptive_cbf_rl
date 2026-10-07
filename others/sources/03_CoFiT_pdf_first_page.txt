@@ -1,0 +1,94 @@
+Filter-Aware Fine-Tuning for Safe Humanoid Whole-Body Tracking
+Pranit Mohnot 1, Christian Helten 2, Daniele Gammelli 1,3, Marco Pavone 1,4
+Abstract— Safe whole-body motion is essential for deploying
+humanoid robots in unstructured environments. Modern hu-
+manoid control commonly separates reference specification from
+execution, with a planner, teleoperator, or motion generator
+providing a reference that a reinforcement-learning policy tracks
+through dynamically feasible whole-body control. Runtime
+safety filters, such as control barrier functions (CBFs), offer a
+promising approach for enforcing newly introduced constraints
+via interventions on the tracker’s outputs. We show, however,
+that treating the tracking policy and safety filter independently
+induces fundamental mismatches, as filtering alters both the
+executed actions and the induced state distribution. We study this
+policy–filter interface through case studies that isolate dynamics,
+objective, and information mismatches, highlight their root
+causes, and use these insights to developCoFiT( Constrained
+Filter-aware Tuning), a filter-aware fine-tuning method for
+pretrained trackers. Across diverse constraint scenes, CoFiT
+reduces violation time relative to filter-only training by 91% on
+TWIST2 and 21% on SONIC, while requiring smaller safety
+filter corrections. On Unitree G1 hardware, CoFiT reduces viola-
+tion time by 83% for TWIST2 and completes every trial without
+operator intervention, whereas 50% of baseline trials require an
+operator stop. Together, these results provide actionable insights
+into policy–filter interactions and establish design principles for
+integrating learned trackers with runtime safety filters.
+I. INTRODUCTION
+Humanoid robots are rapidly moving toward deployment
+in homes, warehouses, hospitals, and other human-centered
+environments, where safe operation requires coordinating the
+full body under task- and environment-dependent constraints.
+Whole-body control increasingly relies on learning-based
+motion tracking, in which a motion source, such as a
+teleoperator, recorded demonstration, or kinematic motion
+generator, provides a reference trajectory that a reinforcement-
+learning (RL) tracking policy translates into joint commands
+consistent with the robot’s dynamics [ 1], [2], [3]. While this
+control architecture enables expressive whole-body motion,
+ensuring its safety in real-world environments remains
+challenging. A reference trajectory specifies the intended
+motion but does not, in general, encode every constraint
+of the environment in which that motion will be executed.
+Obstacles, workspace limits, and other safety requirements
+may be absent from the motion source, emerge only at
+runtime, or change after the tracking policy has been trained.
+Two broad strategies have emerged for enforcing safety
+in whole-body control. The first internalizes safety within
+the learned tracking policy, for example by training with
+penalties on constraint violations or barrier-based rewards
+that encourage avoidance of unsafe states [ 4]. This approach
+tightly couples safety to training, as accommodating a new
+1Stanford University, 2Technical University of Munich, 3Italian Institute
+of Artificial Intelligence (AI4I), 4NVIDIA
+FIG. 1: Whole-body tracking with an active safety filter (avoid the ball).
+The continued-training baseline (left) and CoFiT (right) track the same
+reaching reference. Five of ten baseline trials required an operator stop;
+CoFiT completed all ten. Overlaid poses are successive stills from one trial.
+constraint generally requires retraining, and the resulting
+policy does not by itself provide a runtime guarantee. The
+second strategy places a safety filter downstream of the
+tracking policy to correct its actions at runtime [ 5], [6]. This
+modular approach leaves the nominal policy unchanged and
+can enforce constraints that were not present during training.
+Control barrier functions (CBFs) are widely used to
+construct such safety filters. A CBF expresses a constraint as
+a condition on the control input, and the filter modifies the
+tracker’s proposed command only as much as needed to satisfy
+that condition [ 5]. Whole-body formulations can additionally
+account for contact constraints and task priorities when
+selecting the correction [ 7]. This modularity is appealing, as
+the tracker can be treated as a fixed nominal controller, while
+the filter supplies policy-agnostic corrections, seemingly
+allowing the two components to be designed independently.
+In this work, we show that treating the tracking policy and
+safety filter independently induces fundamental mismatches in
+closed-loop execution (Fig. 1). The safety filter changes the
+tracker’s outputs even though the tracker was trained under an
+unfiltered closed loop. As a result, both the actions executed
+by the robot and the states induced by those actions differ from
+those encountered during training. Through systematic case
+studies, we identify three key sources of incompatibility at
+the policy–filter interface:dynamics mismatch,objective mis-
+match, andinformation mismatch. Guided by these findings
+and their underlying causes, we developCoFiT( Constrained
+Filter-aware Tuning), a method that adapts a pretrained tracker
+to an existing CBF filter. CoFiT fine-tunes the tracker with
+filters active and supplies it with compact constraint infor-
+mation, temporal feedback, and constraint-aware penalties.
+This allows the tracker to anticipate filter interventions and
+respond with coordinated, constraint-compatible motion while
+retaining its original tracking objective where possible.
+Our contributions are as follows:
+arXiv:2610.02341v1  [cs.RO]  1 Oct 2026

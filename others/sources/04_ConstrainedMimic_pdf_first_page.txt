@@ -1,0 +1,45 @@
+Constrained Whole-Body T racking for Humanoid Robots
+Daniel Morton1, Pranit Mohnot 1, Marco Pavone1,2
+1Stanford University,2NVIDIA Research
+Abstract:Recent advances in reinforcement learning (RL) have demonstrated
+impressive whole-body agility for humanoid robots, yet ensuring safety and satisfying
+constraints – particularly those specified after training – remains a challenge. T owards
+this goal, we present ConstrainedMimic, a control framework that leverages whole-body
+kinematics and dynamics for real-time constraint enforcement within RL tracking
+policies. By integrating principles from operational space control and control barrier
+functions (CBFs), we enable the satisfaction of arbitrary runtime constraints on
+both the kinematic reference motion and the underlying dynamics. In whole-body
+motion-tracking and teleoperation experiments on a (simulated) Unitree G1 with a
+learned policy, we demonstrate collision avoidance (both with the robot body and
+external obstacles), joint limits, and center of mass stability constraints. By remaining
+consistent with the current contact mode and tracking objectives, we minimally
+restrict the capabilities of the policy when constraints are active. Our method is fully
+differentiable, runs on CPU, GPU, and TPU, and can be deployed at up to 300-500
+Hz. All software will be freely available upon publication.
+Keywords:Whole-body control, Safety, Humanoids
+1 Introduction
+Modern humanoid robots are becoming increasingly capable of whole-body teleoperation, locomotion, and
+manipulation, with reinforcement learning (RL) policies that achieve striking agility on hardware [1, 2, 3].
+As these systems are deployed, especially when they must interact with novel scenes, other equipment,
+or humans, a framework to enforce previously unseen safety constraints becomes critical. An ideal
+runtime safety framework would be minimally invasive, policy-agnostic, easily configurable for arbitrary
+deployment-time constraints, and capable of real-time speeds (≥50Hz).
+Recent work has led to significant advances in humanoid whole-body control, demonstrating capable
+tracking across teleoperation [1, 4, 5, 6], multi-task control [2, 7], and expressive behaviors at scale [3].
+Despite this diversity, these works share a common architectural paradigm: reference kinematic trajectories
+from retargeted MoCap, VR teleoperation, or high-level planners are passed to an RL motion tracking
+policy, which takes these (often dynamically infeasible) references and outputs joint commands that
+produce closely-tracking dynamically-feasible trajectories on the real robot. This separation provides two
+natural points at which safety can be considered without modifying the tracking policy: the input kinematic
+reference, and the output dynamics.
+With these desiderata and problem structure in mind,control barrier functions(CBFs) may be a
+natural choice to embed safety into humanoid locomotion and manipulation. Commonly used in
+optimization-based control, CBFs enforce safety via forward-invariance of a set defined by a differentiable
+barrier functionh(z), and are typically applied as a safety filter on top of a nominal, unsafe controller [8].
+While CBFs for humanoids have been explored in prior work [9, 10, 11, 12, 13, 14], safety for whole-body
+control remains underexplored, particularly in the context of learning-based motion tracking policies.
+1.1 Related W ork
+Whole-Body Control of Humanoid Robots.For years, the dominant approach to whole-body control
+was purely model-based, including operational-space control [15, 16, 17] and broader optimization-based
+Correspondence to: dmorton@stanford.edu
+arXiv:2606.00374v1  [cs.RO]  29 May 2026

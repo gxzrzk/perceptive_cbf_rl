@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LP-NavOA: Integrated Local Navigation and Obstacle Avoidance for Humanoid Robots under Limited Perception</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main>
+      <header class="hero">
+        <p class="venue">Project page for LP-NavOA</p>
+        <h1>
+          <span>LP-NavOA: Integrated Local Navigation and Obstacle Avoidance</span>
+          <span>for Humanoid Robots under Limited Perception</span>
+        </h1>
+        <nav class="resource-links" aria-label="Project resources">
+          <a class="resource-link" href="https://arxiv.org/abs/2606.23249"
+             target="_blank" rel="noopener">
+            <span>Paper</span>
+            <small>arXiv:2606.23249</small>
+          </a>
+          <a class="resource-link" href="https://github.com/shenqiqishi/LP-NavOA-code"
+             target="_blank" rel="noopener">
+            <span>Code</span>
+            <small>GitHub repository</small>
+          </a>
+        </nav>
+      </header>
+
+      <section class="experiment-summary" aria-label="Experiment protocol">
+        <p>
+          In each trial, the coordinate frame is recalibrated using the robot's initial pose before execution. The target is then specified at a fixed distance directly in front of the robot in this local frame, and the run is terminated once the robot reaches the target x-position rather than requiring convergence to the target y-position. This protocol is intended to evaluate whether the policy can produce timely forward progress while accurately avoiding obstacles and recovering toward the task goal after bypassing. Indoor experiment videos are not uploaded at this stage because laboratory management rules require some internal content to be visually masked, while large-scale masking of the laboratory environment is impractical; the corresponding indoor results are instead fully illustrated by the figures in the paper.
+        </p>
+      </section>
+
+      <section class="demo-section" aria-labelledby="single-obstacle-heading">
+        <h2 id="single-obstacle-heading">Single frontal obstacle</h2>
+        <div class="video-row three-up">
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Single frontal panel at 0.5 m/s</h3>
+              <p>Evaluation of the single-obstacle setting at a commanded speed of 0.5 m/s.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/front-blocker-0p5ms.mp4"></video>
+          </article>
+
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Single frontal panel at 0.8 m/s</h3>
+              <p>Evaluation of the same single-obstacle setting at a commanded speed of 0.8 m/s.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/one-board-0p8ms.mp4"></video>
+          </article>
+
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Single frontal panel at 0.9 m/s</h3>
+              <p>Evaluation of the same single-obstacle setting at a commanded speed of 0.9 m/s.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/one-board-0p9ms.mp4"></video>
+          </article>
+        </div>
+      </section>
+
+      <section class="demo-section" aria-labelledby="multi-obstacle-heading">
+        <h2 id="multi-obstacle-heading">Multi-panel obstacle layouts</h2>
+        <div class="video-row two-up">
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Irregular three-panel cluster at 0.5 m/s</h3>
+              <p>Navigation through a non-uniform obstacle arrangement with partial blockage.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/three-irregular-boards-0p5ms.mp4"></video>
+          </article>
+
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Two frontal panels at 0.5 m/s</h3>
+              <p>Bypass behavior with two obstacles placed in front of the initial heading.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/two-boards-0p5ms.mp4"></video>
+          </article>
+        </div>
+      </section>
+
+      <section class="demo-section" aria-labelledby="slanted-obstacle-heading">
+        <h2 id="slanted-obstacle-heading">Slanted three-panel obstacle layout</h2>
+        <div class="video-row two-up">
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Slanted three-panel layout, front view</h3>
+              <p>Forward-facing view of the angled obstacle arrangement at 0.5 m/s.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/three-slanted-boards-rear-0p5ms.mp4"></video>
+          </article>
+
+          <article class="demo-card">
+            <div class="card-copy">
+              <h3>Slanted three-panel layout, side view</h3>
+              <p>Side-view recording of the same angled obstacle scenario at 0.5 m/s.</p>
+            </div>
+            <video controls preload="metadata" playsinline src="media/three-slanted-boards-side-0p5ms.mp4"></video>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

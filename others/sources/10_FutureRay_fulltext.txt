@@ -1,0 +1,230 @@
+FutureRay: Control-Aligned Future Range for Agile Quadruped Navigation Tianhao Zang Affiliation: College of Information Science and Technology, Eastern Institute of Technology, Ningbo, P. R. China. Affiliation: University of Maryland, USA. Shanze Wang Affiliation: The Hong Kong Polytechnic University, Hong Kong. Ziqian Wang Affiliation: School of Computer Science, University of Nottingham, UK. Liyou Luo Affiliation: Xi’an Jiaotong-Liverpool University, China. Zihan Liu Affiliation: School of Computer Science, University of Nottingham, UK. Xingjian Xie Affiliation: School of Computer Science, University of Nottingham, UK. Wei Zhang † † thanks: * Corresponding author. Email: zhw@eitech.edu.cn . Affiliation: College of Information Science and Technology, Eastern Institute of Technology, Ningbo, P. R. China. Abstract Moving obstacles can block a previously clear route while a quadruped robot executes a motion command. We investigate whether predicting changing clearance improves navigation when motion selection accounts for the robot footprint and the time needed to react and brake. We present FutureRay, which predicts ranges across viewing directions and future times, together with encounter risk, from depth-derived range history and observable robot motion. Training emphasizes near-term clearance and penalizes errors that overstate available space. A local planner queries the same forecast for candidate headings and combines it with current observations to check clearance around the robot footprint. Model-based reaction–braking limits guide speed selection, and the resulting velocity commands are passed to a fixed locomotion policy. In paired evaluations on 60 static and dynamic simulation scenes, FutureRay achieves 93.3% completion, compared with 75.0% for current-range persistence and 80.0% for Cartesian Kalman rollout, with perception, planning, and locomotion held fixed. FutureRay also records fewer collisions than both baselines. Qualitative trials on a physical quadruped show avoidance initiated while an obstacle is approaching the route, followed by renewed goal progress. These results show that joint range and encounter-risk prediction can improve obstacle avoidance without retraining the locomotion policy. I Introduction Learned locomotion enables quadrupeds to traverse uneven terrain [ 1 , 2 ] , while perceptive navigation supports movement through complex obstacle courses [ 3 ] . Moving obstacles introduce an additional challenge: a currently clear passage can become occupied as the robot moves. The robot needs space to accommodate its body and time to react and brake, so waiting until an obstacle is close can leave insufficient room to avoid it. Heading and speed selection should therefore consider how available clearance will change, together with the robot footprint and stopping distance. The crossing scenario in Fig. 1 illustrates this need for anticipation. Existing work estimates directional ranges from depth images for collision avoidance [ 4 ] . Other methods incorporate LiDAR history into locomotion or navigation [ 5 , 6 ] ; auxiliary prediction of the next hidden state can also shape recurrent navigation representations during training [ 7 ] . Prediction also enters decisions directly: VOP-Nav predicts safe-velocity regions from LiDAR history for a navigation policy [ 8 ] , while Ginerica et al. forecast depth-derived occupancy grids and extract obstacle information for local planning [ 9 ] . We instead predict ranges across viewing directions and future times. A local planner queries these forecasts to check space for the robot footprint along candidate headings and compute directional speed limits. A separate risk score predicts whether an obstacle will be nearby over the prediction horizon and provides an additional input for candidate action evaluation. We ask whether these learned range and risk predictions improve obstacle avoidance and goal reaching compared with repeating current ranges or extrapolating observed geometry with a Cartesian Kalman filter, with perception, planning, and locomotion held fixed. Fig. 1: Future sensor space for anticipatory avoidance. The schematics
+contrast a response to current clearance with a detour initiated from a
+forecast of an approaching crossing. The physical quadruped robot sequence illustrates
+onboard avoidance and subsequent progress toward the goal. For this planner, the direction of a predicted range indicates where clearance may change, while its forecast time distinguishes imminent changes from later ones. Metric ranges support footprint checks and speed selection based on modeled reaction and braking distances, following classical reasoning about collision avoidance and stopping feasibility [ 10 , 11 ] . Prediction errors can alter these decisions: placing a nearby obstacle too far away overstates the available space and can favor overly aggressive motion. REASAN already penalizes overestimation more heavily than underestimation when learning current range estimates [ 6 ] . For future ranges, near-term errors can affect the next motion decision. We therefore give greater training weight to near-term range errors and errors involving nearby obstacles, with larger penalties for overestimation. This follows prior work that evaluates prediction errors by their effects on downstream decisions [ 12 , 13 ] . We present FutureRay, which uses depth-derived range history and observable robot motion to predict future range observations in the forward field of view, together with short-horizon encounter risk. A local planner queries the same forecast for candidate headings and combines it with current observations to check space around the robot footprint. It separately queries radial ranges around each heading and uses a reaction–braking model to construct candidate velocities. These candidates are evaluated using goal progress, directional clearance, and encounter risk. Magnitude and rate limits are applied before the selected commands reach the fixed quadruped locomotion policy (Fig. 2 ). To answer the research question, we compare FutureRay with current-range persistence and Cartesian Kalman rollout in paired simulation scenes, holding perception, planning, and locomotion fixed. Both baselines derive risk from their range fields, so the comparison evaluates the combined range and risk predictions. Across static and dynamic scenes, FutureRay improves completion and mean minimum clearance while reducing collisions relative to both baselines (Table I ). Compared with Kalman, FutureRay completes more routes in ordinary dynamic scenes and the same number in high-dynamic scenes (Fig. 5 (b)). FutureRay also achieves the highest overall completion in a comparison with six author-released navigation methods under a common quadruped transfer protocol (Table II ). Qualitative hardware trials further show a physical quadruped initiating avoidance while an obstacle approaches the route and then resuming progress toward the goal (Fig. 1 ). Our contributions are: • We introduce joint prediction of future directional ranges and encounter risk for local planning, with larger training penalties for range overestimation. • We link shared forecasts to a fixed quadruped locomotion policy through footprint corridor checks and speed selection under a reaction–braking model. • We demonstrate improved navigation in 60 paired simulation scenes, reaching 93.3% completion (Table I ), and complement these results with comparisons of released navigation models and qualitative hardware trials. II Related Work II-A Perceptive and Temporal Navigation Perceptive locomotion connects onboard geometry to terrain negotiation and
+collision avoidance [ 2 , 14 , 3 , 4 ] .
+ABS provides a depth-to-ray interface for agile and recovery policies,
+while Omni-Perception and REASAN incorporate temporal LiDAR information
+within locomotion or modular navigation systems [ 5 , 6 ] .
+Temporal encoders, predictive BEV features, and recurrent world models
+represent environmental change for navigation [ 15 , 16 , 17 ] .
+Predictive training with latent imagination supervises a recurrent navigation
+state through an auxiliary branch used only during
+training [ 7 ] . These approaches establish the value of
+observation history and predictive features; their representation determines
+how anticipation enters control. FutureRay places this connection in an
+explicit metric range forecast available at inference, where a body-velocity
+planner can query it with geometric constraints. II-B Predictive Geometry and Collision Avoidance Future occupancy and LiDAR prediction represent evolving geometry without
+requiring object identities [ 18 , 19 ] ; sensor-space
+safety envelopes likewise describe nearby free-space
+boundaries [ 20 ] . Closest to our geometric interface,
+Ginerica et al. predict depth-derived occupancy grids, cluster the predicted
+geometry, and supply obstacle points to a modified Dynamic Window
+planner [ 9 ] . FutureRay retains angular metric ranges
+as the planner’s query representation, avoiding occupancy reconstruction
+and clustering in its online geometric interface. The Dynamic Window Approach and Velocity Obstacles connect geometric
+evidence to stopping feasibility and future collision-inducing
+velocities [ 10 , 11 ] . Learned motion forecasts can also
+enter model-predictive-control constraints [ 21 ] .
+VOP-Nav learns a Velocity-Obstacle-derived safe-velocity region directly
+from LiDAR history [ 8 ] , exposing the prediction in velocity
+space. FutureRay, a control-aligned future-range interface for quadruped
+navigation, preserves bearing and forecast time in a shared nominal range
+field. This representation lets the planner query footprint corridors and
+directional speed limits while using forecast order to evaluate proximity
+and clearance trends. II-C Control-Aware Prediction Task-informed prediction and control-aware objectives evaluate prediction
+errors through their consequences for downstream
+decisions [ 12 , 13 ] . Asymmetric prediction
+losses also appear in depth-derived occupancy forecasting for
+navigation [ 9 ] . These works motivate tailoring the
+objective to the information consumed by control. Perceptive forward-dynamics
+models address the complementary quantity of robot response and failure
+under candidate actions [ 22 ] . FutureRay applies control-aware
+supervision to angular range through near-term and nearby-surface weighting,
+clearance-overestimation penalties, regional minima, and proximity-trigger
+agreement. Its shared-planner evaluation tests the resulting learned
+range–risk packet as the interface between future sensor observations and
+physical velocity selection. III Preliminaries III-A Problem Formulation At time t t , we map forward depth D t D_{t} , observable robot state e t e_{t} , and planar goal g g to the body-frame velocity command u t = [ v x , v y , ω ] u_{t}=[v_{x},v_{y},\omega] . We select motion toward the goal while accounting for the robot footprint and moving obstacles. The locomotion policy and its joint-action interface remain fixed. We represent observed geometry by a horizontal range field R t ∈ ( 0 , R max ] J R_{t}\in(0,R_{\max}]^{J} at ordered bearings { ϕ j } j = 1 J \{\phi_{j}\}_{j=1}^{J} . Current-range persistence repeats this field over the planning horizon. FutureRay instead predicts future ranges and encounter risk: P t = ( R ^ t + 1 : t + K , q t ) , R ^ ∈ ( 0 , 6 ] K × J , q t ∈ [ 0 , 1 ] , P_{t}=\bigl(\widehat{R}_{t+1:t+K},q_{t}\bigr),\qquad\widehat{R}\in(0,6]^{K\times J},\quad q_{t}\in[0,1], (1) where R max = 6 R_{\max}=6 m, K = 10 K=10 , J = 90 J=90 , and successive forecasts are 0.05 s apart. The scalar q t q_{t} estimates whether an obstacle will be nearby within the horizon; the training label is specified below. After validity checks, the planner uses these predictions with current depth-derived ranges, the goal, and observable robot state. Simulator obstacle poses, identities, velocities, contacts, and future states are excluded from online inputs. Geometry and contact data are used only for offline supervision or evaluation. IV FutureRay Approach IV-A Control-Aligned Future Sensor Space Fig. 2 summarizes FutureRay. Learned perception converts forward depth into directional ranges. A recurrent predictor combines recent range observations with robot motion to estimate future ranges and encounter risk. The planner uses these predictions, current ranges, and the goal to evaluate candidate motions, applies physical command limits, and sends the body-frame velocity to the fixed locomotion policy. Fig. 2: FutureRay training and control. Depth-derived range history and
+observable ego motion produce a future-range field and encounter risk.
+Current geometry, physical constraints, and temporal utility determine
+candidate body velocities. Command-history regularization and rate limits
+precede the fixed quadruped locomotion policy. Supervision is confined to the
+offline training path. Here, r t 90 = R t r_{t}^{90}=R_{t} , and R ^ t \widehat{R}_{t} denotes
+the future-range field issued at time t t . The camera provides 160 × 90 160\times 90 optical-axis depth images with a 102 ∘ 102^{\circ} field of view, clipped to 0.1–6.0 m. A ResNet-18 [ 23 ] processes the clipped log 2 ⁡ D t \log_{2}D_{t} images and predicts two log-range outputs: 11 rays and 90 rays over [ − 45 ∘ , 45 ∘ ] [-45^{\circ},45^{\circ}] . Both outputs are supervised by offline geometry: ℒ per = MSE ⁡ ( y ^ 11 , log 2 ⁡ y 11 ) + MSE ⁡ ( y ^ 90 , log 2 ⁡ y 90 ) . \mathcal{L}_{\rm per}=\operatorname{MSE}(\hat{y}^{11},\log_{2}y^{11})+\operatorname{MSE}(\hat{y}^{90},\log_{2}y^{90}). (2) Here, y 11 y^{11} and y 90 y^{90} are geometric range targets, and y ^ 11 \hat{y}^{11} and y ^ 90 \hat{y}^{90} are predicted log ranges. The 11-ray head preserves the perception interface of ABS [ 4 ] , while forecasting and planning use the 90-ray head. The predictor takes five range fields sampled at 20 Hz and six observable context features: a t = [ v ¯ x , v ¯ y , sin ⁡ ψ , cos ⁡ ψ , τ min / 10.5 , r ˙ max ] , a_{t}=[\bar{v}_{x},\bar{v}_{y},\sin\psi,\cos\psi,\tau_{\min}/10.5,\dot{r}_{\max}], (3) Here, v ¯ x , v ¯ y \bar{v}_{x},\bar{v}_{y} are body velocities divided by 1 m/s and clipped to [ − 3 , 3 ] [-3,3] , and ψ \psi is robot yaw. Consecutive range fields provide per-bearing closing rates clipped to 0–6 m/s and range-to-closing-rate ratios clipped at 10.5 s. Their maximum and minimum give r ˙ max \dot{r}_{\max} and the ray-based time-to-contact estimate τ min \tau_{\min} , respectively; a nonclosing ray is assigned 10.5 s. A → → 128 90\!\rightarrow\!256\!\rightarrow\!128 encoder with layer normalization and GELU activation processes each range field. A GRU [ 24 ] with 128 hidden units encodes the five-frame sequence. A context MLP combines its output with a t a_{t} , and two heads produce 900 future ranges and a sigmoid encounter score. The predictor contains 504,709 trainable parameters. Training targets are planar radial ranges measured from the robot root at later logged positions, with bearings relative to the yaw at each position. FutureRay thus predicts future sensor observations from range history and observable robot motion. The same nominal forecast is used to evaluate all candidate headings; it is not recomputed for the future position and yaw associated with each candidate. We weight prediction errors according to their relevance to avoidance, emphasizing near-term forecasts, center bearings, and nearby obstacles. For smooth- L 1 L_{1} penalty h 0.1 h_{0.1} , the ray weights are w k ​ j ∝ \displaystyle w_{kj}\propto{} 3 [ k ≤ 3 ] 2 [ j ∈ 𝒞 ] ( 1 + 5 [ R k ​ j < 0.85 ] ) \displaystyle 3^{[k\leq 3]}2^{[j\in\mathcal{C}]}(1+5[R_{kj}<0.85]) (4) × ( 1 + 2 ​ [ R k ​ j ​ < 1.2 , R ^ k ​ j > ​ R k ​ j ] ) , \displaystyle\times(1+2[R_{kj}<1.2,\widehat{R}_{kj}>R_{kj}]), where R k ​ j R_{kj} is the target at forecast step k k and bearing j j , 𝒞 = { 41 , … , 50 } \mathcal{C}=\{41,\ldots,50\} contains the center bearings, and brackets denote an indicator. We normalize the weights to unit mean over all forecast entries in the minibatch. The ray loss ℒ ray \mathcal{L}_{\rm ray} averages w k ​ j ​ h 0.1 ​ ( R ^ k ​ j − R k ​ j ) w_{kj}h_{0.1}(\widehat{R}_{kj}-R_{kj}) over these entries and is combined with clearance, proximity-trigger, and risk losses: ℒ pred = ℒ ray + 0.5 ​ ℒ clr + 0.5 ​ ℒ trig + 0.25 ​ ℒ risk . \mathcal{L}_{\rm pred}=\mathcal{L}_{\rm ray}+0.5\mathcal{L}_{\rm clr}+0.5\mathcal{L}_{\rm trig}+0.25\mathcal{L}_{\rm risk}. (5) The clearance loss compares predicted and target soft minimum ranges over the horizon in the full, left, center, and right regions, with a larger penalty for overestimation. The trigger loss uses binary cross-entropy between a smooth proximity test on predicted regional minima and an analytic target label. This label is positive when the target center minimum is below 0.8 m or the overall minimum is at most 0.538 m, both taken over the horizon. The separate risk head is trained by binary cross-entropy to predict whether any future geometry range falls below 1.65 m. IV-B Querying Future Sensor Space for Control The planner evaluates eleven translation headings from − 45 ∘ -45^{\circ} to 45 ∘ 45^{\circ} in the current body frame; yaw rate follows a separate goal-alignment rule. It uses the learned forecast and risk when the minimum observed range is below 5 m. Otherwise, current-range persistence supplies the planning field. Each forecast slice is queried in a common body-centered polar frame, using the shared forecast described above. For candidate heading θ m \theta_{m} , each predicted range has longitudinal and lateral coordinates ℓ m ​ k ​ j = R ^ k ​ j ​ cos ⁡ ( ϕ j − θ m ) , b m ​ k ​ j = R ^ k ​ j ​ sin ⁡ ( ϕ j − θ m ) . \ell_{mkj}=\widehat{R}_{kj}\cos(\phi_{j}-\theta_{m}),\qquad b_{mkj}=\widehat{R}_{kj}\sin(\phi_{j}-\theta_{m}). (6) The straight corridor along that heading contains samples satisfying ℓ m ​ k ​ j > 0 \ell_{mkj}>0 and | b m ​ k ​ j | ≤ r robot + m c |b_{mkj}|\leq r_{\rm robot}+m_{c} , where r robot = 0.35 r_{\rm robot}=0.35 m and m c = 0.12 m_{c}=0.12 m account for the robot radius and clearance margin. The minimum longitudinal distance among these samples defines the corridor clearance for each heading and forecast step; an empty corridor returns R max R_{\max} . At the first step, the planner takes the minimum of this value and the corresponding current-geometry clearance. A clearance of at most 0.58 m in at least two of the first three steps indicates predicted proximity. Current footprint proximity is checked separately. Speed selection uses radial distance rather than the longitudinal corridor clearance. Let c m ​ k c_{mk} be the minimum range in a narrow angular window around heading m m at forecast step k k . At the first step, the planner takes its minimum with the corresponding current range. With usable distance d m ​ k = max ⁡ ( c m ​ k − r robot − m c , 0 ) d_{mk}=\max(c_{mk}-r_{\rm robot}-m_{c},0) , reaction time t r = 0.18 t_{r}=0.18 s, and braking acceleration a b = 2.0 a_{b}=2.0 m/s 2 , the speed bound is v safe , m ​ k = − a b ​ t r + ( a b ​ t r ) 2 + 2 ​ a b ​ d m ​ k . v_{{\rm safe},mk}=-a_{b}t_{r}+\sqrt{(a_{b}t_{r})^{2}+2a_{b}d_{mk}}. (7) This model assumes a reaction interval followed by constant braking. The lower quartile of the bounds over the horizon sets the initial speed along each candidate heading, before lateral yielding and component and rate limits are applied. Predicted proximity can reduce forward motion and favor lateral yielding. Except during goal realignment, a current-proximity violation in the selected corridor requests braking. Nominal forward and lateral limits are 1.9 and 0.8 m/s; risk-dependent speed profiles and command rate limits further shape the output. Candidate utility combines goal progress, lower-quartile directional clearance, the learned risk score weighted toward forward headings, and current obstacle-side pressure. It also includes a time-discounted proximity term, O m = ∑ k α k exp ( − c m ​ k / 0.75 ) O_{m}=\sum_{k}\alpha_{k}\exp(-c_{mk}/0.75) , where α k ∝ exp ( − k Δ t / 0.35 ) \alpha_{k}\propto\exp(-k\Delta t/0.35) and ∑ k = 1 K α k = 1 \sum_{k=1}^{K}\alpha_{k}=1 . Here, Δ ​ t = 0.05 \Delta t=0.05 s; 0.75 m and 0.35 s are the range and time scales. For each heading m m , the clearance trend is the mean of c m ​ k c_{mk} over the last three forecast steps minus its mean over the first three, divided by R max R_{\max} . Together, the early-proximity check, temporal discounting, and clearance trend distinguish imminent obstruction from later changes. Penalties on heading and command changes use the previous command to discourage abrupt switches between replans. Goal realignment steers the robot back toward a target outside the [ − 45 ∘ , 45 ∘ ] [-45^{\circ},45^{\circ}] range field. Forward acceleration and deceleration, lateral acceleration, and yaw acceleration are limited before the command enters the fixed locomotion-policy observation. As new observations enter the 20-Hz history, the planner updates command selection. The stateful locomotion policy produces 12 joint actions, ordered by leg, at 50 Hz. V Simulation Setup and Training All simulation studies use the quadruped asset and a fixed stateful locomotion policy with 45-dimensional observations. Physics runs at 200 Hz, joint control at 50 Hz, and depth-history sampling at 20 Hz. The three primary prediction methods share locomotion weights, depth-to-range perception, and the candidate planner. Experiments use Isaac Sim 6.0.1, Isaac Lab 6.1.17, and an NVIDIA RTX A5000. An auxiliary Cartesian filter checks the validity of FutureRay predictions but does not provide ranges for candidate motions. The training set contains 81,400 samples from 814 quadruped navigation scenes: 50.9% static, 29.5% ordinary dynamic, and 19.7% high-dynamic. A disjoint validation set contains 10,200 samples from 102 scenes with the same approximate 51:29:20 composition. Each sample comprises five 90-ray observations, six context features, ten future range fields evaluated at later logged poses, and an encounter label. The curriculum starts with static layouts, then uses the fixed scene mixture. Static scenes include sparse obstacle layouts and staggered slalom corridors. Dynamic crossings are timed to coincide with nominal robot arrival at 1.8 m/s. High-dynamic scenes increase crossing speed and obstacle density; obstacle motion is not designed to pursue the robot or force collisions. These scenes cover both stationary clearance and geometry that changes within the prediction horizon. Both learned modules are trained with Adam, using a learning rate of 10 − 3 10^{-3} and batch size 128 for perception, and 2 × 10 − 4 2\times 10^{-4} and 256 for FutureRay. Predictor training runs for up to 40 epochs with early-stopping patience of eight epochs; validation selects epoch 28. Validation range MAEs are 0.225 m over all forecast entries and 0.157 m over all bearings in the first three steps. The MAE between predicted and target minima over the center bearings and full horizon is 0.192 m. Sensitivity and specificity of the analytic proximity trigger defined above are 92.9% and 98.8%, respectively. The risk activation threshold is selected on the predictor validation set to maximize sensitivity while limiting false positives in static scenes to 1%. Fig. 3: Forecast-to-control diagnostic from one high-dynamic quadruped rollout.
+(a) Current-range persistence, the learned nominal forecast, and offline
+later-pose geometry at t = 2.02 t=2.02 s share bearing–time axes. The center range
+is 5.27 m; its + 0.50 +0.50 -s prediction and later geometry are 0.99 and 0.91 m.
+(b) The logged heading bank marks early corridor proximity with crosses
+and selects + 35 ∘ +35^{\circ} at 1.11 m/s. (c) Synchronized center-range and
+issued body-command traces show the encounter; issued commands include
+component and rate limits. Later geometry is evaluation-only and uses
+the executed future robot-root positions and yaw angles. The subsequent scene-paired evaluation compares current-range persistence, Cartesian Kalman prediction [ 25 ] , and FutureRay through the same physical planner. VI Performance Validation in Simulation VI-A Protocol and Baselines The navigation cohort contains 60 scenes previously used for controller
+comparisons, with 20 each in the static, ordinary dynamic, and high-dynamic
+strata. These instances differ from predictor-training and
+predictor-validation scenes but share their procedural layout and motion
+families. The nine methods compared here use fixed weights and parameters with one
+common simulator seed for paired evaluation. Methods share start, goal,
+obstacle geometry and open-loop motion, raw camera input, and locomotion.
+Completion requires arrival within 0.65 m; any positive obstacle-owned
+contact force during a physics substep counts as collision. Base contact
+marks a fall, and the time limit is 12 s. Outcome flags may overlap.
+Forward commands extend to
+1.9 m/s. Clearance accounts for the 0.35-m footprint. Body-forward speed
+is averaged after 2 s, using the whole episode if that window is empty;
+mean path speed in Fig. 5 (a) equally averages
+episode traveled distance divided by duration, including failures. Reactive persistence repeats the current learned ranges over the horizon,
+retaining the ABS-compatible perception interface [ 4 ] .
+The analytic comparator forecasts depth surfaces with a causal Cartesian
+Kalman rollout [ 25 ] . Both derive risk analytically from their
+range fields; FutureRay predicts range and encounter risk jointly.
+All three interfaces use the same physical candidate planner and frozen
+quadruped locomotion policy. The experimental variable is the range–risk packet
+supplied to this common velocity-command layer. Six author-released navigation methods retain their modules, preprocessing,
+and speed targets when transferred to the quadruped robot. Causal adapters map forward depth
+to their inputs and their outputs to planar commands; a fixed visible-body
+mask removes self-points. These comparisons measure released-checkpoint
+transfer under the same command limits and evaluation criteria. Binary outcomes are reported through rates and effect sizes.
+For fixed configurations and simulator seed, 50,000
+within-stratum paired bootstrap draws yield marginal 95% intervals over
+scenes. All episodes, including failures, receive equal weight. VI-B Navigation Performance FutureRay leads the shared-planner comparison in completion and minimum
+clearance (Table I ). Because perception, candidate
+planning, and locomotion are held fixed, these gains isolate the effect of
+the range–risk packet supplied to the planner. Mean minimum clearance
+reaches 0.534 m, increasing by 0.201 m over persistence
+(95% CI [0.155, 0.248]) and by 0.079 m over Kalman
+(95% CI [0.040, 0.120]). The interface improves completion while reducing collisions. Completion
+increases by 18.3 percentage points over persistence and 13.3 points over
+Kalman. Collision counts fall from 12 to 1 and from 7 to 1, reductions of
+91.7% and 85.7%, respectively. Mean body-forward speed is 1.164 versus
+1.321 m/s for persistence. Relative to Kalman, the speed difference is
+0.043 m/s (95% CI [ − 0.029 -0.029 , 0.121]). TABLE I: Shared-planner quadruped navigation comparison ( n = 60 n=60 ).
+S/C: completion/collision (%); d d : mean minimum clearance (m); v x v_{x} : body-forward speed after 2 s (whole episode if shorter).
+All tables shade FutureRay and bold metric bests, including ties. Method S ↑ \uparrow C ↓ \downarrow d ↑ d\uparrow v x ↑ v_{x}\uparrow (m/s) Reactive persistence 75.0 20.0 0.333 1.321 Kalman rollout 80.0 11.7 0.455 1.121 FutureRay (ours) 93.3 1.7 0.534 1.164 FutureRay ranks first in completion and mean path speed in the comparison
+with six transferred navigation methods (Fig. 5 (a)).
+REASAN has the next-highest completion at 85.0%
+(Table II ). Across all nine methods, FutureRay combines
+the highest completion rate (93.3%) with the lowest collision rate (1.7%).
+CrowdSurfer has a 3.3% collision rate but completes no routes, with
+59 timeouts. TABLE II: Released-checkpoint transfer to the quadruped robot on the same 60 scenes.
+S/C/T: completion/collision/timeout (%); v x v_{x} : body-forward speed (m/s), defined as in Table I ; S HD \mathrm{S}_{\rm HD} : completion (%) on 20 high-dynamic scenes. Method S ↑ \uparrow C ↓ \downarrow T ↓ \downarrow v x ↑ v_{x}\uparrow S HD ↑ \mathrm{S}_{\rm HD}\uparrow SRU [ 26 ] 56.7 30.0 13.3 1.207 20.0 CE-Nav [ 27 ] 66.7 33.3 3.3 1.235 80.0 REASAN [ 6 ] 85.0 13.3 1.7 1.231 80.0 NavRL (planar) [ 28 ] 70.0 5.0 25.0 0.793 70.0 CrowdSurfer [ 29 ] 0.0 3.3 98.3 0.632 0.0 SanD-Planner [ 30 ] 73.3 11.7 15.0 0.847 65.0 FutureRay (ours) 93.3 1.7 0.0 1.164 100.0 VI-C Performance Across Scene Types FutureRay completes all 20 high-dynamic routes, matching Kalman
+(Fig. 5 (b)). CE-Nav and REASAN lead the transferred
+methods with 16 completions each. In ordinary dynamic scenes, FutureRay
+completes 18 routes, the highest count among all methods, versus 14 for
+Kalman. It also completes 18 static routes; SRU and CE-Nav each complete 20.
+The completion advantage over persistence spans static bypass and dynamic
+crossings. VI-D Prediction-to-Control Behavior In Fig. 3 , the current center range is large,
+while the forecast predicts a decrease within half a second. The corridor
+query flags early proximity for the forward heading and selects a lateral
+candidate with forward motion. Synchronized traces
+show the prediction error and command-rate limiting. Fig. 4 compares eight selected static and dynamic scenes with five methods. FutureRay completes all eight routes: the dynamic cases show collision avoidance or earlier arrival, while the static cases show wider obstacle clearance with continued goal progress. RGB is used only for visualization. Fig. 4: Eight selected Isaac Sim comparisons: (a)–(e) dynamic crossings and (f)–(h) static bypass. Each panel overlays eight synchronized exposures, fading from early to late, and complete executed trajectories of FutureRay (teal), reactive persistence (orange), Kalman rollout (yellow), CE-Nav (purple), and REASAN (blue). Colored terminal markers and the values below each panel report outcomes, elapsed time, and minimum clearance; independent runs share the same obstacle motion and fixed quadruped locomotion policy. Fig. 5: Unified navigation comparison.
+(a) FutureRay, two shared-planner baselines, and six transferred methods
+on the same 60 paired scenes. The diamond denotes FutureRay; triangles
+and squares denote shared-planner baselines and transferred methods.
+Mean path speed equally averages episode distance/duration, including
+failures, and differs from the body-forward speed in the tables.
+Dashed segments mark the observed Pareto frontier, maximizing both axes.
+(b) Completion counts for the primary interface and released-method
+comparisons, with 20 scenes in each stratum. Color encodes completion
+percentage on a common scale. VII Real-World Deployment VII-A Hardware and Deployment FutureRay runs on a quadruped robot with a rigidly mounted ZED depth camera
+and onboard NVIDIA computing unit. Depth is center cropped to 102 ∘ 102^{\circ} and resized to 160 × 90 160\times 90 at 30 Hz. Navigation queries
+range history and ego state at 20 Hz to publish ( v x , v y , ω ) (v_{x},v_{y},\omega) .
+The fixed locomotion policy runs at 50 Hz; Unitree SDK2 transmits joint
+targets at 500 Hz. Learned components, the physical query layer, and locomotion match
+simulation. Navigation uses onboard sensing without object detections,
+external obstacle tracks, or motion capture. VII-B Deployment Scenarios Trials cover open-floor motion, goal stopping, static bypass, and dynamic
+crossings under the same navigation configuration. Foam obstacles obstruct
+static routes; soft moving obstacles cross laterally or diagonally,
+requiring the robot to adjust to changing passages. VII-C Observed Behavior In open space, the robot advances and slows near the goal. At static
+obstructions, it leaves the nominal route, passes through an available
+corridor, and restores goal-directed motion. During crossings, avoidance begins while the obstacle is still approaching
+the route. Lateral separation develops during forward motion, followed by
+renewed goal progress as the crossing clears. This behavior illustrates
+anticipatory avoidance and goal recovery in continuous closed-loop operation. VII-D Transfer and Scope Metric angular range expresses geometry in physical units. Local control
+combines range history, ego motion, and current observations over the forward
+field and short horizon. Model-based command limits depend on range estimates
+and robot response. Hardware trials show closed-loop navigation; paired
+simulations quantify method differences. VIII Conclusion FutureRay demonstrates that predicting changes in free space can improve
+quadruped navigation without retraining low-level locomotion. Control-aligned
+range and risk forecasts provide a geometric preview that the planner queries
+through footprint and reaction–braking constraints to select body-velocity
+commands. With perception, candidate planning, and locomotion held fixed,
+the shared-planner comparison isolates the contribution of this predictive
+interface to greater obstacle clearance and improved navigation outcomes.
+Across all nine evaluated methods, FutureRay achieves the highest completion
+rate and lowest collision rate. Qualitative deployment on a quadruped robot demonstrates
+anticipatory avoidance followed by recovery of goal-directed motion.
+These findings establish compact future-range prediction as a practical
+interface for adding anticipation to an existing quadruped control stack. References [1] N. Rudin, D. Hoeller, P. Reist, and M. Hutter, “Learning to walk in minutes
+using massively parallel deep reinforcement learning,” in Proceedings
+of the 5th Conference on Robot Learning , ser. Proceedings of Machine
+Learning Research, vol. 164. PMLR,
+2022, pp. 91–100. [2] T. Miki, J. Lee, J. Hwangbo, L. Wellhausen, V. Koltun, and M. Hutter,
+“Learning robust perceptive locomotion for quadrupedal robots in the wild,” Science Robotics , vol. 7, no. 62, p. eabk2822, 2022. [3] D. Hoeller, N. Rudin, D. Sako, and M. Hutter, “ANYmal Parkour: Learning
+agile navigation for quadrupedal robots,” Science Robotics , vol. 9,
+no. 88, p. eadi7566, 2024. [4] T. He, C. Zhang, W. Xiao, G. He, C. Liu, and G. Shi, “Agile but safe: Learning
+collision-free high-speed legged locomotion,” in Proceedings of
+Robotics: Science and Systems , Delft, Netherlands, July 2024. [5] Z. Wang, T. Ma, Y. Jia, X. Yang, J. Zhou, W. Ouyang, Q. Zhang, and J. Liang,
+“Omni-perception: Omnidirectional collision avoidance of legged robots in
+dynamic environments,” in Proceedings of the 9th Conference on Robot
+Learning , ser. Proceedings of Machine Learning Research, vol. 305. PMLR, 2025, pp. 670–685. [6] Q. Yuan, Z. Cao, M. Cao, and K. Li, “REASAN: Learning reactive safe
+navigation for legged robots,” arXiv preprint arXiv:2512.09537 , 2025.
+[Online]. Available: https://arxiv.org/abs/2512.09537 [7] Y. Zhu, W. Ma, C. Han, I. H. Zhan, B. Qin, and Y. Xu, “Predictive training
+with latent imagination for visual quadruped navigation,” arXiv
+preprint arXiv:2607.17574 , 2026. [Online]. Available: https://arxiv.org/abs/2607.17574 [8] S. Wu, Z. Liu, T. Zhang, F. Li, F. Sun, M. Xiong, W. Xi, W. Yu, and D. Zou,
+“Learning agile navigation in crowded environments for quadruped robots,” arXiv preprint arXiv:2607.15036 , 2026. [Online]. Available: https://arxiv.org/abs/2607.15036 [9] C. Ginerica, M. Zaha, L. Floroian, D. Cojocaru, and S. Grigorescu, “A vision
+dynamics learning approach to robotic navigation in unstructured
+environments,” Robotics , vol. 13, no. 1, p. 15, 2024. [10] D. Fox, W. Burgard, and S. Thrun, “The dynamic window approach to collision
+avoidance,” IEEE Robotics & Automation Magazine , vol. 4, no. 1, pp.
+23–33, 1997. [11] P. Fiorini and Z. Shiller, “Motion planning in dynamic environments using
+velocity obstacles,” The International Journal of Robotics Research ,
+vol. 17, no. 7, pp. 760–772, 1998. [12] X. Huang, G. Rosman, A. Jasour, S. G. McGill, J. J. Leonard, and B. C.
+Williams, “TIP: Task-informed motion prediction for intelligent
+vehicles,” in 2022 IEEE/RSJ International Conference on Intelligent
+Robots and Systems (IROS) , 2022, pp. 11 432–11 439. [13] R. McAllister, B. Wulfe, J. Mercat, L. Ellis, S. Levine, and A. Gaidon,
+“Control-aware prediction objectives for autonomous driving,” in 2022
+International Conference on Robotics and Automation (ICRA) , 2022, pp. 1–8. [14] A. Agarwal, A. Kumar, J. Malik, and D. Pathak, “Legged locomotion in
+challenging terrains using egocentric vision,” in Proceedings of the
+6th Conference on Robot Learning , ser. Proceedings of Machine Learning
+Research, vol. 205. PMLR, 2023, pp.
+403–415. [15] J. Lai, Z. Jiang, and Y. Liu, “DARE to navigate: Spatiotemporal dynamic
+augmented LiDAR encoder for obstacle detection and avoidance in crowded
+environments,” IEEE Robotics and Automation Letters , vol. 11, no. 2,
+pp. 1930–1937, 2026. [16] Z. Jiang, J. Lai, and Y. Liu, “BEV-OSP: Obstacle state prediction in
+bird’s-eye view to enable obstacle avoidance and navigation in dynamic
+environments,” IEEE Robotics and Automation Letters , vol. 11, no. 7,
+pp. 7924–7931, 2026. [17] S. Shanks, J. Embley-Riches, J. Liu, A. M. Delfaki, C. Ciliberto, and
+D. Kanoulas, “DreamerNav: Learning-based autonomous navigation in dynamic
+indoor environments using world models,” Frontiers in Robotics and
+Artif. Intell. , vol. 12, p. 1655171, 2025. [18] K. S. Mann, A. Tomy, A. Paigwar, A. Renzaglia, and C. Laugier, “Predicting
+future occupancy grids in dynamic environment with spatio-temporal
+learning,” arXiv preprint arXiv:2205.03212 , 2022. [Online].
+Available: https://arxiv.org/abs/2205.03212 [19] D. Deng and A. Zakhor, “Temporal LiDAR frame prediction for autonomous
+driving,” in 2020 International Conference on 3D Vision (3DV) , 2020,
+pp. 829–837. [20] S. Ancha, G. Pathak, S. Narasimhan, and D. Held, “Active safety envelopes
+using light curtains with probabilistic guarantees,” in Proceedings of
+Robotics: Science and Systems , Virtual, July 2021. [21] Z. Zhang, G. Hess, J. Hu, E. Dean, L. Svensson, and K. Åkesson,
+“Future-oriented navigation: Dynamic obstacle avoidance with one-shot
+energy-based multimodal motion prediction,” arXiv preprint
+arXiv:2505.00237 , 2025. [Online]. Available: https://arxiv.org/abs/2505.00237 [22] P. Roth, J. Frey, C. Cadena, and M. Hutter, “Learned perceptive forward
+dynamics model for safe and platform-aware robotic navigation,” in Proceedings of Robotics: Science and Systems , Los Angeles, CA, USA,
+2025. [23] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for image
+recognition,” in Proceedings of the IEEE Conference on Computer Vision
+and Pattern Recognition , 2016, pp. 770–778. [24] K. Cho, B. van Merriënboer, C. Gulcehre, D. Bahdanau, F. Bougares,
+H. Schwenk, and Y. Bengio, “Learning phrase representations using RNN
+encoder–decoder for statistical machine translation,” in Proceedings
+of the 2014 Conference on Empirical Methods in Natural Language Processing ,
+2014, pp. 1724–1734. [25] R. E. Kalman, “A new approach to linear filtering and prediction problems,” Journal of Basic Engineering , vol. 82, no. 1, pp. 35–45, 1960. [26] F. Yang, P. Frivik, D. Hoeller, C. Wang, C. Cadena, and M. Hutter,
+“Spatially-enhanced recurrent memory for long-range mapless navigation via
+end-to-end reinforcement learning,” The International Journal of
+Robotics Research , 2025. [27] K. Yang, T. Zhang, Z. Wang, Z. Chu, X. Wu, Y. Cai, and M. Xu, “CE-Nav:
+Flow-guided reinforcement refinement for cross-embodiment local navigation,”
+in International Conference on Learning Representations , 2026. [28] Z. Xu, X. Han, H. Shen, H. Jin, and K. Shimada, “NavRL: Learning safe flight
+in dynamic environments,” IEEE Robotics and Automation Letters ,
+vol. 10, no. 4, pp. 3668–3675, 2025. [29] N. Kumar, A. Singha, L. Nanwani, D. Potdar, T. R, F. Rastgar, S. Idoko, A. K.
+Singh, and K. M. Krishna, “CrowdSurfer: Sampling optimization augmented
+with vector-quantized variational AutoEncoder for dense crowd navigation,”
+in 2025 IEEE International Conference on Robotics and Automation
+(ICRA) , 2025, pp. 16 854–16 860. [30] J. Wang, L. Bao, T. Yang, D. Martinez Plasencia, J. Jiao, and D. Kanoulas,
+“SanD-Planner: Sample-efficient diffusion planner in B-Spline space for
+robust local navigation,” in Proceedings of Robotics: Science and
+Systems , Sydney, Australia, July 2026.

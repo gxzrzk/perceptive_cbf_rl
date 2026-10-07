@@ -1,0 +1,85 @@
+PAC-MAN: Perception-Aware CBF-RL for Whole-Body Safety
+in Humanoid Dodgeball
+Lizhi Yang, Junheng Li and Aaron D. Ames
+Abstract— We present PAC-MAN, a perception-aware CBF-
+RL framework that couples control-barrier safety with
+deployment-realistic onboard sensing for whole-body hu-
+manoid dodgeball. The deployed policy sees the ball only
+as segmentation-masked depth from a head-mounted camera,
+while training-time CBF guidance represents clearance to every
+body link, and an adversarial motion prior regularizes the
+resulting evasive reflexes. We evaluate on a controlled any-
+link contact benchmark with seeded throws in two regimes:
+single throws and a deployment loop in which the robot
+walks back to its station and recovers between throws. On
+this benchmark, the policy comes within a few points of
+a privileged state oracle: a fixed onboard camera alone is
+adequate for evasion. We find that usable barrier structure
+depends on perceptual observability: Joint-CBF gives the best
+performance with accurate ball states, degrades under fixed-
+camera observations when used only as training guidance, and
+recovers with a ball-tracking gimbal or privileged runtime filter.
+We therefore deploy a lightweight Link-CBF policy zero-shot
+on the Unitree G1 in the real world, where it tolerates imperfect
+perception, succeeds on95%of throws, and uses semantic
+segmentation to dodge different balls.
+I. INTRODUCTION
+Humanoid robots operating around moving objects must
+react within a fraction of a second, and the evasion itself
+must not cost them their balance. Dodgeball isolates this
+safety problem in a short-horizon, whole-body setting: the
+robot must perceive an incoming ball, determine which links
+are threatened, and coordinate the torso, arms, and legs
+quickly enough to avoid contact while remaining upright.
+Humans solve the same problem by keeping their eyes on
+the ball and moving their whole body out of its path. Recent
+learning-based controllers can produce dynamic humanoid
+locomotion [1], [2], whole-body imitation [3]–[5], and visu-
+ally conditioned skills [6], [7], but reactive whole-body safety
+from onboard vision remains difficult [8], [9], especially for
+a humanoid.
+Control barrier functions (CBFs) encode collision-free sets
+and correct unsafe commands, provided the relevant state is
+available [10]. Onboard perception breaks this convenient
+assumption: the incoming object may be visible only briefly,
+may leave the camera field of view, or may appear as a few
+noisy depth pixels. CBF-RL can move barrier information
+into policy training [11], but a deployed policy can internal-
+ize only as much safety structure as its observations support.
+The threat representation and the barrier design therefore
+California Institute of Technology, CA 91106, USA
+Corresponding author email:lzyang@caltech.edu. This work is
+supported by The Dow Chemical Company project #227027AW and in part
+by Technology Innovation Institute.
+Fig. 1: Perception-aware dodgeball couples safety and sensing: a humanoid
+must infer an incoming threat from a head-mounted depth camera, move
+every threatened link out of its path, and preserve balance without privileged
+ball states at deployment.
+have to be treated as one coupled safety problem rather than
+as independent modules.
+We study this coupling through perception-aware hu-
+manoid dodgeball (Fig. 1). A ball is launched toward a
+humanoid robot, which must avoid contact with every body
+link and preserve balance using only proprioception and
+onboard depth at deployment. Unlike navigation around a
+mapped obstacle, the hazard is transient, and the robot has no
+nominal velocity command or reference motion that specifies
+when and how to evade. The short observation window and
+whole-body collision geometry make dodgeball a direct test
+of safety under partial observation.
+We present PAC-MAN, a perception-aware CBF-RL
+framework for humanoid dodgeball. The central question is
+how much barrier structure a policy can internalize when it
+receives only deployment-realistic observations. PAC-MAN
+studies two levels: Link-CBF, a lightweight per-link reward
+used during training, and Joint-CBF, a stronger whole-body
+joint-space projection that can either guide training or stay
+active at test time as a privileged runtime filter. The two
+levels separate learned barrier-guided behavior from online
+barrier enforcement.
+How well the learned reflex works depends on what
+perception tells the policy about the threat. The deployed
+system segments the ball in RGB and masks the depth image
+down to a compact ball-only observation. An active gimbal,
+studied in simulation, tests whether keeping the threat in
+arXiv:2607.28623v2  [cs.RO]  29 Sep 2026

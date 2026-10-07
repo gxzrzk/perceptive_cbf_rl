@@ -1,0 +1,94 @@
+FutureRay: Control-Aligned Future Range for Agile Quadruped
+Navigation
+Tianhao Zang1,2, Shanze Wang 4, Ziqian Wang 3, Liyou Luo 5,
+Zihan Liu 3, Xingjian Xie 3, Wei Zhang 1,∗
+Abstract— Moving obstacles can block a previously clear
+route while a quadruped robot executes a motion command.
+We investigate whether predicting changing clearance improves
+navigation when motion selection accounts for the robot footprint
+and the time needed to react and brake. We present FutureRay,
+which predicts ranges across viewing directions and future times,
+together with encounter risk, from depth-derived range history
+and observable robot motion. Training emphasizes near-term
+clearance and penalizes errors that overstate available space. A
+local planner queries the same forecast for candidate headings
+and combines it with current observations to check clearance
+around the robot footprint. Model-based reaction–braking limits
+guide speed selection, and the resulting velocity commands are
+passed to a fixed locomotion policy. In paired evaluations on
+60 static and dynamic simulation scenes, FutureRay achieves
+93.3% completion, compared with 75.0% for current-range
+persistence and 80.0% for Cartesian Kalman rollout, with
+perception, planning, and locomotion held fixed. FutureRay
+also records fewer collisions than both baselines. Qualitative
+trials on a physical quadruped show avoidance initiated while
+an obstacle is approaching the route, followed by renewed goal
+progress. These results show that joint range and encounter-risk
+prediction can improve obstacle avoidance without retraining
+the locomotion policy.
+I. INTRODUCTION
+Learned locomotion enables quadrupeds to traverse un-
+even terrain [1], [2], while perceptive navigation supports
+movement through complex obstacle courses [3]. Moving
+obstacles introduce an additional challenge: a currently clear
+passage can become occupied as the robot moves. The robot
+needs space to accommodate its body and time to react
+and brake, so waiting until an obstacle is close can leave
+insufficient room to avoid it. Heading and speed selection
+should therefore consider how available clearance will change,
+together with the robot footprint and stopping distance. The
+crossing scenario in Fig. 1 illustrates this need for anticipation.
+Existing work estimates directional ranges from depth
+images for collision avoidance [4]. Other methods incor-
+porate LiDAR history into locomotion or navigation [5],
+[6]; auxiliary prediction of the next hidden state can also
+shape recurrent navigation representations during training [7].
+Prediction also enters decisions directly: VOP-Nav predicts
+safe-velocity regions from LiDAR history for a navigation
+1College of Information Science and Technology, Eastern Institute of
+Technology, Ningbo, P. R. China.
+2University of Maryland, USA.
+3School of Computer Science, University of Nottingham, UK.
+4The Hong Kong Polytechnic University, Hong Kong.
+5Xi’an Jiaotong-Liverpool University, China.
+∗Corresponding author. Email:zhw@eitech.edu.cn.
+A. The same dynamic crossing
+Now
+Later
+GoalSame scene and goal
+B. Reactive avoidance
+motion
+Approach first
+Stop nearby
+Then detour
+C. FutureRay
+motion
+Turn early Keep moving
+Forecast the crossing direction
+Occluded
+5.50 s
+D. Real Go2: full sequence 0–10.2 s
+Start
+ Time End
+Fig. 1. Future sensor space for anticipatory avoidance. The schematics
+contrast a response to current clearance with a detour initiated from a
+forecast of an approaching crossing. The physical quadruped robot sequence
+illustrates onboard avoidance and subsequent progress toward the goal.
+policy [8], while Ginerica et al. forecast depth-derived
+occupancy grids and extract obstacle information for local
+planning [9]. We instead predict ranges across viewing
+directions and future times. A local planner queries these
+forecasts to check space for the robot footprint along candidate
+headings and compute directional speed limits. A separate
+risk score predicts whether an obstacle will be nearby over
+the prediction horizon and provides an additional input for
+candidate action evaluation. We ask whether these learned
+range and risk predictions improve obstacle avoidance and
+goal reaching compared with repeating current ranges or
+extrapolating observed geometry with a Cartesian Kalman
+filter, with perception, planning, and locomotion held fixed.
+For this planner, the direction of a predicted range indicates
+where clearance may change, while its forecast time distin-
+guishes imminent changes from later ones. Metric ranges sup-
+port footprint checks and speed selection based on modeled
+arXiv:2609.32158v1  [cs.RO]  26 Sep 2026

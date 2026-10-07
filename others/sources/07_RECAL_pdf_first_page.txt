@@ -1,0 +1,103 @@
+Collision-Aware Humanoid Whole-Body Control
+under Imperfect Tracking Targets
+Mohitvishnu S. Gadde 1, Ashish Mailk 1, Pranay Dugar 1, Aayam Kumar Shrestha 1, Fuxin Li 1 and Alan Fern 1
+Abstract— Humanoid robots often execute motion commands
+through whole-body controllers (WBCs) that track targets while
+maintaining balance and stability. However, most WBCs are
+blind to scene geometry, which can lead to collisions from im-
+perfect target motions that are geometrically unsafe due to per-
+ception, planning, or teleoperation errors. We propose RECAL,
+a Robot–Environment Cross-Attention Layer that wraps a blind
+WBC to trade off target tracking against collision avoidance
+using external scene geometry. RECAL supports collision-aware
+tracking of floating-base and end-effector commands, including
+collision avoidance for held objects. It represents the robot,
+held objects, and environment as point clouds, using cross-
+attention between robot/object points and the environment
+to produce geometry-aware control features. In simulation,
+RECAL improves collision avoidance while preserving target-
+tracking performance across frozen-arm and adaptive-arm lo-
+comotion, object-carrying, and standing-manipulation scenarios
+relative to alternative geometry-aware WBC architectures. We
+further demonstrate the controller on a real Digit V3 humanoid
+robot.
+I. INTRODUCTION
+A core component of many humanoid robot control archi-
+tectures is the whole-body controller (WBC), which trans-
+lates motion targets from teleoperation systems, planners,
+or learned skills into motor commands while maintaining
+balance and robustness. In cluttered environments, however,
+these targets may be imperfect as they can specify the
+intended behavior without fully defining a collision-free
+whole-body motion. This may occur due to partial targets,
+perception errors, planning approximations, or teleoperation
+imprecision. Since many WBCs are blind to the environ-
+ment’s geometry, naively tracking such targets can lead to
+unintended collisions involving the robot body, manipulated
+objects, and nearby obstacles.
+We address this problem by learning a collision-aware
+control layer that enables an otherwise blind WBC to
+leverage local scene geometry when interpreting imperfectly
+tracked targets. Rather than requiring upstream systems to
+provide complete, collision-free whole-body references, the
+controller treats these targets as guidance and resolves local
+geometric conflicts at the control level. This allows high-level
+interfaces, such as learned skills, planners, and teleoperation,
+to operate more robustly in cluttered environments. For
+example, a teleoperator need not command every body part
+through a narrow doorway or specify a fully collision-free
+body motion when reaching into a constrained shelf.
+This work is supported by NSF Award 2321851, DARPA contract HR0011-24-9-0423, and
+the NVIDIA Academic Grant Program.
+1All authors are associated with the Collaborative Robotics and Intelligent Systems Institute
+(CoRIS), Oregon State University, Corvallis, OR 97331.{gaddem, malikas, dugarp,
+aayam.shrestha, fuxin.li, afern}@oregonstate.edu
+Prior work has explored collision-aware humanoid control
+using control-theoretic and optimization methods (e.g., [1],
+[2], [3]), but scaling such approaches to cluttered, high-
+dimensional humanoid settings remains challenging due to
+modeling and computational complexities. Recent learning-
+based controllers for humanoids incorporate terrain aware-
+ness (e.g., [4], [5], [6]), with related point-to-point controllers
+accounting for terrain and 3D obstacles [7], [8]. Other works
+address collision avoidance for stationary humanoid end-
+effector control using time-of-flight sensors on the robot
+body [9], [10]. To our knowledge, prior learning-based
+WBCs have not jointly addressed free-base locomotion,
+end-effector tracking, and collision avoidance for the robot
+body and held objects, which are required for robust loco-
+manipulation in cluttered environments.
+To this end, we introduce theRobot–Environment Cross-
+Attention Layer (RECAL), a learned environment-aware
+wrapper around a blind WBC. RECAL modifies the behavior
+of the underlying controller to track base root and end-
+effector targets while avoiding collisions between the robot
+and the environment, and between objects and the environ-
+ment. It represents the environment, robot body, and held-
+object geometry using point clouds derived from egocentric
+vision and proprioception. Robot and object points query
+the environment point cloud, enabling cross-attention to
+compute local, geometry-aware features for the robot and
+the manipulated object. RECAL is trained using a teacher–
+student distillation framework, where an observation-only
+student is distilled from the privileged information provided
+by the teacher policy.
+We evaluate RECAL in simulation across cluttered en-
+vironments and varying degrees of tracking imperfections.
+The experiments show that RECAL preserves accurate target
+tracking while avoiding collisions that occur when only
+using the blind WBC. We further show that the robot–
+environment cross-attention architecture outperforms alterna-
+tive scene-geometry encoders. Finally, we demonstrate sim-
+to-real transfer on a Digit V3 humanoid robot.
+Our main contributions are:1) A collision-aware hu-
+manoid WBC frameworkthat tracks floating-base and end-
+effector targets while avoiding collisions with the environ-
+ment.2) The Robot Environment Cross-Attention Layer
+(RECAL)that uses robot and held-object points as queries
+into the environment point cloud to produce collision-aware
+commands for an underlying blind WBC.3) Simulation
+and real-robot validationshowing that RECAL can deviate
+from unsafe commands, avoid collisions, and recover target-
+tracking behavior across loco-manipulation scenarios.
+arXiv:2609.16405v2  [cs.RO]  30 Sep 2026

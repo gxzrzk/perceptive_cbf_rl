@@ -1,0 +1,105 @@
+LP-NavOA: Integrated Local Navigation and
+Obstacle Avoidance for Humanoid Robots under
+Limited Perception
+1st Yukun Luo
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+2nd Jianjun Ma
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+3rd Yuyao Min
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+4th Jinzhe Li
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+5th Kaihong Huang
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+6th Peng Li
+College of Intelligence Science and Technology
+National University of Defense Technology
+Changsha, China
+Abstract—Humanoid local navigation in cluttered environ-
+ments must jointly resolve obstacle avoidance, sparse-goal re-
+covery, and stable whole-body locomotion under short-range
+and partially observable sensing. Explicit planner-control decom-
+positions introduce latency and can mismatch agile humanoid
+command-tracking limits, while purely reactive controllers may
+lose the goal after obstacle occlusion. We present LP-NavOA,
+a limited-perception navigation and obstacle-avoidance frame-
+work for humanoid robots. A raycast-conditioned perception-
+action proximal policy optimization (PPO) locomotion backbone
+is first trained with a robot-centered circular heading-speed
+command and a shared command-side safety filter. With this
+backbone frozen, A-star and waypoint teachers generate rollouts
+for distilling a recurrent local planner that overwrites only
+the heading command at deployment, leaving the whole-body
+policy intact. At runtime, LP-NavOA uses proprioception, short-
+range local range sensing, and a body-frame goal direction,
+requiring no global map, waypoint stream, or external planner.
+In MuJoCo open-wall and indoor layouts, the distilled planner
+produces obstacle bypassing and post-avoidance goal recovery,
+raising teacher-calibrated on-time arrival from 38–40% to 85–
+97% and reducing brush/contact-heavy progress relative to a
+backbone-only controller. Ablations show that dynamic route
+shaping, teacher-active data collection, and the circular com-
+mand interface are important for navigation efficiency and for
+training the 3.0 m/s backbone. A Unitree G1 deployment analysis
+demonstrates hardware executability without continuous joystick
+steering.
+Keywords—humanoid robot, local navigation, obstacle avoid-
+ance, limited perception, reinforcement learning
+I. INTRODUCTION
+Humanoid robots fit human-scale spaces, but local naviga-
+tion is tightly coupled with whole-body locomotion. A policy
+must decide when to walk, turn, slow down, or return toward
+a hidden goal while preserving balance and contact quality.
+Under partial observability [1], short-range sensing may reveal
+an obstacle without resolving when to continue bypassing or
+resume goal seeking.
+Classical pipelines separate mapping, planning, and con-
+trol with explicit planners such as A-star and dynamic win-
+dows [2], [3]. These interfaces are interpretable but awk-
+ward for agile legged systems, where simplified planning
+abstractions meet latency, body sway, and command-tracking
+limits. Learned navigation systems have reduced some of
+these costs [4]–[6], and recent work extends the same trend
+to humanoid visual navigation [7]. In parallel, reinforcement
+learning has produced robust legged locomotion under in-
+creasingly realistic dynamics, from agile motor skills [8] to
+blind locomotion over challenging terrain [9] and perceptive
+locomotion in the wild [10]. Rapid motor adaptation pushes
+this line further by handling unmodelled dynamics directly
+at deployment [11], a property that humanoid systems have
+begun to inherit alongside real-world whole-body control [12],
+expressive whole-body tracking [13], and large-scale imitation
+from human motion [14]. Scalable simulators such as Isaac
+Gym have made massively parallel training practical [15],
+with curricula that learn to walk in minutes [16]; lightweight
+MuJoCo-based systems such as mjlab further expose manager-
+based robot-learning workflows for GPU-accelerated policy
+training [17]. Building on this style of simulation infrastruc-
+ture, recent studies pursue collision-free high-speed locomo-
+tion [18], extreme parkour [19], and rapid-locomotion bench-
+marks [20]. Yet goal-directed local navigation still requires
+recovering the sparse goal after avoidance, not only reacting
+to the nearest obstacle.
+We separatetraining instrumentsfrom theinference in-
+terface. Planners, privileged scans, and waypoint curricula
+generate safe supervision, but the deployed controller keeps
+only raycast and goal-direction inputs. A proximal policy
+optimization (PPO) backbone learns a compact heading-speed
+command [21]; frozen-backbone rollouts under planner or
+waypoint teachers then provide behavior-cloning data for a
+recurrent local planner [22]–[24]. The result is a compact
+steering layer that preserves the learned locomotion interface
+while adding memory-based decisions about when to bypass
+an obstacle and when to recover the sparse goal.
+LP-NavOA makes three contributions:
+arXiv:2606.23249v1  [cs.RO]  22 Jun 2026

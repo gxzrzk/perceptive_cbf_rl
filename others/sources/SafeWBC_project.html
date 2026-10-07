@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="description"
+      content="Project Website for Safety-Critical Whole-Body Control for Humanoid Robots via Input-to-State Safe Control Barrier Functions">
+  <meta name="keywords" content="Humanoid, RL">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+  <script id="MathJax-script" async
+    src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js">
+  </script>
+
+  <title>Safety-Critical Whole-Body Control for Humanoid Robots via Input-to-State Safe Control Barrier Functions</title>
+
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-PYVRSFMDRL"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+
+    function gtag() {
+      dataLayer.push(arguments);
+    }
+
+    gtag('js', new Date());
+
+    gtag('config', 'G-PYVRSFMDRL');
+  </script>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <!-- <link rel="icon" href="./static/images/favicon.svg"> -->
+
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
+</head>
+<body>
+
+<nav class="navbar" role="navigation" aria-label="main navigation">
+  <div class="navbar-brand">
+    <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+      <span aria-hidden="true"></span>
+    </a>
+  </div>
+  <div class="navbar-menu">
+    <div class="navbar-start" style="flex-grow: 1; justify-content: center;">
+      <a class="navbar-item" href="https://kwlee365.github.io/">
+      <span class="icon">
+          <i class="fas fa-home"></i>
+      </span>
+      </a>
+    </div>
+
+  </div>
+</nav>
+
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h1 class="title is-2 publication-title">Safety-Critical Whole-Body Control for Humanoid Robots via Input-to-State
+                                                   Safe Control Barrier Functions</h1>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <a href="https://kwlee365.github.io/">Kwanwoo Lee</a><sup>1</sup>,</span>
+            <span class="author-block">Sanghyuk Park<sup>1</sup>,</span>
+            <span class="author-block">Gyeongjae Park<sup>1</sup>,</span>
+            <span class="author-block">Myeong-Ju Kim<sup>2</sup>,</span>
+            <span class="author-block">Jaeheung Park<sup>1</sup></span>
+          </div>
+
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">
+              <sup>1</sup>Dynamic Robotic Systems Lab, Seoul National University, Seoul, Republic of Korea<br>
+              <sup>2</sup>Robotics Lab, Hyundai Motor Group, Uiwang, Republic of Korea
+            </span>
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <!-- PDF Link. -->
+              <!-- <span class="link-block">
+                <a href="https://ieeexplore.ieee.org/abstract/document/11177014"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper</span>
+                </a>
+              </span> -->
+              <!-- Video Link. -->
+              <span class="link-block">
+                <a href="https://www.youtube.com/watch?v=CL3e6qg7Mxk"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-youtube"></i>
+                  </span>
+                  <span>Video</span>
+                </a>
+              </span>
+                <!-- arXiv Link. -->
+              <span class="link-block">
+                <a href="https://arxiv.org/abs/2605.25546"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="ai ai-arxiv"></i>
+                  </span>
+                  <span>arXiv</span>
+                  </a>
+              </span>
+              <!-- GitHub Link. -->
+              <span class="link-block">
+                <a href="https://github.com/dyroshumanoid/safeWBC/tree/nightly"
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                    <i class="fab fa-github"></i>
+                  </span>
+                  <span>GitHub</span>
+                </a>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section pt-0">
+  <div class="container is-max-desktop">
+    <!-- Paper video. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <div class="publication-video">
+          <iframe src="https://www.youtube.com/embed/CL3e6qg7Mxk?autoplay=1&mute=1"
+                  frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>
+        </div>
+      </div>
+    </div>
+    <!--/ Paper video. -->
+
+    <!-- Abstract. -->
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            Safety-critical control is essential for humanoid robots operating in complex human-centered environments that require safe physical interaction.
+            Existing approaches remain limited because kinematic safety controllers do not explicitly account for full-body dynamics or contact stability, while dynamic whole-body controllers may fail to preserve kinematic safety guarantees under tracking errors and model mismatches.
+            This paper presents a hierarchical safety-critical whole-body control framework for humanoid robots based on input-to-state safe control barrier functions (ISSf-CBFs).
+            The proposed architecture integrates a kinematic-level whole-body controller (KinWBC), an ISSf-CBF safety filter, and a dynamic-level whole-body controller (DynWBC). 
+            KinWBC generates joint-motion references from prioritized tasks; the ISSf-CBF filter minimally modifies these references to satisfy kinematic safety constraints under bounded disturbances, and DynWBC tracks the modified references while enforcing full-body dynamics and contact stability. 
+            To transfer kinematic safety guarantees to full-order humanoid dynamics, the proposed framework formulates safety constraints on a whole-body kinematic model and tunes ISSf-CBF parameters to account for tracking errors and model mismatches.
+            The framework handles multiple safety constraints, including joint limits, self-collision avoidance, obstacle avoidance, and workspace boundaries.
+            Simulation and real-robot experiments demonstrate that the proposed framework improves safety margins under model mismatch and reliably enforces multiple safety constraints during manipulation, locomotion, and teleoperation.
+          </p>
+        </div>
+      </div>
+    </div>
+    <!--/ Abstract. -->
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-3">Overview</h2>
+        <div class="content">
+          <!-- <embed src="./static/images/block_diagram.png" type="image/png" width="100%" height="400px" /> -->
+          <embed src="./static/images/block_diagram.png" type="image/png" width="100%" height="auto" />
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Contributions</h2>
+    <div class="content">
+      <ul>
+        <li>A hierarchical safety-critical whole-body control framework that accounts for kinematic safety, dynamic feasibility, and contact stability constraints.</li>
+        <li>A safety-transfer strategy from velocity kinematics to full-order dynamics that combines an ISSf-CBF-based safety filter with conservative parameter tuning, thereby preserving safety guarantees under bounded tracking errors and model uncertainties.</li>
+        <li>Validation through simulation and real-world humanoid locomotion, manipulation, and teleoperation experiments, demonstrating reliable safety enforcement under model mismatch and real-time operation across diverse scenarios.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-widescreen">
+    <h2 class="title is-3 has-text-centered">Video Results</h2>
+    <p class="has-text-centered">
+      Simulation, teleoperation, and real-world obstacle-avoidance demonstrations.
+    </p>
+
+    <div class="mt-1">
+      <div class="columns is-variable is-4" style="margin-bottom: 2rem;">
+        <div class="column">
+          <div class="content has-text-centered">
+            <h4 class="subtitle is-4 has-text-centered">Real Robot (Obstacle Avoidance 1)</h4>
+            <video preload playsinline autoplay muted loop width="100%">
+              <source src="./static/videos/real_obs_30.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+        <div class="column">
+          <div class="content has-text-centered">
+            <h4 class="subtitle is-4 has-text-centered">Real Robot (Obstacle Avoidance 2)</h4>
+            <video preload playsinline autoplay muted loop width="100%">
+              <source src="./static/videos/real_obs_50.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
+
+      <div class="columns is-variable is-4" style="margin-bottom: 2rem;">
+        <div class="column">
+          <div class="content has-text-centered">
+            <h4 class="subtitle is-4 has-text-centered">Real Robot (Teleoperation)</h4>
+            <video preload playsinline autoplay muted loop width="100%">
+              <source src="./static/videos/teleop.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+        <div class="column">
+          <div class="content has-text-centered">
+            <h4 class="subtitle is-4 has-text-centered">Real Robot (Taichi motion)</h4>
+            <video preload playsinline autoplay muted loop width="100%">
+              <source src="./static/videos/taichi.mp4" type="video/mp4">
+            </video>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const videos = document.querySelectorAll('video');
+    videos.forEach(video => {
+      video.volume = 0.25; // Sets volume to 25% (0.0 is mute, 1.0 is full)
+    });
+  });
+</script>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    // Select all video elements on the page
+    const videos = document.querySelectorAll('video');
+
+    // Add event listeners to each video
+    videos.forEach(video => {
+      // Show controls when the mouse enters the video area
+      video.addEventListener('mouseover', () => {
+        video.controls = true;
+      });
+
+      // Hide controls when the mouse leaves the video area
+      video.addEventListener('mouseout', () => {
+        video.controls = false;
+      });
+    });
+  });
+</script>
+
+<!-- <section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">BibTeX</h2>
+    <pre><code>@article{lee2025learning,
+      title={Safety-Critical Whole-Body Control for Humanoid Robots via Input-to-State Safe Control Barrier Functions},
+      author={Lee, Ho Jae and Jeon, Se Hwan and Kim, Sangbae},
+      journal={IEEE Robotics and Automation Letters},
+      year={2025},
+      publisher={IEEE}
+    }</code></pre>
+  </div>
+</section> -->
+
+
+<footer class="footer">
+  <div class="container">
+    <div class="columns is-centered">
+      <div class="column is-8 has-text-centered">
+        <div class="content">
+          <p>
+            Website template modified from <a href="https://nerfies.github.io/">NeRFies</a>.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

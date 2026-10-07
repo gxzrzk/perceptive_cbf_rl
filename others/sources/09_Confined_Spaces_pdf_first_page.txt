@@ -1,0 +1,90 @@
+Whole-Body Planning for Humanoids Navigating Confined Spaces via
+Self-Collision Avoidance References
+Carlos Gonzalez 1 and Luis Sentis 1
+Abstract— Humanoid locomotion in highly confined envi-
+ronments requires navigating dense environmental obstacles
+and complex self-collision bounds while maintaining multi-
+contact dynamic feasibility. Traditional trajectory optimizers
+frequently struggle in these restricted spaces, as navigating the
+large collision space with splines on particle abstractions is
+insufficient and leads to poor local minima. To address this,
+we propose a three-stage whole-body planning framework that
+formulates kinematic path planning directly over kinematically
+reachable rigid-body volumes. By integrating differentiable
+collision avoidance into a reachability-constrained formulation,
+our framework synthesizes volume-informed guides that reli-
+ably guide a full-order trajectory optimizer over long horizons.
+We show that these optimized plans serve as high-quality
+references to train a residual reinforcement learning policy
+for robust online execution. We validate our approach on the
+Unitree G1 humanoid across three benchmark testbeds exceed-
+ing NIST emergency response standards, achieving restricted
+confinement ratios (C r <1.5). Our framework generates
+feasible trajectories across 12-to-18-second tasks with complex
+foot and hand contacts where standard baselines fail, while the
+learned policy successfully tracks these plans under extensive
+domain randomization in physics simulation.
+I. INTRODUCTION
+Legged locomotion on structured terrains has matured
+rapidly in recent years, with fluid behaviors ranging from
+human-like walking on flat ground [1] to agile locomo-
+tion over large obstacles [2]. Learning-based approaches
+have streamlined the execution of dynamic motions that
+were traditionally difficult to realize with classical planning
+schemes, at the expense of relying on high-quality motion
+data. At the same time, advances in convex optimization and
+differentiable geometry for motion planning have reduced
+solve times and minimized manual parameter tuning when
+generating collision-free trajectories. These developments
+provide a strong foundation for synthesizing kinematically
+and dynamically consistent motions in highly constrained
+environments, such as confined spaces.
+Navigating confined spaces presents severe challenges
+for humanoid robots: the collision-free configuration space
+degrades into narrow, non-convex manifolds where slight
+posture deviations cause unwanted environmental collisions
+that risk destabilizing the robot. Furthermore, long-horizon
+planning is essential, as myopic or short-horizon schemes fail
+1Authors are with the Department of Aerospace Engineering and Engi-
+neering Mechanics, The University of Texas at Austin, TX 78712, USA.
+{carlos.gonzalez,lsentis}@utexas.edu
+2Supplementary videos are available at:
+https://carlosiglezb.github.io/confined-space-wbp-humanoid/
+This work has been submitted to the IEEE for possible publication.
+Copyright may be transferred without notice, after which this version may
+no longer be accessible.
+Fig. 1.Whole-body motion through an obstructed hole.The G1 hu-
+manoid navigates a non-convex aperture in a confined space. Our proposed
+WBP generates a kinematically and dynamically feasible plan that the
+robot is able to track online despite the terrain complexities: it balances
+balances on non-coplanar hand and foot contacts to cross the opening
+(t= 4.50–7.68s), then lands in a kinematically constrained configuration
+and resolves into a squared-up stance (t= 8.72–15.00s).
+to foresee when current footholds or upper-body postures
+lead to kinematic or dynamic dead-ends. The scarcity of
+high-quality demonstration data in confined settings limits
+the direct applicability of data-driven and imitation-based
+frameworks [3], [4], which require precise motion retargeting
+that strictly respects the robot’s kinematic reachability and
+torque limits. Conversely, classical trajectory optimization
+formulations often struggle with dense obstacle scenes: they
+typically neglect detailed collisions to maintain reasonable
+compute times [5], [6], rely on overly simplified bounding
+volumes [7], or require sophisticated initializations to con-
+verge to feasible solutions [8].
+To address these challenges, we introduce a morphology-
+aware Whole-Body Planning (WBP) and Control framework
+for humanoid robots in tight, geometrically complex environ-
+ments, such as those defined by NIST emergency response
+standards [9], [10]. At the core of our approach is a novel
+kinematic seeding mechanism that lifts particle-based convex
+relaxations [11] to full 3D rigid-body representations. By
+embedding differentiable collision detection [12] directly
+into this relaxed geometric search, our planner effectively
+traverses narrow non-convex configuration manifolds to dis-
+cover topologically distinct, kinematically feasible posture
+seeds, automatically uncovering diverse locomotion strate-
+gies without requiring manual initial guesses. These kine-
+matic seeds are subsequently transcribed into dynamically
+consistent whole-body trajectories that push the robot to its
+arXiv:2608.10220v1  [cs.RO]  10 Aug 2026

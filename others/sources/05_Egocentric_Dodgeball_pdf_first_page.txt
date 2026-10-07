@@ -1,0 +1,88 @@
+Egocentric Tactile and Proximity Sensors as Observation Priors for
+Humanoid Collision Avoidance
+Carson Kohlbrenner, Niraj Pudasaini, William Xie, Naren Sivagnanadasan,
+Nikolaus Correll, and Alessandro Roncone
+Abstract— Collision-free motion is often aided by tactile
+and proximity sensors distributed on the body of the robot
+due to their resistance to occlusion as opposed to external
+cameras. However, how to shape the sensor’s properties, such as
+sensing coverage; type; and range, to enable avoidant behavior
+remains unclear. In this work, we present a reinforcement
+learning framework for whole-body collision avoidance on a
+humanoid H1-2 robot and use it to characterize how sensor
+properties shape learned avoidance behavior. Using dodgeball
+as a benchmark task, we ablate the properties of sensors
+distributed across the upper body of the robot and find
+that raw proximity measurements can substitute for explicit
+object localization provided the sensing range is sufficient and
+that sparse non-directional proximity signals outpace dense
+directional alternatives in sample efficiency.
+I. INTRODUCTION
+Humanoid robots operating in dynamic environments near
+humans, such as walking in crowded corridors or participat-
+ing in sports, require preemptive avoidance for anticipated
+collisions for safe deployment [1], [2]. Whole-body artificial
+skins that sense contact, as well as actionable information
+near the robot for anticipating contact, are commonly used
+to aid in collision prevention as opposed to external cam-
+eras due to their resistance to occlusion, low observation
+complexity, and egocentric placement [3]. Classical control
+paradigms use constraints for how the robot should react
+to signals emanating from such artificial skin [4], [5], but
+learned policies using reinforcement learning (RL) use the
+sensor signals themselves to learn how to react [6].
+Sensors used for collision anticipation include time-of-
+flight (ToF) [7]–[9], capacitive [10], and acoustic sensors
+[11] that each have distinct measurement principles that limit
+their sensing coverage and signal quality. Although various
+iterations of whole-body sensors for collision avoidance
+have been proposed, the desirable qualities of a proximity
+signal for collision avoidance remains unclear. For example,
+capacitive sensing skins can detect objects radially less than
+20 cmaway with signal degradation over distance [10],
+whereas ToF sensors can detect objects meters away along
+a directional measurement axis in a narrow field of view
+(FoV) [7]. How to shape the signals of such egocentric
+sensors to act as effective observation priors that couple the
+robot’s body to its environment in a way that makes reactive
+behaviors more learnable remains largely unexplored.
+All authors are with the University of Colorado Boulder, 1111 Engineer-
+ing Drive, Boulder, CO USA. This work is partially supported by NSF FW-
+HTF-R grant #2222952.name.surname@colorado.edu.
+Fig. 1: Distributed sensors reveal information about nearby
+objects, with yellow lines indicating ray sensor detections
+and blue lines indicating field sensor detections.
+In this work, we simulate an H1-2 humanoid robot with
+distributed egocentric tactile and proximity sensors on its
+upper body with a variety of sensing coverage geometries
+and signal qualities to identify what type of observation
+representation is desirable for learned collision compliant
+control. We isolate the observation priors imposed by the
+sensors as a representation bias for learning by providing
+no rewards on the sensor states. Our contributions are as
+follows: 1) A reinforcement learning framework that utilizes
+egocentric sensors to guide collision avoidant whole-body
+control on a humanoid robot, and 2) a comparison of how
+sensor signals impact learned collision avoidance behavior.
+II. METHODS
+To characterize the effects of egocentric distributed sen-
+sors, we simulate an H1-2 humanoid robot with 64 sensors
+distributed on the upper-half of the robot as seen in Fig. 2
+playing an idealized form of dodgeball—a sport with the
+objective to dodge incoming thrown balls.
+A. Whole-Body Collision Avoidance
+The policyπ θ(at|ot)outputs joint-level commands to
+maximize the expected cumulative reward:
+max
+θ
+E
+" TX
+t=0
+γtrt(ot,at)
+#
+,(1)
+whereγis the discount factor andr t encodes both stability
+and safety. Training is conducted using the Proximal Policy
+Optimization (PPO) [12] algorithm, chosen for its robustness
+and scalability to high-dimensional continuous control. The
+arXiv:2604.25554v1  [cs.RO]  28 Apr 2026

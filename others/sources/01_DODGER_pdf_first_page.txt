@@ -1,0 +1,90 @@
+DODGER: Safety-Guided Reinforcement Learning for Robot
+Navigation Among Dynamic Obstacles
+Sanghyuk Park∗1, Kwanwoo Lee∗1, Taekyung Kim∗2, Seohyeon Lim 3, and Yisoo Lee†4
+Abstract— Robots operating in human-centered environ-
+ments must safely navigate among multiple dynamic obstacles
+to avoid collisions with people and surrounding infrastructure.
+Control barrier functions (CBFs) provide an effective mecha-
+nism for safety filtering, and recent CBF-based reinforcement
+learning (RL) methods embed such safety information into
+learned policies. However, executing only safety-filtered actions
+during training can restrict policy exploration, a limitation
+that becomes particularly consequential in dynamic scenes
+where safety depends on relative robot-obstacle motion. We
+propose DODGER, a safety-guided RL framework that directly
+executes policy-generated actions to drive training rollouts
+while using CBF-filtered references and constraint violations
+to shape the policy toward collision-avoidance behavior. We
+evaluate DODGER through a Dubins-car safety analysis and
+demonstrate goal-directed navigation among multiple dynamic
+obstacles in full-order humanoid simulation and real-world
+humanoid experiments using LiDAR-based perception, without
+a runtime safety filter. [Project Page] 1 [Code]2 [Web Demo]
+I. INTRODUCTION
+Learning-based control has enabled agile and adaptive be-
+haviors across diverse robotic platforms, from aerial vehicles
+to legged robots [1], [2]. As robots increasingly operate in
+dynamic, human-centered environments, they must navigate
+toward task goals while safely interacting with moving ob-
+stacles. This requirement is particularly relevant to humanoid
+robots operating in human environments, where navigation
+often involves close interactions with moving people. For
+humanoids, dynamic-obstacle avoidance is typically handled
+through a low-dimensional navigation interface, while a sep-
+arate whole-body controller realizes the commanded motion.
+The high-level navigation policy must therefore select goal-
+directed commands while accounting for the relative motion
+of surrounding obstacles.
+Dynamic-obstacle avoidance is commonly addressed
+through online planning or safety filtering. MPC optimizes
+over a finite horizon using robot dynamics and predicted
+∗Equal contribution;†Corresponding author.
+This work was supported by the National Research Foundation of Korea
+(NRF) grant funded by the Korea government (MSIT) (RS-2026-25540546).
+1Sanghyuk Park and Kwanwoo Lee are with the Department of Intel-
+ligence and Information, Seoul National University, Republic of Korea.
+sang0823, kwlee365@snu.ac.kr
+2Taekyung Kim is with the Department of Robotics, University of
+Michigan, Ann Arbor, MI, USA.taekyung@umich.edu
+3Seohyeon Lim is with the Department of Mechanical Engineering,
+Yonsei University, Republic of Korea.joan0219@yonsei.ac.kr
+4Yisoo Lee is with the Center for Humanoid Research, Korea In-
+stitute of Science and Technology (KIST), Seoul, Republic of Korea.
+yisoo.lee@kist.re.kr
+1Project page: https://psh0823.github.io/dodger-homepage
+2Code: https://github.com/psh0823/dodger
+Fig. 1: A humanoid avoids a moving pedestrian while navigating toward
+a goal using the DODGER policy. The policy is trained with CBF-based
+safety guidance and deployed without a runtime safety filter.
+obstacle motion, but its computational cost increases with
+the planning horizon and the number of obstacles [3], [4].
+CBF-based safety filters instead modify nominal commands
+online to satisfy prescribed safety constraints with minimal
+intervention [5]. For hierarchical humanoid control, however,
+such constraints are typically formulated on a reduced-order
+navigation model, while the commanded motion is realized
+by the full-body system. Model mismatch and tracking error
+can therefore create a gap between the safety condition
+imposed on the high-level command and the realized robot
+motion [6]. This motivates learning a navigation policy that
+is itself informed by the safety structure, rather than relying
+on online correction alone.
+In Reinforcement Learning (RL), safety information is
+commonly incorporated through reward shaping or safety-
+filtered interaction [7]. Reward-based methods penalize con-
+straint violations [8], but their effectiveness can depend
+strongly on the design and weighting of the penalty terms [9].
+Safety-filtering methods instead modify policy actions before
+environment interaction to satisfy safety constraints [10]–
+[12]. CBF-RL combines such filtering with a reward that pe-
+nalizes deviations between nominal and filtered actions [13].
+However, because the filtered action is executed during
+training, the collected experience follows the state-action
+distribution induced by the safety filter rather than the policy
+itself. This can limit exposure to states arising from the
+policy’s own actions, motivating a formulation that preserves
+policy-generated interaction while using CBF information
+only to guide learning.
+To address these limitations, we proposeDODGER,
+DynamicObstacle Avoidance withDPCBF-Guided
+arXiv:2609.38873v2  [cs.RO]  5 Oct 2026
