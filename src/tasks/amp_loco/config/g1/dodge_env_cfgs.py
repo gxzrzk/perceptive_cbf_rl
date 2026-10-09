@@ -1265,9 +1265,9 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   from src.tasks.amp_loco.mdp.classroom import initialize_static_classroom, reset_classroom_robot
 
   cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
-  # Classroom PPO mixes the unscaled weighted task sum with AMP style:
-  # reward = 0.75 * sum(weight_i * term_i) + 0.25 * style_score.
-  cfg.scale_rewards_by_dt = False
+  # Match standing MimicKit dodge reward scaling. At the 0.02 s control step:
+  # reward = 0.01 * sum(weight_i * term_i) + 0.25 * style_score.
+  cfg.scale_rewards_by_dt = True
   old_names = cfg.events["pin_wall"].params["wall_names"]
   cfg.scene.entities = {k: v for k, v in cfg.scene.entities.items() if k not in old_names}
   cfg.scene.sensors = tuple(s for s in cfg.scene.sensors if s.name not in
@@ -1323,14 +1323,14 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.commands["twist"].path_switch_radius = 0.8
   cfg.commands["twist"].turn_before_walk = True
   cfg.commands["twist"].simple_heading = True
-  cfg.commands["twist"].max_lin_vel_x = 0.8
+  cfg.commands["twist"].max_lin_vel_x = 0.6
   # Stronger safe-time incentive to leave the planted dodge stance and walk.
   cfg.rewards["walk_path_stillness_when_safe"].weight = float(
     os.environ.get("WALK_PATH_STILLNESS_WEIGHT", -2.0)
   )
   cfg.rewards["walk_goal_heading_when_safe"] = RewardTermCfg(
     func=mdp.walk_goal_heading_when_safe,
-    weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 1.0)),
+    weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 2.0)),
     params={"command_name": "twist", "robot_name": "robot"},
   )
   cfg.episode_length_s = 25.0

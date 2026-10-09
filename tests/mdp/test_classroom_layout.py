@@ -116,4 +116,4 @@ def test_goal_heading_reward_front_side_back_and_threat():
     env.scene['robot'].data.heading_w += torch.pi / 2
     assert torch.allclose(walk_goal_heading_when_safe(env), value, atol=1e-6)
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
-    assert cfg.rewards['walk_goal_heading_when_safe'].weight == 1.0
+    assert cfg.rewards['walk_goal_heading_when_safe'].weight == 2.0
