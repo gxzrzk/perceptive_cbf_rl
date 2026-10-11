@@ -437,12 +437,20 @@ def walk_goal_heading_when_safe(
   env: ManagerBasedRlEnv,
   command_name: str = "twist",
   robot_name: str = "robot",
+  sharpness: float = 1.0,
 ) -> torch.Tensor:
   """Signed facing reward for the path-follow goal (the yellow viewer marker).
 
-  Cosine of yaw error: front +1, side 0, back -1. Gate off during an incoming
-  ball threat, leaving emergency evasive motions free of this orientation cost.
-  A coincident goal has no defined bearing and contributes zero.
+  Signed power of the yaw-error cosine: front +1, side 0, back -1, with the
+  magnitude raised to ``sharpness`` (sign preserved). ``sharpness=1`` is the
+  plain cosine -- 45deg error still pays 0.71, a lenient judge. Higher values
+  make the judgment STRICTER: only tight alignment earns (``sharpness=4``:
+  10deg -> 0.96, 30deg -> 0.56, 45deg -> 0.25, 60deg -> 0.06) while the
+  back-facing penalty keeps its full -1 -- so slight misalignment no longer
+  nearly cancels the stillness cost, but genuine about-faces stay punishable.
+  Gate off during an incoming ball threat, leaving emergency evasive motions
+  free of this orientation cost. A coincident goal has no defined bearing and
+  contributes zero.
   """
   command = env.command_manager.get_term(command_name)
   robot = env.scene[robot_name]
@@ -452,8 +460,9 @@ def walk_goal_heading_when_safe(
   forward = torch.stack((torch.cos(heading), torch.sin(heading)), dim=-1)
   alignment = (forward * direction).sum(-1) / distance.clamp_min(1e-6)
   alignment = alignment.clamp(-1.0, 1.0)
-  alignment = torch.where(distance > 1e-6, alignment, torch.zeros_like(alignment))
-  return (1.0 - command._dodge_threat.float()) * alignment
+  signed = torch.sign(alignment) * alignment.abs().pow(sharpness)
+  signed = torch.where(distance > 1e-6, signed, torch.zeros_like(signed))
+  return (1.0 - command._dodge_threat.float()) * signed
 
 
 def walk_path_adherence_reward(

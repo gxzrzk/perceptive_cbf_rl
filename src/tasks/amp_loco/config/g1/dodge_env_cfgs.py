@@ -1331,7 +1331,50 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.rewards["walk_goal_heading_when_safe"] = RewardTermCfg(
     func=mdp.walk_goal_heading_when_safe,
     weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 2.0)),
-    params={"command_name": "twist", "robot_name": "robot"},
+    params={
+      "command_name": "twist",
+      "robot_name": "robot",
+      # STRICER heading judge (sharpness=4 signed power, vs the plain cosine at 1):
+      # the plain cosine still paid 0.71 at a 45deg error, nearly cancelling the -2.0
+      # stillness cost for a poorly-aligned stand. With 4, only <~15deg alignment
+      # earns meaningfully (10deg -> 0.96, 30deg -> 0.56, 45deg -> 0.25) while a
+      # back-face keeps the full -1 -- so "stand facing roughly the goal" is no
+      # longer net-free; the robot must actually line up (or walk) to collect it.
+      "sharpness": float(os.environ.get("WALK_GOAL_HEADING_SHARP", 4.0)),
+    },
+  )
+  # WALK, DON'T RUN. The inherited WallWalk progress terms paid for overspeed at the
+  # classroom's reduced 0.6 m/s cruise: their rate caps (clip 2.0 / v_max 1.5) were tuned
+  # for the 1.3 m/s WallWalk command and never re-tuned when the classroom cut the cruise
+  # to 0.6, so every safe step from 0.6 up to 1.5 m/s banked extra progress reward
+  # (running at 1.3 out-earned walking by ~+1.4/step raw) and the trained policy RAN.
+  # Three coordinated fixes (classroom-only; the WallWalk task keeps its own terms):
+  # 1) DROP the always-on symmetric `walk_path_progress` entirely. Its only unique job
+  #    was penalizing backsliding DURING a threat (it is the one walk term NOT
+  #    threat-gated) -- but a 360-deg throw into a 2.2 m aisle makes backing/side-stepping
+  #    along the path a legitimate dodge, so that penalty was the single reward pressure
+  #    against dodging. With it gone, threat-time motion is free in task-reward space
+  #    (stillness/heading/progress_when_safe all gate to zero under threat anyway).
+  # 2) Concentrate the safe-time forward pay in `walk_path_progress_when_safe`
+  #    (1.0 -> 2.0): at the 0.6 m/s cruise it pays 2.0*0.6 = 1.2/step raw, exactly what
+  #    the dropped always-on term paid, so walk-vs-stand economics are unchanged.
+  # 3) Cap the payable rate just above the cruise (v_max 1.5 -> 0.75: overspeed earns
+  #    NOTHING extra) and sharpen the velocity-tracking std (1.0 -> 0.3: overspeed now
+  #    forfeits the tracking reward instead of keeping ~0.6 of it). Both are needed --
+  #    v_max alone leaves running +0.12/step ahead, the tight std alone leaves it +1.4
+  #    ahead; together walking (~+1.9 raw) clearly beats running (~+1.5 raw). NB the
+  #    tracking term has no threat gate, so a dodge sidestep now also forfeits ~0.5/step
+  #    of it -- second-order vs the ~32/step expected income a hit costs, so it does not
+  #    suppress evasion; it only removes the free-speed subsidy.
+  cfg.rewards.pop("walk_path_progress", None)
+  cfg.rewards["walk_path_progress_when_safe"].weight = float(
+    os.environ.get("WALK_PATH_PROGRESS_SAFE_WEIGHT", 2.0)
+  )
+  cfg.rewards["walk_path_progress_when_safe"].params["v_max"] = float(
+    os.environ.get("WALK_PROGRESS_SAFE_VMAX", 0.75)
+  )
+  cfg.rewards["track_anchor_linear_velocity"].params["std"] = float(
+    os.environ.get("WALK_TRACK_LIN_STD", 0.3)
   )
   cfg.episode_length_s = 25.0
   cfg.events["throw_ball_on_dwell"].params.update(
@@ -1359,6 +1402,18 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   hidden_ball_pos = (0.0, 1000.0, 0.15)
   cfg.scene.entities["ball"].init_state.pos = hidden_ball_pos
   cfg.events["reset_dodge_state"].params["park_offset"] = hidden_ball_pos
+  # TRAINING-VIDEO CAMERA: near-top-down view that clears the room. The inherited
+  # tracking camera (elevation -5deg, distance 3 m) is almost horizontal, so inside
+  # the walled/furniture-filled classroom most recorded frames are occluded by a
+  # boundary wall or a desk. A steep -80deg overhead track (distance 4 m -> ~3.3 m
+  # of ground coverage at the 45deg fovy) always shows the robot plus its aisle
+  # context; -80 rather than a pure -90 top-down keeps enough side view that
+  # ducking under the low-arc throw (a key behavior to inspect) stays readable,
+  # while occlusion needs the robot within ~0.7 m of a 3 m wall. Training-only:
+  # the interactive play viewer keeps the familiar low tracking angle.
+  if not play:
+    cfg.viewer.elevation = -80.0
+    cfg.viewer.distance = 4.0
   # Preserve contact capacity for simultaneous robot/scenery contacts.
   cfg.sim.njmax = max(cfg.sim.njmax or 0, 2048)
   # Warp worlds are isolated. Share a local origin so compile-time static

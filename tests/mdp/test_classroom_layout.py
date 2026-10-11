@@ -96,9 +96,10 @@ def test_classroom_registered_task_configs():
 
 def test_goal_heading_reward_front_side_back_and_threat():
     from types import SimpleNamespace
+    import math
     import torch
     from src.tasks.amp_loco.mdp.rewards import walk_goal_heading_when_safe
-    headings = torch.tensor([0., torch.pi / 2, torch.pi, -torch.pi / 2, 0., torch.pi, 0.])
+    headings = torch.tensor([0., torch.pi / 2, torch.pi, -torch.pi / 2, 0., math.pi, 0.])
     origins = torch.tensor([[5., -2., 0.8]]).repeat(7, 1)
     goals = origins[:, :2] + torch.tensor([1., 0.])
     goals[-1] = origins[-1, :2]
@@ -117,3 +118,37 @@ def test_goal_heading_reward_front_side_back_and_threat():
     assert torch.allclose(walk_goal_heading_when_safe(env), value, atol=1e-6)
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     assert cfg.rewards['walk_goal_heading_when_safe'].weight == 2.0
+
+
+def test_goal_heading_reward_sharpness():
+    """The classroom's sharpness=4 judge: 45deg pays cos^4 = 0.25 (not 0.71), and
+    a 45deg back-face is -0.25 (full-strength sign, sharpened magnitude). The
+    plain-cosine default (sharpness=1) keeps 0.707 at 45deg."""
+    from types import SimpleNamespace
+    import math
+    import torch
+    from src.tasks.amp_loco.mdp.rewards import walk_goal_heading_when_safe
+    headings = torch.tensor([math.pi / 4, -math.pi / 4])  # +45deg, -45deg yaw error
+    origins = torch.tensor([[5., -2., 0.8]]).repeat(2, 1)
+    goals = origins[:, :2] + torch.tensor([1., 0.])
+    command = SimpleNamespace(goal_pos_w=goals,
+                              _dodge_threat=torch.zeros(2))
+    env = SimpleNamespace(
+        scene={'robot': SimpleNamespace(data=SimpleNamespace(
+            root_link_pos_w=origins, heading_w=headings))},
+        command_manager=SimpleNamespace(get_term=lambda name: command),
+    )
+    cos45 = math.cos(math.pi / 4)
+    assert torch.allclose(
+        walk_goal_heading_when_safe(env, sharpness=4.0),
+        torch.full((2,), cos45 ** 4), atol=1e-6)
+    assert torch.allclose(
+        walk_goal_heading_when_safe(env, sharpness=1.0),
+        torch.full((2,), cos45), atol=1e-6)
+    # Back-face at 135deg: sign preserved, magnitude sharpened.
+    env.scene['robot'].data.heading_w += torch.pi
+    assert torch.allclose(
+        walk_goal_heading_when_safe(env, sharpness=4.0),
+        torch.full((2,), -(math.cos(3 * math.pi / 4) ** 4)), atol=1e-6)
+    cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
+    assert cfg.rewards['walk_goal_heading_when_safe'].params['sharpness'] == 4.0
