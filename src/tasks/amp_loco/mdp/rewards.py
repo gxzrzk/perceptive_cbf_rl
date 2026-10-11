@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import mujoco
@@ -12,7 +13,8 @@ from mjlab.sensor import BuiltinSensor, ContactSensor
 from mjlab.utils.lab_api.math import (
   quat_apply_inverse, 
   yaw_quat, 
-  quat_apply
+  quat_apply,
+  wrap_to_pi,
 )
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -371,35 +373,36 @@ def walk_path_progress_when_safe(
   command_name: str = "twist",
   v_max: float = 1.5,
   clip_lo: float = 2.0,
+  stillness_penalty: float = 0.0,
+  stillness_threshold: float = 0.02,
 ) -> torch.Tensor:
-  """Threat-gated path-progress reward: push FORWARD along the path ONLY when safe.
+  """Reward changes in signed path distance from the episode's spawn when safe.
 
-  ``r = (1 - threat) * clamp(progress_rate, -clip_lo, v_max)`` where
-  ``progress_rate = _path_s_delta / dt`` (m/s along the route) and ``threat`` =
-  ``command._dodge_threat`` (privileged, reward-only: 1 while a ball is airborne
-  and approaching, else 0).
+  ``progress_rate = (s_now - s_prev) / dt`` uses the robot's projected arc-length
+  coordinate, whose origin is the spawn; it does not use the moving lookahead
+  goal's distance. Forward motion pays a positive rate, retreat pays a negative
+  rate, and uniform forward motion earns a constant reward per step. ``v_max``
+  and ``clip_lo`` bound the forward reward and backward cost respectively.
 
-  The walk-task mirror of the standing task's ``dodge_stillness_when_safe`` (which
-  rewards stillness when safe). Here, between throws the ball is parked (threat=0)
-  and the robot should be EATING DISTANCE, so forward progress pays a bonus; the
-  moment a ball looms (threat=1) the term vanishes, so it never pulls against a
-  dodge -- including a dodge that steps BACKWARD along the path (negative rate,
-  but gated to zero). Unlike the always-on ``walk_path_progress_reward`` (which
-  keeps the route-progress objective live through the dodge, symmetric), this is
-  the extra carrot that makes "safe time = walking time" unambiguous:
+  With ``stillness_penalty > 0``, rates within ``stillness_threshold`` m/s of
+  zero instead pay ``-stillness_penalty * forward_scale``. The heading gate
+  waives this cost for commanded turns, while projected backward motion remains
+  negative even during a turn. The deadband rejects tiny projection jitter.
+  Default penalty 0 preserves WallWalk's pure signed-rate behavior.
 
-  * threat=0 (ball parked / flying away) -> bonus for advancing, penalty for
-    backsliding -- the dominant safe-time drive together with walk_path_progress.
-  * threat=1 (ball incoming) -> 0 regardless of motion -> dodging is free.
-
-  ``v_max`` caps the payable rate just above the 1.3 m/s cruise so the term never
-  incentivizes outrunning the velocity command; ``clip_lo`` bounds the symmetric
-  backslide penalty (spikes from resets/teleports).
+  An incoming ball threat gates the entire term to zero, including backward
+  evasions. Resetting the path resets its arc-length coordinate and delta.
   """
   command = env.command_manager.get_term(command_name)
   threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
-  rate = (command._path_s_delta / env.step_dt).clamp(min=-clip_lo, max=v_max)
-  return (1.0 - threat) * rate
+  rate = command._path_s_delta / env.step_dt
+  pay = rate.clamp(min=-clip_lo, max=v_max)
+  if stillness_penalty > 0.0:
+    forward_scale = getattr(command, "_walk_forward_scale", 1.0)
+    pay = torch.where(
+      rate.abs() <= stillness_threshold, -stillness_penalty * forward_scale, pay
+    )
+  return (1.0 - threat) * pay
 
 
 def walk_path_stillness_when_safe(
@@ -438,20 +441,27 @@ def walk_goal_heading_when_safe(
   command_name: str = "twist",
   robot_name: str = "robot",
   sharpness: float = 1.0,
+  turn_angle_threshold: float = math.pi / 6,
+  turn_velocity_std: float = 0.25,
 ) -> torch.Tensor:
-  """Signed facing reward for the path-follow goal (the yellow viewer marker).
+  """Reward facing the goal or actually turning toward it when misaligned.
 
-  Signed power of the yaw-error cosine: front +1, side 0, back -1, with the
-  magnitude raised to ``sharpness`` (sign preserved). ``sharpness=1`` is the
-  plain cosine -- 45deg error still pays 0.71, a lenient judge. Higher values
-  make the judgment STRICTER: only tight alignment earns (``sharpness=4``:
-  10deg -> 0.96, 30deg -> 0.56, 45deg -> 0.25, 60deg -> 0.06) while the
-  back-facing penalty keeps its full -1 -- so slight misalignment no longer
-  nearly cancels the stillness cost, but genuine about-faces stay punishable.
-  Gate off during an incoming ball threat, leaving emergency evasive motions
-  free of this orientation cost. A coincident goal has no defined bearing and
-  contributes zero.
+  Inside ``turn_angle_threshold`` (default 30deg), keep the signed power of
+  the heading-error cosine. Outside, use the measured world-z root angular
+  velocity and the heading controller's target
+  ``w_target = clamp(kp_yaw * wrap(goal_bearing - heading), +/-max_ang_vel_z)``.
+  The turn score ``2 * exp(-((w_z - w_target)/turn_velocity_std)^2) - 1``
+  lies in [-1, 1]: matching the reasonable signed target pays +1, while stopping,
+  turning away, or excessive spin are penalized with the classroom defaults.
+
+  Recompute the target from the current bearing instead of using the cached
+  command, so direction and angular velocity refer to the same robot state.
+  Incoming threats and coincident goals give zero in either branch.
   """
+  if not 0.0 <= turn_angle_threshold <= math.pi:
+    raise ValueError("turn_angle_threshold must be between 0 and pi")
+  if turn_velocity_std <= 0.0:
+    raise ValueError("turn_velocity_std must be positive")
   command = env.command_manager.get_term(command_name)
   robot = env.scene[robot_name]
   direction = command.goal_pos_w - robot.data.root_link_pos_w[:, :2]
@@ -461,8 +471,24 @@ def walk_goal_heading_when_safe(
   alignment = (forward * direction).sum(-1) / distance.clamp_min(1e-6)
   alignment = alignment.clamp(-1.0, 1.0)
   signed = torch.sign(alignment) * alignment.abs().pow(sharpness)
-  signed = torch.where(distance > 1e-6, signed, torch.zeros_like(signed))
-  return (1.0 - command._dodge_threat.float()) * signed
+  yaw_error = wrap_to_pi(torch.atan2(direction[:, 1], direction[:, 0]) - heading)
+  target_yaw_rate = (command.cfg.kp_yaw * yaw_error).clamp(
+    min=-command.cfg.max_ang_vel_z, max=command.cfg.max_ang_vel_z
+  )
+  yaw_rate = robot.data.root_link_ang_vel_w[:, 2]
+  turn_score = 2.0 * torch.exp(
+    -torch.square((yaw_rate - target_yaw_rate) / turn_velocity_std)
+  ) - 1.0
+  # Stopping or rotating away is always a cost, even if the tolerance is widened.
+  turn_score = torch.where(
+    yaw_rate * yaw_error > 0.0, turn_score, -torch.ones_like(turn_score)
+  )
+  # Angle wrapping can move exact 30deg by a float32 rounding error.
+  reward = torch.where(
+    yaw_error.abs() > turn_angle_threshold + 1e-6, turn_score, signed
+  )
+  reward = torch.where(distance > 1e-6, reward, torch.zeros_like(reward))
+  return (1.0 - command._dodge_threat.float()) * reward
 
 
 def walk_path_adherence_reward(

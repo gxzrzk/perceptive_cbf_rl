@@ -23,7 +23,8 @@ def make_command(angles):
     quat[:, 0], quat[:, 3] = torch.cos(heading / 2), torch.sin(heading / 2)
     scene = Scene(
         robot=NS(data=NS(root_link_pos_w=torch.zeros(n, 3),
-                         root_link_quat_w=quat, heading_w=heading)),
+                         root_link_quat_w=quat, heading_w=heading,
+                         root_link_ang_vel_w=torch.zeros(n, 3))),
         ball=NS(data=NS(root_link_pos_w=torch.tensor([[0., 1000., .8]]).repeat(n, 1),
                         root_link_lin_vel_w=torch.zeros(n, 3))),
     )
@@ -48,8 +49,8 @@ def test_turn_then_smooth_forward_and_matching_stillness(cbf_enabled):
     vx, vy, wz = command.command.unbind(-1)
     assert torch.allclose(vx[:3], torch.zeros(3), atol=1e-6)
     assert torch.all(vx[3:7].diff() > 0)
-    assert vx[4].item() == pytest.approx(.4, abs=1e-6)
-    assert torch.allclose(vx[6:8], torch.full((2,), .8))
+    assert vx[4].item() == pytest.approx(.3, abs=1e-6)  # max 0.6 m/s x scale(60deg)=0.5
+    assert torch.allclose(vx[6:8], torch.full((2,), .6))
     assert vx[8].item() == pytest.approx(vx[4].item())
     assert vx[9] == 0 and torch.all(vy == 0) and torch.all(vx >= 0)
     assert torch.all(wz[1:7] > 0) and torch.all(wz[8:] < 0) and wz[7] == 0

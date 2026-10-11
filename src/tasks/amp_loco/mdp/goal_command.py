@@ -361,8 +361,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
   def _update_path_goal(self) -> None:
     """Pure-pursuit goal on the env's random walk path (see mdp/walk_path.py).
 
-    Advances the robot's arc-length progress along its polyline path (segment
-    index + clamped projection), extends the path when the horizon (lookahead +
+    Tracks the robot's arc-length progress along its polyline path (segment
+    index + projection), extends the path when the horizon (lookahead +
     the wall-recycle reach) runs off the end, and pins ``goal_pos_w`` to the
     point ``path_lookahead`` metres ahead. The parent's P-controller + heading
     logic turns that into a cruise-speed command that follows the path's curves.
@@ -383,10 +383,10 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self._path_epoch_seen = env._walk_path_epoch.clone()
 
     robot_xy = self.robot.data.root_link_pos_w[:, :2]
+    allow_backtracking = getattr(self.cfg, "path_allow_backtracking", False)
 
-    # Advance the segment index while the robot's projection passes the next
-    # vertex (capped loop; the robot moves ~3 cm/step, so >1 crossing/step only
-    # happens on a teleport/reset edge case).
+    # Update the segment index locally, including retreat when enabled. The
+    # capped loop handles several short rounded-corner segments or teleport edges.
     for _ in range(8):
       i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
       p0 = pts[ar, i]
@@ -410,9 +410,24 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       near_corner = (robot_xy - p1).norm(dim=-1) <= self.cfg.path_switch_radius
       entered_next = (next_u > 0.0) & (next_dist + 1e-4 < current_dist)
       adv = ((u >= 1.0) | (near_corner & entered_next)) & has_next
-      if not adv.any():
+      back = torch.zeros_like(adv)
+      if allow_backtracking:
+        # Only consider the preceding segment, never a later visit to the same
+        # intersection. Retreat through a corner must decrease spawn-relative s.
+        prev0 = pts[ar, (i - 1).clamp(min=0)]
+        prev_seg = p0 - prev0
+        prev_u = ((robot_xy - prev0) * prev_seg).sum(-1) / (
+          prev_seg.square().sum(-1).clamp_min(1e-9)
+        )
+        prev_closest = prev0 + prev_u.clamp(0, 1)[:, None] * prev_seg
+        prev_dist = (robot_xy - prev_closest).norm(dim=-1)
+        near_start = (robot_xy - p0).norm(dim=-1) <= self.cfg.path_switch_radius
+        back = (i > 0) & (prev_u < 1.0) & (
+          (u < 0.0) | (near_start & (prev_dist + 1e-4 < current_dist))
+        ) & ~adv
+      if not (adv | back).any():
         break
-      self._path_seg_idx = torch.where(adv, self._path_seg_idx + 1, self._path_seg_idx)
+      self._path_seg_idx = self._path_seg_idx + adv.long() - back.long()
 
     # Arc-length position: cum[i] + clamped projection onto the current segment.
     i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
@@ -420,16 +435,20 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     p1 = pts[ar, i + 1]
     seg = p1 - p0
     l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
-    u = (((robot_xy - p0) * seg).sum(dim=-1) / l2).clamp(0.0, 1.0)
-    s_new = cum[ar, i] + u * seg.norm(dim=-1)
+    projection = ((robot_xy - p0) * seg).sum(dim=-1) / l2
+    u = projection.clamp(0.0, 1.0)
+    progress_u = torch.where(
+      (i == 0) & allow_backtracking, projection.clamp(max=1.0), u
+    )
+    # Extend the first segment's signed coordinate behind spawn so backing up
+    # from s=0 is negative progress rather than clamping to perpetual stillness.
+    s_new = cum[ar, i] + progress_u * seg.norm(dim=-1)
     # Lateral deviation from the route (perpendicular distance to the clamped
     # projection point on the current segment).
     closest = p0 + u.unsqueeze(-1) * seg
     self._path_lat_err = (robot_xy - closest).norm(dim=-1)
-    # Per-step progress (m). On a new path _path_s was zeroed above and the robot
-    # sits at the path origin, so the delta is ~0 -- a path change never reads as
-    # motion.
-    self._path_s_delta = s_new - self._path_s
+    # A fresh episode/path is a new reference, never a motion reward spike.
+    self._path_s_delta = torch.where(new_path, 0.0, s_new - self._path_s)
     self._path_s = s_new
 
     # Keep the path long enough for the goal lookahead AND the wall-recycle
@@ -673,6 +692,9 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   path_switch_radius: float = 0.0
   """Allow early transition to the adjacent segment within this endpoint radius.
   Zero keeps the crossing-only behavior; the classroom enables corner recovery."""
+  path_allow_backtracking: bool = False
+  """Track signed spawn-relative progress through preceding route segments and
+  behind the spawn on the first segment. Classroom enables this for retreat costs."""
   path_wall_ahead: float = 11.0
   """Extra path length (m) kept generated beyond the lookahead -- must exceed the
   wall-recycle event's ahead_range max (10 m) so recycled walls always land on

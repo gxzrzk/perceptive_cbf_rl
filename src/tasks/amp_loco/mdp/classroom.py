@@ -4,7 +4,7 @@ from mjlab.utils.lab_api.math import quat_apply, quat_mul
 from .walk_path import _ensure_stash
 from src.assets.objects.classroom import (
   CLASSROOM_SPAWN_LANES, CLASSROOM_ROUTE_STATIONS,
-  CLASSROOM_ROW_PITCH, CLASSROOM_COLUMN_Y,
+  CLASSROOM_ROW_PITCH, CLASSROOM_COLUMN_Y, CLASSROOM_ROUTE_CLEARANCE,
 )
 
 
@@ -72,7 +72,7 @@ def generate_classroom_route(x, y, lane, count=80):
   """Random walk on the two longitudinal aisles and six cross aisles.
 
   Select only adjacent junctions, excluding immediate reversal. Each centerline
-  has at least 1.1 m clearance to furniture; the initial leg stays in its lane.
+  has about 0.90 m clearance to furniture; the initial leg stays in its lane.
   """
   n, device = len(x), x.device
   # Cross-aisle centers between the desk front and the next row's chair back.
@@ -110,7 +110,8 @@ def generate_classroom_route(x, y, lane, count=80):
   return local
 
 
-def round_classroom_route(points, radius=0.6, arc_segments=6, clearance=0.9):
+def round_classroom_route(points, radius=0.6, arc_segments=6,
+                          clearance=CLASSROOM_ROUTE_CLEARANCE):
   """Replace junctions with tangent circular arcs; return packed points/counts.
 
   The radius is limited by both adjacent leg lengths and available aisle space.

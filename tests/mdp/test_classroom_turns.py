@@ -4,6 +4,9 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
+from src.assets.objects.classroom import (
+    CLASSROOM_ROUTE_CLEARANCE, CLASSROOM_ROUTE_STATIONS, CLASSROOM_SPAWN_LANES,
+)
 from src.tasks.amp_loco.mdp.classroom import generate_classroom_route, round_classroom_route
 from src.tasks.amp_loco.mdp.goal_command import DodgeGoToGoalCommand
 from src.tasks.amp_loco.mdp.walk_path import _ensure_stash
@@ -75,8 +78,8 @@ def test_rounded_random_routes_clear_all_obstacles():
     torch.manual_seed(24)
     n = 64
     lane = torch.randint(2, (n,))
-    x = torch.rand(n) * 20.9
-    y = torch.tensor([0., -3.6])[lane] + (torch.rand(n) * 2 - 1) * .15
+    x = torch.rand(n) * CLASSROOM_ROUTE_STATIONS[-1]
+    y = torch.tensor(CLASSROOM_SPAWN_LANES)[lane] + (torch.rand(n) * 2 - 1) * .15
     route, counts = round_classroom_route(generate_classroom_route(x, y, lane))
     assert torch.allclose(route[:, 0], torch.stack((x, y), -1))
     lengths = (route[:, 1:] - route[:, :-1]).norm(dim=-1)
@@ -90,7 +93,7 @@ def test_rounded_random_routes_clear_all_obstacles():
     for name, pose in zip(params['wall_names'], params['layout'], strict=True):
         size = cfg.scene.entities[name].spec_fn().geom('wall_collision').size[:2]
         outside = (samples - torch.tensor(pose[:2])).abs() - torch.tensor(size.copy())
-        assert (outside.clamp_min(0).norm(dim=-1) >= .9 - 1e-5).all()
+        assert (outside.clamp_min(0).norm(dim=-1) >= CLASSROOM_ROUTE_CLEARANCE - 1e-5).all()
 
 
 def test_larger_stash_preserves_nonreset_environments():

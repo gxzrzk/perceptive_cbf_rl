@@ -3,14 +3,27 @@ import mujoco
 from mjlab.entity import Entity, EntityCfg
 
 # Layout shared by scene creation, safe spawns and random route generation.
+# Reduce wall-center footprint by 20%, preserving aspect ratio and furniture size.
+CLASSROOM_LAYOUT_SCALE = 0.8 ** 0.5
 CLASSROOM_ROWS = 5
-CLASSROOM_COLUMN_Y = (-5.3, -1.9, 1.9)
-CLASSROOM_ROW_START = 3.5
-CLASSROOM_ROW_PITCH = 3.8
-CLASSROOM_X_BOUNDS = (-1.7, 23.4)
-CLASSROOM_Y_BOUNDS = (-6.5, 3.1)
-CLASSROOM_SPAWN_LANES = (0.0, -3.6)
-CLASSROOM_ROUTE_STATIONS = (0.0, 5.0, 8.8, 12.6, 16.4, 20.9)
+CLASSROOM_COLUMN_Y = tuple(y * CLASSROOM_LAYOUT_SCALE for y in (-5.3, -1.9, 1.9))
+CLASSROOM_ROW_START = 3.5 * CLASSROOM_LAYOUT_SCALE
+CLASSROOM_ROW_PITCH = 3.8 * CLASSROOM_LAYOUT_SCALE
+CLASSROOM_X_BOUNDS = tuple(x * CLASSROOM_LAYOUT_SCALE for x in (-1.7, 23.4))
+CLASSROOM_Y_BOUNDS = tuple(y * CLASSROOM_LAYOUT_SCALE for y in (-6.5, 3.1))
+CLASSROOM_SPAWN_LANES = (
+  (CLASSROOM_COLUMN_Y[1] + CLASSROOM_COLUMN_Y[2]) / 2,
+  (CLASSROOM_COLUMN_Y[0] + CLASSROOM_COLUMN_Y[1]) / 2,
+)
+# Unchanged pairs span x-1.2 to x+0.4, so recenter cross aisles after shrinking.
+CLASSROOM_ROUTE_STATIONS = (
+  0.0,
+  *(CLASSROOM_ROW_START + (row + 0.5) * CLASSROOM_ROW_PITCH - 0.4
+    for row in range(CLASSROOM_ROWS - 1)),
+  20.9 * CLASSROOM_LAYOUT_SCALE,
+)
+# Root-point clearance for rounded routes; the new narrowest aisle is ~1.80 m.
+CLASSROOM_ROUTE_CLEARANCE = 0.7
 
 
 class StaticClassroomEntity(Entity):

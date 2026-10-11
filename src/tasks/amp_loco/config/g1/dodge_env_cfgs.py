@@ -1256,7 +1256,7 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
 
 
 def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """25.1 x 9.6 m classroom: 15 pairs, unchanged 2.6/2.2 m aisle clearance."""
+  """22.45 x 8.59 m classroom: 20% less area, 15 unchanged desk/chair pairs."""
   from src.assets.objects.classroom import (
     get_furniture_cfg, get_static_wall_cfg, CLASSROOM_ROWS, CLASSROOM_COLUMN_Y,
     CLASSROOM_ROW_START, CLASSROOM_ROW_PITCH,
@@ -1275,7 +1275,7 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.events.pop("recycle_walls_ahead", None)
   layout, assets = [], []
   # Pair extends from x-1.2 (chair back) to x+0.4 (desk front).
-  # 3.8 m row pitch therefore gives exactly 2.2 m clear cross aisles.
+  # ~3.40 m row pitch gives ~1.80 m clear cross aisles without shrinking furniture.
   for row in range(CLASSROOM_ROWS):
     for y in CLASSROOM_COLUMN_Y:
       x = CLASSROOM_ROW_START + row * CLASSROOM_ROW_PITCH
@@ -1321,51 +1321,30 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   # Shorter lookahead limits corner cutting at cross-aisle intersections.
   cfg.commands["twist"].path_lookahead = 0.8
   cfg.commands["twist"].path_switch_radius = 0.8
+  cfg.commands["twist"].path_allow_backtracking = True
   cfg.commands["twist"].turn_before_walk = True
   cfg.commands["twist"].simple_heading = True
   cfg.commands["twist"].max_lin_vel_x = 0.6
-  # Stronger safe-time incentive to leave the planted dodge stance and walk.
-  cfg.rewards["walk_path_stillness_when_safe"].weight = float(
-    os.environ.get("WALK_PATH_STILLNESS_WEIGHT", -2.0)
-  )
+  # One signed spawn-relative progress term rewards forward motion and penalizes
+  # retreat/idle time. Keep the standalone WallWalk stillness term out of classroom.
+  cfg.rewards.pop("walk_path_stillness_when_safe", None)
   cfg.rewards["walk_goal_heading_when_safe"] = RewardTermCfg(
     func=mdp.walk_goal_heading_when_safe,
     weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 2.0)),
     params={
       "command_name": "twist",
       "robot_name": "robot",
-      # STRICER heading judge (sharpness=4 signed power, vs the plain cosine at 1):
-      # the plain cosine still paid 0.71 at a 45deg error, nearly cancelling the -2.0
-      # stillness cost for a poorly-aligned stand. With 4, only <~15deg alignment
-      # earns meaningfully (10deg -> 0.96, 30deg -> 0.56, 45deg -> 0.25) while a
-      # back-face keeps the full -1 -- so "stand facing roughly the goal" is no
-      # longer net-free; the robot must actually line up (or walk) to collect it.
+      # Within 30deg reward alignment; outside reward actual signed yaw-rate
+      # tracking, with a negative score for idle/wrong-way/excessive rotation.
       "sharpness": float(os.environ.get("WALK_GOAL_HEADING_SHARP", 4.0)),
+      "turn_angle_threshold": cfg.commands["twist"].walk_full_speed_angle,
+      "turn_velocity_std": float(os.environ.get("WALK_GOAL_TURN_STD", 0.25)),
     },
   )
-  # WALK, DON'T RUN. The inherited WallWalk progress terms paid for overspeed at the
-  # classroom's reduced 0.6 m/s cruise: their rate caps (clip 2.0 / v_max 1.5) were tuned
-  # for the 1.3 m/s WallWalk command and never re-tuned when the classroom cut the cruise
-  # to 0.6, so every safe step from 0.6 up to 1.5 m/s banked extra progress reward
-  # (running at 1.3 out-earned walking by ~+1.4/step raw) and the trained policy RAN.
-  # Three coordinated fixes (classroom-only; the WallWalk task keeps its own terms):
-  # 1) DROP the always-on symmetric `walk_path_progress` entirely. Its only unique job
-  #    was penalizing backsliding DURING a threat (it is the one walk term NOT
-  #    threat-gated) -- but a 360-deg throw into a 2.2 m aisle makes backing/side-stepping
-  #    along the path a legitimate dodge, so that penalty was the single reward pressure
-  #    against dodging. With it gone, threat-time motion is free in task-reward space
-  #    (stillness/heading/progress_when_safe all gate to zero under threat anyway).
-  # 2) Concentrate the safe-time forward pay in `walk_path_progress_when_safe`
-  #    (1.0 -> 2.0): at the 0.6 m/s cruise it pays 2.0*0.6 = 1.2/step raw, exactly what
-  #    the dropped always-on term paid, so walk-vs-stand economics are unchanged.
-  # 3) Cap the payable rate just above the cruise (v_max 1.5 -> 0.75: overspeed earns
-  #    NOTHING extra) and sharpen the velocity-tracking std (1.0 -> 0.3: overspeed now
-  #    forfeits the tracking reward instead of keeping ~0.6 of it). Both are needed --
-  #    v_max alone leaves running +0.12/step ahead, the tight std alone leaves it +1.4
-  #    ahead; together walking (~+1.9 raw) clearly beats running (~+1.5 raw). NB the
-  #    tracking term has no threat gate, so a dodge sidestep now also forfeits ~0.5/step
-  #    of it -- second-order vs the ~32/step expected income a hit costs, so it does not
-  #    suppress evasion; it only removes the free-speed subsidy.
+  # Reward safe-time signed progress from spawn, with a separate idle branch.
+  # Drop the always-on term so retreat during a ball threat is not penalized here.
+  # Cap forward pay near the 0.6 m/s cruise and keep tight velocity tracking to
+  # discourage running. All ball-threat rows receive zero from this path term.
   cfg.rewards.pop("walk_path_progress", None)
   cfg.rewards["walk_path_progress_when_safe"].weight = float(
     os.environ.get("WALK_PATH_PROGRESS_SAFE_WEIGHT", 2.0)
@@ -1373,13 +1352,27 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.rewards["walk_path_progress_when_safe"].params["v_max"] = float(
     os.environ.get("WALK_PROGRESS_SAFE_VMAX", 0.75)
   )
+  # Raw values: cruise +0.6, idle -0.6*forward_scale, retreat signed negative.
+  # Near-zero rates (<=0.02 m/s) count as idle rather than projection jitter.
+  cfg.rewards["walk_path_progress_when_safe"].params["stillness_penalty"] = float(
+    os.environ.get("WALK_PROGRESS_STILLNESS_PENALTY", 0.6)
+  )
+  cfg.rewards["walk_path_progress_when_safe"].params["stillness_threshold"] = float(
+    os.environ.get("WALK_PROGRESS_STILLNESS_THRESHOLD", 0.02)
+  )
   cfg.rewards["track_anchor_linear_velocity"].params["std"] = float(
     os.environ.get("WALK_TRACK_LIN_STD", 0.3)
   )
   cfg.episode_length_s = 25.0
+  classroom_interval = (
+    float(os.environ.get("WALK_THROW_INTERVAL_MIN", 3.0)),
+    float(os.environ.get("WALK_THROW_INTERVAL_MAX", 7.0)),
+  )
+  # Use the same countdown for the first throw after reset and subsequent throws.
+  cfg.events["reset_dodge_state"].params["throw_interval_range"] = classroom_interval
   cfg.events["throw_ball_on_dwell"].params.update(
     omnidirectional=True, along_path=False, launch_speed_range=None,
-    dist_range=(3.0, 5.0))
+    dist_range=(3.0, 5.0), throw_interval_range=classroom_interval)
   # Bit 1 keeps ordinary robot/scenery collisions. Only the robot accepts
   # ball bit 2; ball affinity 0 prevents the reverse mask test enabling scenery.
   ball_bit = 2
