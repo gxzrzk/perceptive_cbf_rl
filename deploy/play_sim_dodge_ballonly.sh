@@ -1,52 +1,44 @@
 #!/usr/bin/env bash
-# Sim2sim for the BALL-ONLY masked-depth policy, driven by the REAL ZED + realtime
-# EfficientTAM -- the exact on-robot perception path, no robot. Three processes:
-#   * dodge_policy      -- the ball-only ONNX, DEPLOY uv env (onnxruntime).
-#   * camera_node_etam  -- REAL ZED -> EfficientTAM ball mask -> ball-only depth
-#                          (ball=real depth, everything else=far) -> UDP. DEPLOY py3.8
-#                          venv (torch 2.4.1 + EfficientTAM + pyzed cp38).
-#   * sim_node          -- the mjlab BallOnly dodge env (DEV env / mjlab) supplying
-#                          robot dynamics + proprio, with its OWN depth render disabled
-#                          (--external-depth): the live masked ZED feed replaces it.
+# ==============================================================================
+# 纯净掩码躲避策略 (Ball-Only Policy) 真实感知在环 Sim2sim 验证脚本
 #
-# This is the live equivalent of play_depth_single_ballonly_aug.sh: the policy sees the
-# SAME ball-only [9,16] depth it trained on (BallOnlyDepthObs), except now it comes from
-# the camera+segmenter instead of the sim. CLICK the ball once in the EfficientTAM window
-# to start tracking; sim balls are paused (--pause-throws) -- wave/throw a REAL ball at
-# the camera and watch the sim robot dodge.
+# 在部署架构中的角色：
+# -------------------
+# 本脚本搭建了“真实物理相机感知 + 仿真机器人动力学”的混合闭环验证系统：
+#   * dodge_policy     : 加载纯净球体掩码深度策略 ONNX，运行在 DEPLOY 虚拟环境；
+#   * camera_node_etam : 真实物理 ZED 相机 + 实时 EfficientTAM 目标分割网络，
+#                        生成“唯有球体保留真实深度、背景全置为 5.0m”的纯净深度图并 UDP 发送；
+#   * sim_node         : 运行在 DEV 虚拟环境的 MuJoCo G1 动力学仿真器，禁用自身深度渲染
+#                        (--external-depth)，接收外部真实深度并驱动仿真机器人。
 #
-# Uses a pre-exported ONNX directly (no mjlab export step). Default = newest *.onnx under
-# the ballonly exp's export/ dir; pass an explicit ONNX to pin one.
+# 交互与测试方式：
+# ---------------
+# 1. 启动脚本后，在弹出的 EfficientTAM 视频窗口中**鼠标点击真实网球/排球一次**；
+# 2. 仿真环境已自动暂停内置的虚拟抛球 (--pause-throws) 并将基准速度置零 (--zero-command)；
+# 3. 操作人员向真实 ZED 相机抛掷真球，即可实时观察仿真环境中的 G1 人形机器人做出敏捷的闪避动作！
 #
-# Usage:
-#   bash deploy/play_sim_dodge_ballonly.sh                                   # newest export ONNX
-#   bash deploy/play_sim_dodge_ballonly.sh path/to/...BallOnly..._model_24000.onnx   # explicit
-#   RUN=2026-06-11_00-08-51 bash deploy/play_sim_dodge_ballonly.sh           # newest in one run
-#   TINY=1 bash deploy/play_sim_dodge_ballonly.sh                            # faster tiny EfficientTAM
-#   CAMERA_TILT_DEG=0 bash deploy/play_sim_dodge_ballonly.sh <onnx>          # for a *_tilt0 ckpt
-#
-# CAMERA_TILT_DEG (default 20) is the PHYSICAL ZED pitch you mounted -- match it to the
-# checkpoint's training tilt (the plain ballonly exp = 20 deg, the *_tilt0 exp = 0 deg) and
-# point the camera that way, or the ball lands in the wrong image region.
-#
-# Env: FRAME_OFFSETS (default "(0,3,8,18)", MUST match how the ONNX was exported), EXP_NAME,
-#      RUN, DEVICE (cuda:0/cpu), TINY, CAMERA_TILT_DEG, VIEWER (viser|native|none).
+# 常用环境变量：
+# -------------
+#   CAMERA_TILT_DEG : 相机物理安装仰角 (默认 20 度，必须与模型训练 tilt 严格一致)
+#   TINY            : 设为 1 启用高效 tiny 分割模型 (提速约 2 倍)
+#   STATIC_MASK     : 设为 1 启用逼近门控 (屏蔽静态小球，仅对飞来抛球反应)
+#   FRAME_OFFSETS   : 深度时间堆叠步数 (默认 "(0,3,8,18)")
+# ==============================================================================
 set -e
 set -o pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../deploy
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # .../deploy 目录
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"                     # 仓库根目录
 TASK="Unitree-G1-AMP-Dodge-Depth-Single-BallOnly-Flat"
 EXP_NAME="${EXP_NAME:-g1_amp_dodge_depth_single_ballonly}"
 FRAME_OFFSETS="${FRAME_OFFSETS:-(0,3,8,18)}"
 
-# Physical ZED pitch -- match the checkpoint's training tilt. Read at import by the env cfg,
-# but for this external-depth path it documents the mount you must physically point at.
+# 相机物理安装仰角（需对齐模型训练时的俯仰角度）
 export CAMERA_TILT_DEG="${CAMERA_TILT_DEG:-20}"
 
 cleanup() {
   trap '' SIGINT SIGTERM EXIT
-  echo -e '\nStopping...'
+  echo -e '\n[play_sim_dodge_ballonly] 正在停止所有子进程...'
   pkill -f "deploy/policy/dodge_policy.py"   2>/dev/null || true
   pkill -f "deploy/sim/sim_node.py"          2>/dev/null || true
   pkill -f "deploy/real/camera_node_etam.py" 2>/dev/null || true
@@ -58,8 +50,9 @@ cleanup() {
 cd "$ROOT_DIR"
 export PYTHONPATH="${PYTHONPATH:-}:${ROOT_DIR}"
 
-# 1. Resolve a ball-only ONNX directly (no export). Pass a path, or use the newest *.onnx
-#    under the exp's export/ dir (RUN narrows it to one run). A .pt errors -- export first.
+# ---------------------------------------------------------------------------
+# 1. 解析纯净球体掩码 ONNX 策略路径
+# ---------------------------------------------------------------------------
 ONNX_MODEL="${1:-}"
 EXP_DIR="${ROOT_DIR}/logs/rsl_rl/${EXP_NAME}"
 if [[ -z "${ONNX_MODEL}" ]]; then
@@ -67,51 +60,49 @@ if [[ -z "${ONNX_MODEL}" ]]; then
   [[ -n "${RUN:-}" ]] && SEARCH_DIR="${EXP_DIR}/${RUN}"
   ONNX_MODEL="$(find "${SEARCH_DIR}" -path '*/export/*.onnx' -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -1 | cut -d' ' -f2-)"
   [[ -z "${ONNX_MODEL}" ]] && {
-    echo "No export/*.onnx under ${SEARCH_DIR}. Export one:" >&2
+    echo "错误: 未找到导出的 ONNX 模型。请先执行导出:" >&2
     echo "  uv run python deploy/export_onnx.py ${TASK} <ckpt.pt> --frame-offsets '${FRAME_OFFSETS}'" >&2
     exit 1
   }
 elif [[ "${ONNX_MODEL}" == *.pt ]]; then
-  echo "play_sim_dodge_ballonly.sh uses an ONNX directly; got a .pt. Export it first:" >&2
+  echo "错误: 本脚本直接运行导出的 ONNX 模型；请先执行导出:" >&2
   echo "  uv run python deploy/export_onnx.py ${TASK} ${ONNX_MODEL} --frame-offsets '${FRAME_OFFSETS}'" >&2
   exit 1
 fi
-[[ -f "${ONNX_MODEL}" ]] || { echo "ONNX not found: ${ONNX_MODEL}" >&2; exit 1; }
-echo "Using ball-only ONNX (direct): ${ONNX_MODEL}"
-echo "CAMERA_TILT_DEG=${CAMERA_TILT_DEG} (point the physical ZED to match)"
+[[ -f "${ONNX_MODEL}" ]] || { echo "错误: ONNX 文件不存在: ${ONNX_MODEL}" >&2; exit 1; }
+echo "[play_sim_dodge_ballonly] 使用纯净掩码策略模型: ${ONNX_MODEL}"
+echo "[play_sim_dodge_ballonly] 相机仰角 CAMERA_TILT_DEG=${CAMERA_TILT_DEG} (请校准物理相机指向)"
 
 trap cleanup SIGINT SIGTERM EXIT
 
-# 2. Policy node in the DEPLOY uv env (onnxruntime), background.
-echo "Starting dodge_policy (deploy env, background)..."
+# ---------------------------------------------------------------------------
+# 2. 在 DEPLOY 环境后台拉起策略推理节点
+# ---------------------------------------------------------------------------
+echo "[play_sim_dodge_ballonly] 正在启动 dodge_policy (部署环境, 后台运行)..."
 uv run --project "${SCRIPT_DIR}" python deploy/policy/dodge_policy.py \
   "${ONNX_MODEL}" --frame-offsets "${FRAME_OFFSETS}" &
 
-# 3. REAL ZED -> EfficientTAM ball-only masked depth -> UDP, in the DEPLOY py3.8 venv
-#    (torch + EfficientTAM + pyzed cp38 live there). Click the ball once in its window.
-#    TINY=1 uses the faster tiny model. This is the on-robot perception path.
-echo "Starting camera_node_etam (REAL ZED + EfficientTAM masked depth, deploy py3.8 venv, background)..."
-echo "  -> CLICK the ball in its window to start tracking (r=reset, q=quit)."
+# ---------------------------------------------------------------------------
+# 3. 后台启动真实 ZED 相机 + EfficientTAM 实时掩码节点
+# ---------------------------------------------------------------------------
+echo "[play_sim_dodge_ballonly] 正在启动 camera_node_etam (真实 ZED + EfficientTAM 掩码深度, 后台运行)..."
+echo "  -> 请在弹出的视频窗口中【鼠标单击球体】以启动跟踪 (按 r 重置, q 退出)。"
 ETAM_FLAGS=(--hz 50)
 [[ "${TINY:-0}" == "1" ]] && ETAM_FLAGS+=(--tiny)
-[[ "${STATIC_MASK:-0}" == "1" ]] && ETAM_FLAGS+=(--static-mask)   # looming gate: mask a static cluster
+[[ "${STATIC_MASK:-0}" == "1" ]] && ETAM_FLAGS+=(--static-mask)
 "${SCRIPT_DIR}/.venv/bin/python" deploy/real/camera_node_etam.py "${ETAM_FLAGS[@]}" &
 
 sleep 2.0
 
-# 4. Sim node in the DEV env (mjlab), foreground. Its own depth render is OFF
-#    (--external-depth): the live masked ZED feed feeds the policy. Sim balls are paused
-#    (--pause-throws) -- the policy is blind to them; throw a REAL ball at the camera.
-#    No --depth-aug: the depth is external (real ZED), so sim aug is moot.
+# ---------------------------------------------------------------------------
+# 4. 在 DEV 环境前台启动 MuJoCo 仿真器
+# ---------------------------------------------------------------------------
 VIEWER="${VIEWER:-viser}"
 RESET_STAND="${RESET_STAND:-True}"
 [[ "${RESET_STAND}" == "True" || "${RESET_STAND}" == "true" || "${RESET_STAND}" == "1" ]] \
   && RESET_FLAG="--reset-stand" || RESET_FLAG="--no-reset-stand"
-#    --zero-command: the twist velocity command is forced to 0 (in-place stand), so the ONLY
-#    motion driver is what the ZED+EfficientTAM sees -- the robot stands until a real ball
-#    comes in, then dodges. (Removes the play backpedal that otherwise walks it backward
-#    regardless of the camera.) Matches the rel_inplace_throw regime it also trained on.
-echo "Starting sim_node (dev env, fg, viewer=${VIEWER}, reset_stand=${RESET_STAND}, external ZED depth, cmd=0)..."
+
+echo "[play_sim_dodge_ballonly] 正在启动 sim_node (前台常驻, 外部真实深度接入, 原地站立等待)..."
 uv run python deploy/sim/sim_node.py "${TASK}" --frame-offsets "${FRAME_OFFSETS}" \
   --viewer "${VIEWER}" ${RESET_FLAG} --no-depth-aug --external-depth --pause-throws --zero-command \
   ${DEVICE:+--device "${DEVICE}"}

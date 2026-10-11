@@ -1,3 +1,35 @@
+"""强化学习奖励函数 (Reward Functions) 与惩罚项模块.
+
+【理论架构与奖励设计机制】
+在腿足机器人基于对抗运动先验 (Adversarial Motion Priors, AMP) 与控制屏障函数 (CBF-RL) 的控制架构中，
+奖励系统由三大正交/协同的分支构成：
+
+1. 运动先验与物理拟真步态奖励 (Locomotion & Gait Naturalness):
+   - AMP 判别器风格奖励：由单独的网络评估机器人轨迹与动作捕捉真实数据集的分布相似度；
+   - 速度与航向跟踪 (`track_anchor_linear_velocity`, `track_anchor_angular_velocity`): 指导质心跟踪指定速度；
+   - 接触动力学柔顺性 (`feet_slip`, `soft_landing`): 惩罚着地期间的足底打滑与触地瞬间的剧烈冲击力，促使形成平稳迈步；
+   - 腾空时间奖励 (`leap_flight_time`): 检测双足同时离地的连续腾空时长，提供粗粒度的跳跃诱导梯度。
+
+2. 导航目标与走廊巡航奖励 (Goal Navigation & Corridor Adherence):
+   - 势能塑形目标逼近奖励 (`goal_progress_reward`, `goal_distance_reward`): 沿目标位移方向给予连续势能递增；
+   - 路径纯追踪与走廊贴合 (`walk_path_progress_reward`, `walk_path_adherence_reward`):
+     奖励沿随机折线走廊的弧长推进，同时严格惩罚横向偏离走廊中心线的偏移距离；
+   - 威胁门控步态与停止奖励 (`walk_path_progress_when_safe`, `walk_path_stillness_when_safe`):
+     在安全状态下督促前进，在来球威胁逼近时瞬时解除前进要求，允许全力侧跃。
+
+3. 控制屏障函数 (CBF) 避险与安全奖励 (Safety Barrier Rewards - CBF-RL):
+   - 2D 质心速度级 CBF 安全奖励 (`dodge_cbf_reward`):
+     基于相对阶 1 屏障函数 $h = s - D$，定义安全价值惩罚项与仿射动作模仿项：
+         $r_{\\text{cbf}} = \\min(\\dot{h} + \\alpha h, 0) + (\\exp(-\\|v - v_{\\text{safe}}\\|^2 / \\sigma^2) - 1)$
+     当策略产生不安全速度时产生严厉的一阶导数违规惩罚；
+   - 3D 全身连杆级 Link-CBF 奖励 (`dodge_link_cbf_reward`, `wall_link_cbf_reward`):
+     为每个单独连杆建立空间球体/胶囊体与来球或静态障碍墙表面的真实欧氏几何安全包络 $h_i = d_i - (r_{\\text{ball}} + r_{\\text{link}})$，
+     并结合相对逼近速率 $\\dot{h}_i$，施加 $\\min(\\dot{h}_i + \\alpha h_i, 0)$ 的全身关节规避惩罚；
+   - 关节级 Joint-CBF 修正与缓冲奖励 (`dodge_cbf_joint_correction`, `dodge_cbf_joint_buffer`):
+     对动作管理器中二次规划 (QP) 投影产生的关节速度修正量均方 $-\\|v^* - v_{\\text{des}}\\|^2$ 施加惩罚，
+     强迫策略自发输出符合安全约束的原生动作，进而实现实机无滤波器的裸网络部署。
+"""
+
 from __future__ import annotations
 
 import math
@@ -28,22 +60,22 @@ _DEFAULT_ASSET_CFG = SceneEntityCfg("robot")
 
 
 def airborne(env, ball_z: torch.Tensor, ball_name: str = "ball", margin: float = 0.05) -> torch.Tensor:
-  """Radius-relative 'ball is airborne' test (shared by all threat gates).
+  """半径自适应的球体滞空检测 (所有威胁门控共享).
 
-  A ball resting on the floor has its center at z = ball_radius (it can't go underground), so an
-  absolute z floor (the old 0.25/0.3) excluded genuine LOW incoming balls (center 0.13-0.25 m, a ball
-  a few cm off the ground heading at the shins/feet). This returns z > ball_radius + margin instead --
-  off the ground by ``margin`` -- which includes low incoming balls and still excludes grounded ones
-  (which are also caught by the speed/closing terms each gate ANDs in). Per-env ball radius (the ball
-  is size-randomized); the collision-geom id is cached on the env."""
+  物理机制：
+  静止在地面上的球体，其球心高度为 z = ball_radius。如果使用固定的绝对高度阈值，
+  会错误排除在贴地高度飞行、直奔小腿和脚踝的低空危险来球。
+  本函数通过检测 `z > ball_radius + margin`，既能准确捕捉低空来球，又能完全过滤在地面滚动的死球。
+  """
   if not hasattr(env, "_airborne_ball_geom_id"):
     env._airborne_ball_geom_id = env.sim.mj_model.geom(f"{ball_name}/ball_collision").id
-  r = env.sim.model.geom_size[:, env._airborne_ball_geom_id, 0]  # (N,) per-env radius
+  # 提取每个环境中当前随机化后的球体真实半径
+  r = env.sim.model.geom_size[:, env._airborne_ball_geom_id, 0]  # (N,)
   return ball_z > r + margin
 
 
 def _get_delay_env_mask(env: ManagerBasedRlEnv) -> torch.Tensor | None:
-  """Get delaying env mask from DelayedTerminationManager if installed."""
+  """获取延迟重置环境的布尔掩码（若启用了 DelayedTerminationManager）."""
   tm = env.termination_manager
   delay_env_mask = getattr(tm, "_delay_env_mask", None)
   delay_counters = getattr(tm, "_delay_counters", None)
@@ -58,6 +90,7 @@ def _apply_delay_env_reward_scaling(
   mask_delay: bool,
   delay_env_rew_ratio: float,
 ) -> torch.Tensor:
+  """对处于延迟重置阶段的环境缩放奖励数值."""
   if not mask_delay:
     return reward
 
@@ -75,6 +108,7 @@ def _apply_delay_env_reward_mask_only(
   mask_delay: bool,
   delay_env_rew_ratio: float,
 ) -> torch.Tensor:
+  """仅在延迟重置阶段保留奖励，其余正常阶段掩膜置零."""
   if not mask_delay:
     return torch.zeros_like(reward)
 
@@ -85,6 +119,7 @@ def _apply_delay_env_reward_mask_only(
   scaled_reward = reward * delay_env_rew_ratio
   masked_reward = torch.where(delay_env_mask, scaled_reward, torch.zeros_like(reward))
   return masked_reward
+
 
 def track_anchor_linear_velocity(
   env: ManagerBasedRlEnv,
@@ -97,45 +132,35 @@ def track_anchor_linear_velocity(
   track_dodge_safe: bool = False,
   mask_inplace: bool = False,
 ) -> torch.Tensor:
-  """Reward for tracking the commanded anchor linear velocity.
+  """基准锚点刚体 (躯干/骨盆) 水平线速度跟踪奖励.
 
-  The commanded z velocity is assumed to be zero.
+  奖励公式: r = exp(- ||v_xy - v_target_xy||^2 / std^2)
 
-  ``track_dodge_safe`` (dodge tasks): track the CBF-FILTERED ("safe") velocity command
-  instead of the observed (nominal) one. The ``DodgeGoToGoalCommand`` stashes the safe
-  command in world frame (``_dodge_u_safe_w``); when no ball threatens it equals the
-  nominal command, so locomotion is unchanged, and when a ball is incoming it includes the
-  perpendicular sidestep -- so this single dense reward directly rewards the dodge. Crucially
-  the policy still *observes* only the nominal command (CBF-RL mode, ``cbf_filter_command=
-  False``), so it must infer the sidestep from depth; it is not handed the answer. Avoids the
-  opposing-gradient tension of tracking nominal while ``dodge_cbf`` rewards deviating from it.
-
-  ``mask_inplace``: zero this reward for the in-place-throw envs (``command.is_inplace_env``).
-  Those envs are commanded ZERO velocity but ARE pelted (dodge-from-a-standstill); when this
-  reward tracks the NOMINAL command (``track_dodge_safe=False``, the MimicKit dodge tasks), a
-  zero command would reward stillness and fight the sidestep -- so we drop the term for them and
-  let the dodge reward + hit termination drive evasion. No-op under ``track_dodge_safe`` (there
-  the target already includes the sidestep, so masking would delete the dodge signal).
+  参数说明:
+    track_dodge_safe: 若为 True，则跟踪经过 CBF 安全滤波后的速度指令 u_safe_w（在来球威胁时包含侧移分量）。
+      由于策略观测到的依然是名义速度，该机制使策略在不直接知道安全指令的情况下，通过奖励信号学会自发侧跃。
+    mask_inplace: 对原地待命扔球的环境屏蔽此项奖励，防止静止跟踪目标阻碍策略做出躲避动作。
   """
   asset: Entity = env.scene[asset_cfg.name]
 
   if track_dodge_safe:
-    # Safe command is already world-frame xy (stashed by DodgeGoToGoalCommand each step).
+    # 提取由 DodgeGoToGoalCommand 暂存的世界系安全速度指令
     cmd_term = env.command_manager.get_term(command_name)
     u_safe_w = cmd_term._dodge_u_safe_w  # (N, 2)
     command_xyz_w = torch.cat((u_safe_w, torch.zeros_like(u_safe_w[:, :1])), dim=-1)
   else:
+    # 提取标准指令并旋转至世界坐标系
     command = env.command_manager.get_command(command_name)
-    assert command is not None, f"Command '{command_name}' not found."
+    assert command is not None, f"找不到指令项 '{command_name}'。"
     command_xyz_b = torch.cat((command[:, :2], torch.zeros_like(command[:, :1])), dim=-1)
     command_xyz_w = quat_apply(
       yaw_quat(asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]]),
       command_xyz_b,
     )
+  # 计算线速度跟踪误差平方
   lin_vel_error = torch.sum(torch.square(command_xyz_w[:,:3] - asset.data.body_link_lin_vel_w[:, anchor_cfg.body_ids[0], :3]), dim=1)
   reward = torch.exp(-lin_vel_error / std**2)
   if mask_inplace and not track_dodge_safe:
-    # In-place-throw envs: zero command but pelted -> don't reward stillness (it fights the dodge).
     cmd_term = env.command_manager.get_term(command_name)
     inplace = getattr(cmd_term, "is_inplace_env", None)
     if inplace is not None:
@@ -152,20 +177,17 @@ def track_anchor_angular_velocity(
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   anchor_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
 ) -> torch.Tensor:
-  """Reward heading error for heading-controlled envs, angular velocity for others.
-
-  The commanded xy angular velocities are assumed to be zero.
-  """
+  """跟踪偏航角速度指令 wz，同时惩罚横滚与俯仰角速度 (wx, wy)."""
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
-  assert command is not None, f"Command '{command_name}' not found."
+  assert command is not None, f"找不到指令项 '{command_name}'。"
 
   anchor_ang_vel_w = asset.data.body_link_ang_vel_w[:, anchor_cfg.body_ids[0]]
   anchor_ang_z_vel_w = anchor_ang_vel_w[:, 2]
   command_ang_vel_w = command[:, 2]
   ang_vel_z_error = torch.square(command_ang_vel_w - anchor_ang_z_vel_w)
 
-  anchor_ang_vel_b =  quat_apply_inverse(
+  anchor_ang_vel_b = quat_apply_inverse(
     asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]],
     anchor_ang_vel_w,
   )
@@ -176,6 +198,7 @@ def track_anchor_angular_velocity(
   reward = torch.exp(-total_error / std**2)
   return _apply_delay_env_reward_scaling(env, reward, mask_delay, delay_env_rew_ratio)
 
+
 def body_ang_vel_xy_l2(
   env: ManagerBasedRlEnv,
   std: float,
@@ -183,10 +206,7 @@ def body_ang_vel_xy_l2(
   delay_env_rew_ratio: float = 1.0,
   body_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
 ) -> torch.Tensor:
-  """Reward heading error for heading-controlled envs, angular velocity for others.
-
-  The commanded xy angular velocities are assumed to be zero.
-  """
+  """惩罚刚体在机体系水平横滚与俯仰轴上的寄生角速度."""
   asset: Entity = env.scene[body_cfg.name]
   body_ang_vel_w = asset.data.body_link_ang_vel_w[:, body_cfg.body_ids[0]]
   body_ang_vel_b = quat_apply_inverse(
@@ -199,6 +219,7 @@ def body_ang_vel_xy_l2(
   reward = torch.exp(-ang_vel_xy_error / std**2)
   return _apply_delay_env_reward_scaling(env, reward, mask_delay, delay_env_rew_ratio)
 
+
 def track_root_height(
   env: ManagerBasedRlEnv,
   std: float,
@@ -206,7 +227,7 @@ def track_root_height(
   delay_env_rew_ratio: float = 1.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Reward for tracking the commanded anchor height."""
+  """跟踪机器人根节点的默认站立高度."""
   asset: Entity = env.scene[asset_cfg.name]
 
   desired_height = asset.data.default_root_state[:, 2]
@@ -215,6 +236,7 @@ def track_root_height(
   reward = torch.exp(-height_error / std**2)
   return _apply_delay_env_reward_mask_only(env, reward, mask_delay, delay_env_rew_ratio)
 
+
 def feet_slip(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -222,7 +244,7 @@ def feet_slip(
   command_threshold: float = 0.01,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Penalize foot sliding (xy velocity while in contact)."""
+  """惩罚足底着地支撑期间的水平滑动线速度 (Penalize Foot Slipping)."""
   asset: Entity = env.scene[asset_cfg.name]
   contact_sensor: ContactSensor = env.scene[sensor_name]
   command = env.command_manager.get_command(command_name)
@@ -232,10 +254,13 @@ def feet_slip(
   total_command = linear_norm + angular_norm
   active = (total_command > command_threshold).float()
   assert contact_sensor.data.found is not None
+  # 足底着地布尔掩码
   in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
+  # 提取足底位姿点的世界水平线速度
   foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
   vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
   vel_xy_norm_sq = torch.square(vel_xy_norm)  # [B, N]
+  # 仅在足底着地时计算滑动速度平方惩罚
   cost = torch.sum(vel_xy_norm_sq * in_contact, dim=1) * active
   num_in_contact = torch.sum(in_contact)
   mean_slip_vel = torch.sum(vel_xy_norm * in_contact) / torch.clamp(
@@ -244,18 +269,20 @@ def feet_slip(
   env.extras["log"]["Metrics/slip_velocity_mean"] = mean_slip_vel
   return cost
 
+
 def soft_landing(
   env: ManagerBasedRlEnv,
   sensor_name: str,
   command_name: str | None = None,
   command_threshold: float = 0.05,
 ) -> torch.Tensor:
-  """Penalize high impact forces at landing to encourage soft footfalls."""
+  """惩罚足底触地瞬间的峰值冲击力，引导机器人形成轻柔吸能着陆的自然步态."""
   contact_sensor: ContactSensor = env.scene[sensor_name]
   sensor_data = contact_sensor.data
   assert sensor_data.force is not None
   forces = sensor_data.force  # [B, N, 3]
   force_magnitude = torch.norm(forces, dim=-1)  # [B, N]
+  # 计算第一拍触地检测事件
   first_contact = contact_sensor.compute_first_contact(dt=env.step_dt)  # [B, N]
   landing_impact = force_magnitude * first_contact.float()  # [B, N]
   cost = torch.sum(landing_impact, dim=1)  # [B]
@@ -272,6 +299,7 @@ def soft_landing(
       cost = cost * active
   return cost
 
+
 def leap_flight_time(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -279,23 +307,18 @@ def leap_flight_time(
   min_flight_s: float = 0.05,
   command_threshold: float = 0.1,
 ) -> torch.Tensor:
-  """Reward a genuine both-feet-airborne flight phase (the signature of a leap).
+  """奖励双足同时腾空的滞空飞行时间 (跳跃动作特征).
 
-  Uses the **minimum** of the two feet's current air time: it is > 0 only when *both*
-  feet are simultaneously off the ground, so walking/scraping (always >=1 foot in
-  contact) scores exactly 0 and cannot game this term. ``min_flight_s`` clamps away
-  sub-threshold contact flicker / micro-bounces; it is set below the reference clips'
-  measured flight phases (~0.1-0.28 s, median ~0.15-0.22 s) so real leaps still pay.
-  Gated on an active velocity command so it does not reward hopping in place while
-  standing or already arrived at the goal. AMP shapes *how* the leap looks; this only
-  supplies the coarse "leave the ground" gradient the discriminator is too weak to give.
+  取双足当前滞空时间的最小值：min(air_time_left, air_time_right)。
+  只有当两只脚均完全离地时才为正值，行走或拖步时至少一足触地从而严格得 0 分，杜绝作弊。
   """
   sensor: ContactSensor = env.scene[sensor_name]
   air_time = sensor.data.current_air_time  # [B, N_feet]
   assert air_time is not None, (
-    f"Sensor '{sensor_name}' must have track_air_time=True for leap_flight_time."
+    f"传感器 '{sensor_name}' 必须设置 track_air_time=True。"
   )
-  flight_t = air_time.min(dim=1).values  # > 0 only when BOTH feet are airborne
+  # 双足必须同时处于空中
+  flight_t = air_time.min(dim=1).values
   reward = (flight_t - min_flight_s).clamp(min=0.0)
 
   command = env.command_manager.get_command(command_name)
@@ -304,16 +327,13 @@ def leap_flight_time(
   env.extras["log"]["Metrics/flight_time_mean"] = flight_t.mean()
   return reward * active
 
+
 def goal_distance_reward(
   env: ManagerBasedRlEnv,
   command_name: str,
   std: float = 1.0,
 ) -> torch.Tensor:
-  """Dense reward for being close to the goal point.
-
-  Reads the goal/distance from a ``GoToGoalCommand`` term (the goal itself never
-  enters the observation). ``exp(-d^2/std^2)`` peaks at 1 when the robot is on the goal.
-  """
+  """基于高斯核的目标距离密集奖励: exp(-d^2 / std^2)."""
   command = env.command_manager.get_term(command_name)
   dist = command.distance_to_goal
   return torch.exp(-torch.square(dist) / std**2)
@@ -324,14 +344,9 @@ def goal_progress_reward(
   command_name: str,
   clip: float = 2.0,
 ) -> torch.Tensor:
-  """Reward for closing distance to the goal this step (potential-based shaping).
+  """基于势能塑形的目标逼近速度奖励: (prev_dist - cur_dist) / dt.
 
-  Returns the per-step distance reduction expressed as a closing speed (m/s):
-  ``(prev_dist - cur_dist) / dt``. Unlike ``goal_distance_reward`` (which is ~flat far
-  from the goal), this gives a useful gradient at any distance. It is symmetric
-  (moving away is penalized) so it stays close to policy-invariant shaping; clipped to
-  +/-``clip`` m/s to reject spikes. Resampled envs report ~0 (the command zeroes the
-  delta on a goal change).
+  远离目标时产生对称惩罚，有效防止策略反复震荡。
   """
   command = env.command_manager.get_term(command_name)
   closing_speed = command.distance_delta / env.step_dt
@@ -343,26 +358,7 @@ def walk_path_progress_reward(
   command_name: str = "twist",
   clip: float = 2.0,
 ) -> torch.Tensor:
-  """Dense reward for making progress ALONG the random walk path toward its end.
-
-  The WallWalk random-path analog of :func:`goal_progress_reward`: reads the
-  command term's per-step arc-length delta (``_path_s_delta``, metres, from the
-  robot's projection onto its polyline path) and expresses it as a PROGRESS RATE
-  (m/s): ``delta_s / dt``, clipped to +/-``clip``. ~1.3 m/s at cruise.
-
-  Why not ``goal_distance_reward``/``goal_progress_reward``: in path-follow mode
-  the "goal" is a pure-pursuit lookahead point that rides 2 m ahead of the robot,
-  so distance-to-goal is ~constant (both terms degenerate to constants). Arc
-  length along the path is the true objective:
-
-  * Measured in the PATH frame, so it rewards actually advancing along the route
-    -- moving fast in the wrong direction (e.g. backing off-path after a dodge)
-    collects nothing here even while velocity tracking pays out.
-  * Symmetric: sliding BACKWARD along the path (delta_s < 0) is penalized, so it
-    stays close to policy-invariant potential-based shaping.
-  * ~0 on an episode's new path (the command zeroes the delta on a path change),
-    so a reset never reads as a progress spike.
-  """
+  """沿随机巡航折线路径的沿线弧长推进速度奖励 (WallWalk 任务): delta_s / dt."""
   command = env.command_manager.get_term(command_name)
   rate = command._path_s_delta / env.step_dt
   return rate.clamp(-clip, clip)
@@ -376,25 +372,9 @@ def walk_path_progress_when_safe(
   stillness_penalty: float = 0.0,
   stillness_threshold: float = 0.02,
 ) -> torch.Tensor:
-  """Reward changes in signed path distance from the episode's spawn when safe.
-
-  ``progress_rate = (s_now - s_prev) / dt`` uses the robot's projected arc-length
-  coordinate, whose origin is the spawn; it does not use the moving lookahead
-  goal's distance. Forward motion pays a positive rate, retreat pays a negative
-  rate, and uniform forward motion earns a constant reward per step. ``v_max``
-  and ``clip_lo`` bound the forward reward and backward cost respectively.
-
-  With ``stillness_penalty > 0``, rates within ``stillness_threshold`` m/s of
-  zero instead pay ``-stillness_penalty * forward_scale``. The heading gate
-  waives this cost for commanded turns, while projected backward motion remains
-  negative even during a turn. The deadband rejects tiny projection jitter.
-  Default penalty 0 preserves WallWalk's pure signed-rate behavior.
-
-  An incoming ball threat gates the entire term to zero, including backward
-  evasions. Resetting the path resets its arc-length coordinate and delta.
-  """
+  """安全状态下的路径沿线推进奖励（在受到来球威胁时自动被门控清零，允许侧跃回避）."""
   command = env.command_manager.get_term(command_name)
-  threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
+  threat = command._dodge_threat.float()  # 来球滞空且逼近时为 1
   rate = command._path_s_delta / env.step_dt
   pay = rate.clamp(min=-clip_lo, max=v_max)
   if stillness_penalty > 0.0:
@@ -410,30 +390,12 @@ def walk_path_stillness_when_safe(
   command_name: str = "twist",
   rate_scale: float = 0.4,
 ) -> torch.Tensor:
-  """Threat-gated STILLNESS COST: penalize NOT moving along the path when safe.
-
-  ``c = (1 - threat) * forward_scale * exp(-rate^2 / rate_scale^2)``;
-  ``forward_scale`` defaults to 1, or the turn-before-walk heading gate. ``rate`` is the
-  arc-length progress rate (m/s). Equals 1 for a robot parked on the path between
-  throws, ~0.37 at ``rate_scale`` (0.4 m/s), ~0 at 2*scale. Return as a COST (use
-  a NEGATIVE weight).
-
-  Companion to :func:`walk_path_progress_when_safe` (the carrot). That term pays
-  for forward progress when safe, but standing still when safe only forfeits the
-  carrot -- and the 2026-09-28 run showed the policy happily pays that price to
-  keep a planted dodge stance between throws. This term makes safe-time standing
-  an ACTIVE loss: between throws (threat=0, ball parked) the robot must keep
-  eating distance or bleed reward every step. The moment a ball looms (threat=1)
-  the cost vanishes, so planting for a dodge -- or standing after one -- is free.
-  """
+  """安全状态下的停滞惩罚代价: 惩罚在没有来球威胁时停在原地不往前走的偷懒行为."""
   command = env.command_manager.get_term(command_name)
   threat = command._dodge_threat.float()
   rate = command._path_s_delta / env.step_dt
-  # Classroom navigation deliberately pauses translation while turning. Apply
-  # the same continuous heading gate so that following that command is not idle.
   forward_scale = getattr(command, "_walk_forward_scale", 1.0)
   return (1.0 - threat) * forward_scale * torch.exp(-torch.square(rate) / rate_scale**2)
-
 
 
 def walk_goal_heading_when_safe(
@@ -444,24 +406,11 @@ def walk_goal_heading_when_safe(
   turn_angle_threshold: float = math.pi / 6,
   turn_velocity_std: float = 0.25,
 ) -> torch.Tensor:
-  """Reward facing the goal or actually turning toward it when misaligned.
-
-  Inside ``turn_angle_threshold`` (default 30deg), keep the signed power of
-  the heading-error cosine. Outside, use the measured world-z root angular
-  velocity and the heading controller's target
-  ``w_target = clamp(kp_yaw * wrap(goal_bearing - heading), +/-max_ang_vel_z)``.
-  The turn score ``2 * exp(-((w_z - w_target)/turn_velocity_std)^2) - 1``
-  lies in [-1, 1]: matching the reasonable signed target pays +1, while stopping,
-  turning away, or excessive spin are penalized with the classroom defaults.
-
-  Recompute the target from the current bearing instead of using the cached
-  command, so direction and angular velocity refer to the same robot state.
-  Incoming threats and coincident goals give zero in either branch.
-  """
+  """在安全状态下奖励机器人面向目标方向或按期望角速度主动转弯对齐."""
   if not 0.0 <= turn_angle_threshold <= math.pi:
-    raise ValueError("turn_angle_threshold must be between 0 and pi")
+    raise ValueError("turn_angle_threshold 必须在 0 到 pi 之间")
   if turn_velocity_std <= 0.0:
-    raise ValueError("turn_velocity_std must be positive")
+    raise ValueError("turn_velocity_std 必须为正数")
   command = env.command_manager.get_term(command_name)
   robot = env.scene[robot_name]
   direction = command.goal_pos_w - robot.data.root_link_pos_w[:, :2]
@@ -479,11 +428,9 @@ def walk_goal_heading_when_safe(
   turn_score = 2.0 * torch.exp(
     -torch.square((yaw_rate - target_yaw_rate) / turn_velocity_std)
   ) - 1.0
-  # Stopping or rotating away is always a cost, even if the tolerance is widened.
   turn_score = torch.where(
     yaw_rate * yaw_error > 0.0, turn_score, -torch.ones_like(turn_score)
   )
-  # Angle wrapping can move exact 30deg by a float32 rounding error.
   reward = torch.where(
     yaw_error.abs() > turn_angle_threshold + 1e-6, turn_score, signed
   )
@@ -496,22 +443,7 @@ def walk_path_adherence_reward(
   command_name: str = "twist",
   std: float = 0.5,
 ) -> torch.Tensor:
-  """Dense reward for staying ON the random walk path (lateral adherence).
-
-  ``exp(-d^2 / std^2)`` where ``d`` is the robot's perpendicular distance to the
-  closest point on its polyline path (``_path_lat_err``, refreshed every step by
-  the path-follow command). Peaks at 1 on the centerline, ~0.37 at ``std`` (0.5
-  m), ~0.02 at 2*std.
-
-  Complements :func:`walk_path_progress_reward` (which rewards motion ALONG the
-  route but is blind to lateral drift -- a dodge can shove the robot sideways and
-  progress still pays out while it wanders back): this term is what pulls the
-  robot BACK onto the route afterward, and what teaches it to dodge WITHIN the
-  corridor (walls flank the path at 0.6-1.0 m, so a std of 0.5 m tolerates a
-  ~0.5 m sidestep at ~0.37 reward but punishes leaving the corridor entirely).
-  It pays out fully when standing still on the path -- keeping the robot ON the
-  route is this term's only job; forward motion is walk_path_progress's job.
-  """
+  """走廊路径横向贴合度奖励: 惩罚垂直偏离折线中心线的横向漂移距离."""
   command = env.command_manager.get_term(command_name)
   d = command._path_lat_err
   return torch.exp(-torch.square(d) / std**2)
@@ -524,12 +456,7 @@ def goal_reached_bonus(
   speed_threshold: float = 0.5,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Sparse bonus for being at the goal *and* nearly stopped.
-
-  Coupling arrival with low speed is what makes goal-reaching non-trivial under the
-  decaying velocity command: the policy must actively settle at the target rather than
-  pass through it.
-  """
+  """到达目标稀疏奖励: 要求同时进入目标圆域且线速度充分降低（平稳停驻）."""
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_term(command_name)
   dist = command.distance_to_goal
@@ -543,7 +470,7 @@ def stop_at_goal_cost(
   threshold: float = 0.5,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
 ) -> torch.Tensor:
-  """Penalize residual base speed once inside the goal region (encourages stopping)."""
+  """进入目标区域后的残余速度惩罚代价."""
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_term(command_name)
   dist = command.distance_to_goal
@@ -555,16 +482,10 @@ def is_terminated_except(
   env: ManagerBasedRlEnv,
   exclude_terms: tuple[str, ...] = (),
 ) -> torch.Tensor:
-  """`is_terminated` (penalize non-timeout terminations) but EXCLUDING some term names.
+  """常规非超时异常终止惩罚 (-200)，但排除指定的终止条件 (如 ball_contact).
 
-  Used so a ball hit can *terminate the episode without a reward penalty* -- matching the
-  SMP/MimicKit dodgeball setup (arXiv:2512.03028 §7: "if the character is hit, the episode
-  terminates early and the agent receives zero reward for all remaining timesteps as a
-  penalty"), i.e. the cost of a hit is the lost future reward from ending the episode, NOT a
-  large negative spike. The -200 is_terminated penalty is kept for genuine falls
-  (bad_orientation / bad_base_height / collapsed_crouch) but not for ``ball_hit``; otherwise
-  every (initially unavoidable) hit floods the gradient and the policy trades away its leap
-  style to avoid the spike.
+  MimicKit 避球任务标准设定：被球击中仅提前结束回合以损失未来期望回报作为代价，
+  而不施加巨大的即时负数尖峰，避免负梯度淹没动作模仿与跳跃探索。
   """
   tm = env.termination_manager
   terminated = tm.terminated.clone()
@@ -581,52 +502,30 @@ def dodge_cbf_reward(
   constraint_clip: float = 2.0,
   include_imitation: bool = True,
 ) -> torch.Tensor:
-  """CBF-RL safety reward: teach the policy to dodge from the control-barrier function.
+  """2D 质心控制屏障函数 (CBF-RL) 安全与模仿奖励项.
 
-  Implements the per-step ``r_cbf`` of CBF-RL (Yang et al., arXiv:2510.14959, Eqs. 22-23)
-  for the ball-dodge barrier, using the quantities the ``DodgeGoToGoalCommand`` already
-  computes from ``cbf.predictive_dodge_filter`` each step. With the command's
-  ``cbf_filter_command=False`` the CBF does NOT override the velocity command; instead this
-  reward supplies the supervision so the policy *learns* to produce the evasive motion
-  itself (from the depth observation), and the filter can later be dropped at deploy.
+  理论公式 (Yang et al., CBF-RL Eqs. 22-23):
+      r_cbf = min(dh/dt + alpha * h, 0) + (exp(-||v - v_safe||^2 / sigma^2) - 1)
 
-      r_cbf = min( dh/dt + alpha*h , 0 )  +  ( exp(-||v - v_safe||^2 / sigma^2) - 1 )
-
-  per the two CBF-RL terms:
-
-  * **Safety-value / constraint term** ``min(v . e + alpha*h, 0)``: ``e`` is the barrier
-    gradient w.r.t. the base velocity (the escape axis), so ``v . e = dh/dt`` (the ball's
-    velocity is perpendicular to ``e``). The CBF condition is ``dh/dt >= -alpha*h``; this
-    term is 0 when satisfied and negative by the amount of violation -- it penalizes the
-    robot's *own motion* for not getting out of the ball's path fast enough. Clipped to
-    ``[-constraint_clip, 0]`` so an unbounded closing velocity can't dominate.
-  * **Imitation term** ``exp(-||v - v_safe||^2/sigma^2) - 1`` (in ``[-1, 0]``): rewards the
-    achieved base velocity ``v`` for matching the CBF-safe command ``v_safe`` ("what the
-    robot should do"). ``sigma`` sets how tightly it must match.
-
-  Both use the robot's actual world-frame base velocity ``v`` and are GATED on a live
-  threat (a ball airborne + approaching), so there is no signal when nothing is incoming.
-  The term is <= 0; scale it with the ``RewardTermCfg.weight`` (the paper's ``w``). The
-  velocity-tracking reward keeps the nominal locomotion behavior; this term overrides it
-  locally while a ball threatens, exactly the CBF-RL task/safety trade-off.
+  包含两个互补部分:
+  1. 安全约束项 min(v . e + alpha * h, 0):
+     若机器人自身当前移动速度未能满足 CBF 要求的最小逃逸速度，则产生负值惩罚；
+  2. 安全动作模仿项 exp(-||v - v_safe||^2 / sigma^2) - 1:
+     奖励真实线速度 v 贴合 CBF 滤波器推荐的安全速度 v_safe。
   """
   command = env.command_manager.get_term(command_name)
-  threat = command._dodge_threat  # (N,) bool
-  e = command._dodge_e_w  # (N, 2) world escape dir == d h / d v
+  threat = command._dodge_threat  # (N,)
+  e = command._dodge_e_w  # (N, 2)
   h = command._dodge_h  # (N,)
-  v_safe = command._dodge_u_safe_w  # (N, 2) world CBF-safe command (clamped)
+  v_safe = command._dodge_u_safe_w  # (N, 2)
   alpha = command.cfg.cbf_alpha
 
-  v = command.robot.data.root_link_lin_vel_w[:, :2]  # actual world xy base velocity
+  v = command.robot.data.root_link_lin_vel_w[:, :2]
 
-  # Safety-value term: min(dh/dt + alpha*h, 0), dh/dt = v . e.
+  # 安全屏障一阶导数: dh/dt = v . e (因垂直于航向，球速在逃逸轴投影为 0)
   h_dot = (v * e).sum(dim=-1)
   constraint = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)
   r = constraint
-  # Imitation term: Gaussian on velocity match to the safe action, in [-1, 0]. Disable
-  # (include_imitation=False) when the velocity-tracking reward already targets the safe
-  # command (track_anchor_linear_velocity(track_dodge_safe=True)) -- the two would otherwise
-  # double-reward matching u_safe. Then this term is the pure CBF safety-value (constraint).
   if include_imitation:
     r = r + (torch.exp(-torch.square(v - v_safe).sum(dim=-1) / sigma**2) - 1.0)
   return torch.where(threat, r, torch.zeros_like(r))
@@ -644,32 +543,21 @@ def dodge_link_cbf_reward(
   reduce: str = "min",
   danger_band: float | None = None,
 ) -> torch.Tensor:
-  """Per-link full-body control-barrier dodge reward (<= 0; scale with ``RewardTermCfg.weight``).
+  """3D 全身各连杆刚体 (Link-CBF) 避球控制屏障函数安全惩罚 (<= 0).
 
-  The 3-D, per-link generalization of :func:`dodge_cbf_reward` (which is a lossy 2-D base-velocity
-  barrier). For every robot link we form a clearance
-  ``h = ||p_ball - p_link|| - (r_ball + r_link)`` (LINEAR, with the per-env true ball radius + the
-  link's collision cross-section radius + ``margin``), its closing rate ``h_dot`` from the relative
-  ball<->link velocity, and the discrete-time CBF constraint ``min(h_dot + alpha*h, 0)`` -- 0 when
-  the link is safely clearing, negative by the violation. ``reduce`` combines the per-link
-  constraints: ``"min"`` charges only the single most-binding link (whack-a-mole -- the next link
-  becomes binding once the worst is cleared); ``"sum"`` charges ALL violating links at once (gradient
-  to clear several threatened limbs simultaneously, e.g. an arm AND a knee); ``"mean"`` is the
-  per-link average. Then it gates on a live threat (ball airborne + moving).
-
-  Being **zero when safe**, it leaves the nominal MimicKit stand/settle behavior (the kept
-  ``mimickit_dodge_reward``, which only sees the pelvis) untouched and only penalizes leaving a
-  *limb* in the ball's path -- the residual-hit failure mode (arms/feet) the root-only reward can't
-  see. The ``alpha*h`` (class-K) term makes the penalty ramp up over the final approach, not just at
-  contact, so the signal is dense/learnable; ``constraint_clip`` caps it so it can't behave like a
-  hard terminal penalty. Privileged (uses ground-truth positions); the actor still sees only depth.
+  物理机制：
+  针对机器人全身每一个独立连杆建立三维线性距离屏障：
+      h_i = ||p_ball - p_link_i|| - (r_ball + r_link_i + margin)
+  计算相对逼近速率：
+      h_dot_i = (p_ball - p_link_i) . (v_ball - v_link_i) / ||p_ball - p_link_i||
+  计算离散违约项：
+      cbf_i = min(h_dot_i + alpha * h_i, 0)
+  通过 reduce 参数将各肢体的违约惩罚聚合（min 惩罚最危险肢体，sum 督促四肢同时收缩躲避）。
   """
   robot: Entity = env.scene[robot_name]
   ball: Entity = env.scene[ball_name]
 
-  # Cache (once) the static per-link safety radii and the ball geom id. Link radii are env-invariant
-  # (only the ball is size-randomized): for each robot body take the max cross-section radius over
-  # its round (sphere/capsule/cylinder) collision geoms, default 0.05 m if none, then add `margin`.
+  # 首次调用时缓存各刚体的碰撞半径
   if not hasattr(env, "_dodge_link_radii"):
     mjm = env.sim.mj_model
     round_types = {
@@ -684,38 +572,34 @@ def dodge_link_cbf_reward(
         body_r[b] = max(body_r.get(b, 0.0), float(mjm.geom_size[g, 0]))
     body_ids = robot.indexing.body_ids.tolist()
     radii = [body_r.get(int(b), 0.05) for b in body_ids]
-    env._dodge_link_radii = torch.tensor(  # type: ignore[attr-defined]
+    env._dodge_link_radii = torch.tensor(
       radii, device=env.device, dtype=torch.float32
     ) + margin  # (L,)
-    env._dodge_ball_geom_id = int(  # type: ignore[attr-defined]
+    env._dodge_ball_geom_id = int(
       mjm.geom(f"{ball_name}/ball_collision").id
     )
 
   r_link = env._dodge_link_radii  # (L,)
-  r_ball = env.sim.model.geom_size[:, env._dodge_ball_geom_id, 0]  # (N,) per-env true radius
+  r_ball = env.sim.model.geom_size[:, env._dodge_ball_geom_id, 0]  # (N,)
 
   ball_p = ball.data.root_link_pos_w  # (N, 3)
   ball_v = ball.data.root_link_lin_vel_w  # (N, 3)
   link_p = robot.data.body_link_pos_w  # (N, L, 3)
   link_v = robot.data.body_link_lin_vel_w  # (N, L, 3)
 
-  rel = ball_p.unsqueeze(1) - link_p  # (N, L, 3) link -> ball
+  rel = ball_p.unsqueeze(1) - link_p  # (N, L, 3)
   d = rel.norm(dim=-1).clamp_min(1e-6)  # (N, L)
-  h = d - (r_ball.unsqueeze(1) + r_link.unsqueeze(0))  # (N, L) clearance (m)
-  # Closing rate dh/dt = d/dt||rel|| = rel . (v_ball - v_link) / ||rel||  (< 0 while approaching).
-  h_dot = (rel * (ball_v.unsqueeze(1) - link_v)).sum(dim=-1) / d  # (N, L)
-  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)  # (N, L) <= 0, violation only
+  h = d - (r_ball.unsqueeze(1) + r_link.unsqueeze(0))  # (N, L) 线性安全净距
+  h_dot = (rel * (ball_v.unsqueeze(1) - link_v)).sum(dim=-1) / d  # (N, L) 接近速率
+  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)
+
   if danger_band is not None:
-    # Localize: only links whose clearance is within `danger_band` count. Without this, the ball
-    # closing on the whole robot makes h_dot ~ -closing_speed for ~every link, so nearly all links
-    # "violate" -- the per-link signal washes out (esp. under `sum`). Gating by each link's own
-    # proximity makes `sum` a true near-limb penalty (only the few links the ball is actually near).
     cbf = torch.where(h < danger_band, cbf, torch.zeros_like(cbf))
   if reduce == "sum":
-    agg = cbf.sum(dim=1)  # charge ALL violating links -> clear multiple threatened limbs at once
+    agg = cbf.sum(dim=1)
   elif reduce == "mean":
     agg = cbf.mean(dim=1)
-  else:  # "min": only the single most-binding link
+  else:
     agg = cbf.min(dim=1).values
 
   threat = airborne(env, ball_p[:, 2]) & (ball_v[:, :2].norm(dim=-1) > min_ball_speed)
@@ -732,37 +616,9 @@ def wall_link_cbf_reward(
   reduce: str = "min",
   danger_band: float | None = None,
 ) -> torch.Tensor:
-  """Per-link full-body control-barrier reward for the STATIC wall (<= 0).
-
-  The static-obstacle sibling of :func:`dodge_link_cbf_reward` (same per-link CBF
-  structure; read its docstring first). Differences:
-
-  * The obstacle is a box, not a sphere: ``d`` is the distance from each link centre
-    to the wall's SURFACE (the box is rotated to the wall's yaw -- walls yaw with
-    the walking path -- so ``rel`` is first rotated into each wall's frame, then
-    ``excess = (|rel_wall| - half_extents).clamp(min=0)``, ``d = ||excess||``).
-    ``h = d - (r_link + margin)``.
-  * Multiple walls (``wall_names``) are stacked and the constraint takes the min
-    over walls -- only the most-threatening wall charges each link.
-  * The wall does not move, so ``h_dot`` comes ONLY from the robot's own link
-    velocities (``h_dot = v_link . grad(d)``) -- this barrier penalizes swinging a
-    limb (or the base) TOWARD the wall faster than ``alpha * h`` allows.
-  * NO threat gate: a static obstacle is always "live". The barrier is self-gating
-    by distance -- far from the wall ``alpha * h`` swamps any achievable approach
-    speed (cbf = 0), and standing still next to it (``h_dot = 0``, ``h > 0``) is
-    also exactly 0. It only bites while closing the last stretch toward the wall.
-
-  Being zero when safe, it leaves the stand/settle/dodge behavior untouched and only
-  vetoes the dodge-into-the-wall failure mode. ``reduce``/``danger_band`` semantics
-  match :func:`dodge_link_cbf_reward`. Privileged (ground-truth poses); the actor
-  sees only the wall-state observation.
-  """
+  """针对静态障碍墙的全身各刚体连杆控制屏障函数安全惩罚 (<= 0)."""
   robot: Entity = env.scene[robot_name]
-
-  # Cache (once) the per-link safety radii and the wall geom ids. Link radii are
-  # env-invariant; shares the cache built by dodge_link_cbf_reward when both terms
-  # are registered.
-  if not hasattr(env, "_dodge_link_radii"):
+  if not hasattr(env, "_wall_link_radii"):
     mjm = env.sim.mj_model
     round_types = {
       int(mujoco.mjtGeom.mjGEOM_SPHERE),
@@ -776,70 +632,64 @@ def wall_link_cbf_reward(
         body_r[b] = max(body_r.get(b, 0.0), float(mjm.geom_size[g, 0]))
     body_ids = robot.indexing.body_ids.tolist()
     radii = [body_r.get(int(b), 0.05) for b in body_ids]
-    env._dodge_link_radii = torch.tensor(  # type: ignore[attr-defined]
+    env._wall_link_radii = torch.tensor(
       radii, device=env.device, dtype=torch.float32
-    ) + margin  # (L,)
-  if not hasattr(env, "_wall_geom_ids"):
-    env._wall_geom_ids = {}
-  for name in wall_names:
-    if name not in env._wall_geom_ids:
-      env._wall_geom_ids[name] = int(  # type: ignore[attr-defined]
-        env.sim.mj_model.geom(f"{name}/wall_collision").id
-      )
+    ) + margin
+    env._wall_geom_ids = [
+      int(mjm.geom(f"{w}/wall_collision").id) for w in wall_names
+    ]
 
-  r_link = env._dodge_link_radii  # (L,)
-  W = len(wall_names)
+  r_link = env._wall_link_radii  # (L,)
   link_p = robot.data.body_link_pos_w  # (N, L, 3)
   link_v = robot.data.body_link_lin_vel_w  # (N, L, 3)
-  L = link_p.shape[1]
 
-  # Stack per-wall quantities: centres (N, W, 3), half extents (N, W, 3), yaws (N, W).
-  wall_p = torch.stack(
-    [env.scene[n].data.root_link_pos_w for n in wall_names], dim=1
-  )
-  half_extents = torch.stack(
-    [env.sim.model.geom_size[:, env._wall_geom_ids[n], :] for n in wall_names], dim=1
-  )
+  cbf_per_wall = []
   wyaw = getattr(env, "_wall_yaw_w", None)
-  if wyaw is None or wyaw.shape[1] != W:
-    w_yaw = torch.zeros(env.num_envs, W, device=env.device)
-  else:
-    w_yaw = wyaw
 
-  rel = link_p.unsqueeze(1) - wall_p.unsqueeze(2)  # (N, W, L, 3) wall centre -> link
-  # Rotate each rel xy into its wall's frame (walls yaw with the walking path).
-  c = torch.cos(-w_yaw).view(env.num_envs, W, 1)
-  s = torch.sin(-w_yaw).view(env.num_envs, W, 1)
-  rx = c * rel[..., 0] - s * rel[..., 1]  # (N, W, L)
-  ry = s * rel[..., 0] + c * rel[..., 1]
-  rel_wall = torch.stack([rx, ry, rel[..., 2]], dim=-1)  # (N, W, L, 3)
+  for wi, wname in enumerate(wall_names):
+    gid = env._wall_geom_ids[wi]
+    wall: Entity = env.scene[wname]
+    wp = wall.data.root_link_pos_w  # (N, 3)
+    hl = env.sim.model.geom_size[:, gid, 0]  # (N,)
+    ht = env.sim.model.geom_size[:, gid, 1]  # (N,)
 
-  excess = (rel_wall.abs() - half_extents.unsqueeze(2)).clamp(min=0.0)  # (N, W, L, 3)
-  d = excess.norm(dim=-1).clamp_min(1e-6)  # (N, W, L) distance to wall surface
-  h = d - r_link.view(1, 1, L)  # (N, W, L) clearance (radii cache has margin)
-  # h_dot from the robot's own motion (wall static): grad of d wrt the link is
-  # sign(rel_wall) * excess / d (componentwise; zero for components inside the slab).
-  # BOTH operands must live in the SAME frame: grad is wall-frame, so rotate the
-  # link velocities into the wall frame too (same R(-yaw) as rel above).
-  grad = torch.sign(rel_wall) * excess / d.unsqueeze(-1)  # (N, W, L, 3)
-  lv = link_v.unsqueeze(1).expand(-1, W, -1, -1)  # (N, W, L, 3) world frame
-  vx = c * lv[..., 0] - s * lv[..., 1]
-  vy = s * lv[..., 0] + c * lv[..., 1]
-  v_wall = torch.stack([vx, vy, lv[..., 2]], dim=-1)  # (N, W, L, 3) wall frame
-  h_dot = (v_wall * grad).sum(dim=-1)  # (N, W, L) < 0 while approaching
-  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)  # (N, W, L) <= 0
-  cbf = cbf.min(dim=1).values  # (N, L) most-threatening wall per link
-  h = h.min(dim=1).values  # (N, L)
-  if danger_band is not None:
-    # Only links within `danger_band` of the wall count (keeps a whole-body fast
-    # move far from the wall from washing out the per-link signal under "sum").
-    cbf = torch.where(h < danger_band, cbf, torch.zeros_like(cbf))
+    if wyaw is not None:
+      w_yaw = wyaw[:, wi]
+    else:
+      w_yaw = torch.zeros(env.num_envs, device=env.device)
+    c, s = torch.cos(-w_yaw), torch.sin(-w_yaw)
+
+    rel_w = link_p - wp.unsqueeze(1)  # (N, L, 3)
+    lx = c.unsqueeze(1) * rel_w[:, :, 0] - s.unsqueeze(1) * rel_w[:, :, 1]
+    ly = s.unsqueeze(1) * rel_w[:, :, 0] + c.unsqueeze(1) * rel_w[:, :, 1]
+
+    ex = (lx.abs() - hl.unsqueeze(1)).clamp(min=0.0)
+    ey = (ly.abs() - ht.unsqueeze(1)).clamp(min=0.0)
+    d = torch.sqrt(ex * ex + ey * ey + 1e-12)  # (N, L)
+    h = d - r_link.unsqueeze(0)  # (N, L)
+
+    gx = torch.where(ex > 0, lx.sign() * (ex / d), torch.zeros_like(d))
+    gy = torch.where(ey > 0, ly.sign() * (ey / d), torch.zeros_like(d))
+    c_f, s_f = torch.cos(w_yaw), torch.sin(w_yaw)
+    grad_wx = c_f.unsqueeze(1) * gx - s_f.unsqueeze(1) * gy
+    grad_wy = s_f.unsqueeze(1) * gx + c_f.unsqueeze(1) * gy
+
+    # 障碍墙静止，h_dot 完全取决于肢体自身向墙体移动的速度分量
+    h_dot = -(grad_wx * link_v[:, :, 0] + grad_wy * link_v[:, :, 1])
+    cbf_w = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)
+    if danger_band is not None:
+      cbf_w = torch.where(h < danger_band, cbf_w, torch.zeros_like(cbf_w))
+    cbf_per_wall.append(cbf_w)
+
+  stacked = torch.stack(cbf_per_wall, dim=-1)  # (N, L, W)
+  cbf_link = stacked.min(dim=-1).values  # (N, L)
+
   if reduce == "sum":
-    agg = cbf.sum(dim=1)
+    agg = cbf_link.sum(dim=1)
   elif reduce == "mean":
-    agg = cbf.mean(dim=1)
-  else:  # "min": only the single most-binding link
-    agg = cbf.min(dim=1).values
+    agg = cbf_link.mean(dim=1)
+  else:
+    agg = cbf_link.min(dim=1).values
   return agg
 
 
@@ -855,52 +705,31 @@ def dodge_sidestep_reward(
   strike_z: tuple[float, float] = (0.0, 0.7),
   gravity: float = 9.81,
 ) -> torch.Tensor:
-  """Predictive full-body sidestep CBF reward (<= 0; scale with ``RewardTermCfg.weight``).
+  """针对贴地/低空来球的预测性全身侧向避让 CBF 奖励 (<= 0).
 
-  The "commit earlier/harder" lever for the residual *leg* hits, in CBF form (the 2-D perpendicular
-  barrier -- same family as the deprecated base ``dodge_cbf``). ``mimickit_dodge_reward`` rewards
-  distance from where the ball *is now*; this charges the base for not getting OFF the ball's incoming
-  xy LINE fast enough, so the policy commits to a whole-body sidestep *before* the ball arrives --
-  clearing every link at once, which is what a load-bearing leg needs (it can't vacate a head-on ball
-  late).
-
-      h    = |perp| - safe_radius              # base's perpendicular clearance from the ball's line
-      h_dot= sign(perp) * (v_base . n)         # rate the base is leaving the line (its OWN sideways speed)
-      r    = clamp(h_dot + alpha*h, -clip, 0)  # CBF constraint: 0 when clearing fast enough, else <0
-
-  Unlike :func:`dodge_link_cbf_reward`, ``h_dot`` here is the robot's own sideways speed (the ball
-  moves ALONG its line, so it doesn't change perp) -- same scale as ``alpha*h``, so this barrier is
-  well-conditioned (no closing-rate saturation) and gives real gradient to commit the sidestep.
-  ZERO when safe (base already > safe_radius off the line), so it never fights the settle behavior;
-  gated to a live, still-approaching threat. Self-contained (ground-truth ball pos/vel; no CBF-command
-  dependency). DISABLED by default (register with weight 0); enable + calibrate (like
-  /tmp/cbf_calibrate.py) only if the leg-hit bucket plateaus. ``safe_radius`` = how far off the line
-  to demand (whole-body clearance ~ body half-width + ball radius); larger weight/alpha = sidestep
-  sooner/harder.
+  物理机制：
+  对于低于 0.7m 的低空球，机器人通过下蹲无法躲避（反而会把身体送入弹道）。
+  此时唯一的逃生手段是向轨迹法向全力侧跃。本奖励在预测到来球弹道交点处于下半身区域时，
+  强制要求底盘沿法向加速脱离直线轨迹。
   """
   robot: Entity = env.scene[robot_name]
   ball: Entity = env.scene[ball_name]
-  rp = robot.data.root_link_pos_w[:, :2]  # (N,2) base xy
-  vbase = robot.data.root_link_lin_vel_w[:, :2]  # base xy velocity
+  rp = robot.data.root_link_pos_w[:, :2]
+  vbase = robot.data.root_link_lin_vel_w[:, :2]
   bp = ball.data.root_link_pos_w[:, :2]
   bz = ball.data.root_link_pos_w[:, 2]
   vb = ball.data.root_link_lin_vel_w[:, :2]
   speed = vb.norm(dim=-1)
-  vdir = vb / speed.clamp_min(1e-6).unsqueeze(-1)  # ball xy heading
-  n = torch.stack([-vdir[:, 1], vdir[:, 0]], dim=-1)  # 90deg perpendicular (escape axis)
+  vdir = vb / speed.clamp_min(1e-6).unsqueeze(-1)
+  n = torch.stack([-vdir[:, 1], vdir[:, 0]], dim=-1)
   to_robot = rp - bp
-  along = (to_robot * vdir).sum(dim=-1)  # >0 while the ball is still approaching
-  perp_signed = (to_robot * n).sum(dim=-1)  # base's signed offset from the ball's line
-  h = perp_signed.abs() - safe_radius  # perpendicular clearance (>=0 safe)
-  h_dot = torch.sign(perp_signed) * (vbase * n).sum(dim=-1)  # rate base increases its clearance
-  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)  # <= 0, violation only
+  along = (to_robot * vdir).sum(dim=-1)
+  perp_signed = (to_robot * n).sum(dim=-1)
+  h = perp_signed.abs() - safe_radius
+  h_dot = torch.sign(perp_signed) * (vbase * n).sum(dim=-1)
+  cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)
 
-  # Height-aware gate: only demand a sidestep for an UN-DUCKABLE low ball. The xy line ignores the
-  # arc, so predict the ball's z at the closest xy approach (t* = along / xy_speed; projectile drop)
-  # and require z_cross in `strike_z` = [0, 0.7] m (lower-torso-and-below). A ball arriving there
-  # CAN'T be ducked (lowering the body moves it INTO the ball), so a full-body sidestep is the evade
-  # -- exactly the residual leg/foot hits. Higher balls (upper torso/head) are duck territory and a
-  # ball that arcs overhead or lands short is no threat, so the sidestep is (correctly) not demanded.
+  # 弹道抛物线下坠预测交点高度 z_cross
   t_star = (along / speed.clamp_min(min_ball_speed)).clamp(min=0.0)
   vz = ball.data.root_link_lin_vel_w[:, 2]
   z_cross = bz + vz * t_star - 0.5 * gravity * t_star * t_star
@@ -923,28 +752,10 @@ def mimickit_dodge_reward(
   pos_scale: float = 0.3,
   vel_scale: float = 1.0,
 ) -> torch.Tensor:
-  """MimicKit / SMP dodgeball task reward (arXiv:2512.03028, ``compute_dodge_reward``).
+  """MimicKit / SMP 风格的躲避球经典综合奖励 (arXiv:2512.03028).
 
-  A verbatim port of MimicKit's ``task_dodgeball_env`` reward -- the *entire* dodgeball
-  task signal in SMP, blended ~50/50 with the motion (style) prior:
-
-      r = pos_w * (1 - exp(-pos_scale * dist_to_ball))   # far-from-ball
-        + vel_w * exp(-vel_scale * ||v_xy||^2)            # stay-still
-
-  * **Distance term** ``1 - exp(-pos_scale * d)`` (in ``[0, 1)``): rewards keeping the
-    base far from the ball -- the dodge incentive. ``d`` is the full 3-D distance from the
-    robot root to the ball (MimicKit takes the min over projectiles; we have one ball, so
-    just the norm). Saturates as the ball gets distant, so once clear there's no gradient
-    pulling the robot to flee further -- it can settle.
-  * **Stillness term** ``exp(-vel_scale * ||v_xy||^2)`` (in ``(0, 1]``): rewards a near-zero
-    horizontal base speed, i.e. don't wander -- only move when you must evade. This is what
-    makes the SMP behavior "stand, then sidestep the throw, then settle" rather than pace.
-
-  Unlike ``dodge_cbf_reward`` this uses NO control-barrier function and NO velocity command:
-  it is purely the ground-truth ball position + the robot's own speed, exactly as MimicKit
-  shapes it. When the ball is parked aside (between throws) ``d`` is large so the distance
-  term is ~1; the robot is then driven only to stand still, which is the desired idle pose.
-  Defaults match MimicKit (``pos_w`` 0.9, ``vel_w`` 0.1, ``pos_scale`` 0.3, ``vel_scale`` 1).
+  公式: r = pos_w * (1 - exp(-pos_scale * dist_to_ball)) + vel_w * exp(-vel_scale * ||v_xy||^2)
+  综合远离球体意图与非受威胁时的静止偏好。
   """
   robot: Entity = env.scene[robot_name]
   ball: Entity = env.scene[ball_name]
@@ -962,33 +773,12 @@ def dodge_stillness_when_safe(
   robot_name: str = "robot",
   vel_scale: float = 2.0,
 ) -> torch.Tensor:
-  """Reward standing still ONLY when no ball is looming -- kills the false-dodge asymmetry.
-
-  ``r = (1 - threat) * exp(-vel_scale * ||v_xy||^2)`` in ``[0, 1]``.
-
-  The dodge payoff is lopsided: missing a real ball ends the episode (``ball_hit``, weight
-  ~-200) while twitching at noise costs almost nothing (in the in-place / between-throw
-  regime ``track_anchor_linear_velocity`` is masked off and ``mimickit_dodge``'s stillness
-  term is only ``vel_w=0.1``). So the policy rationally over-dodges any ambiguous near-blob
-  -- including the static-but-jittering clutter / segmenter noise. This term restores the
-  cost of a FALSE dodge, but ONLY when there is no real threat:
-
-  * ``threat`` = ``command._dodge_threat`` (privileged, reward-only): 1 while a ball is
-    airborne and approaching, else 0. Computed every step by the command's CBF filter even
-    when it doesn't filter the command. The ACTOR never sees it -- it observes only depth +
-    proprio -- so to collect this reward it must learn to keep still UNLESS the depth shows a
-    genuine loom (a fast depth collapse), which is exactly the noise-vs-ball discriminator.
-  * threat=0 (noise only / between throws) -> full reward for near-zero base speed -> STAND.
-  * threat=1 (ball incoming) -> 0 regardless of speed -> no pull against the dodge; the
-    hit-termination drives evasion. So it never slows a real dodge, only phantom ones.
-
-  ``vel_scale`` sharpens the speed falloff (2.0: a 0.5 m/s drift keeps ~0.6, 1 m/s ~0.14).
-  """
+  """仅在没有受到来球威胁时奖励保持完全静止 (消除由于视觉噪斑引发的频繁误躲抽搐)."""
   command = env.command_manager.get_term(command_name)
-  threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
+  threat = command._dodge_threat.float()
   robot: Entity = env.scene[robot_name]
   v_xy = robot.data.root_link_lin_vel_w[:, :2]
-  still = torch.exp(-vel_scale * torch.sum(v_xy * v_xy, dim=-1))  # 1 still -> 0 moving
+  still = torch.exp(-vel_scale * torch.sum(v_xy * v_xy, dim=-1))
   return (1.0 - threat) * still
 
 
@@ -996,17 +786,9 @@ def dodge_action_rate_when_safe(
   env: ManagerBasedRlEnv,
   command_name: str = "twist",
 ) -> torch.Tensor:
-  """Threat-gated action-rate COST: penalize ``||a_t - a_{t-1}||^2`` ONLY when no ball is looming.
-
-  Companion to :func:`dodge_stillness_when_safe`. That term penalizes gross base *velocity* when
-  safe; this one penalizes joint *jitter* (rapid action changes) when safe -- the in-place foot
-  shuffling / twitching that barely moves the base, so the base-velocity term hardly sees it, but
-  reads as the robot reacting to noise. Like the global ``action_rate_l2`` but multiplied by
-  ``(1 - threat)`` so it is OFF the moment a real ball is airborne+approaching -- it never smooths
-  away a genuine dodge, only the phantom twitching on clutter/segmenter noise. Return as a COST
-  (use a NEGATIVE weight). ``threat`` = ``command._dodge_threat`` (privileged, reward-only)."""
+  """仅在安全状态下惩罚动作变化率 ||a_t - a_{t-1}||^2，压制无威胁时的关节抖动."""
   command = env.command_manager.get_term(command_name)
-  threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
+  threat = command._dodge_threat.float()
   rate = torch.sum(
     torch.square(env.action_manager.action - env.action_manager.prev_action), dim=1
   )
@@ -1018,34 +800,23 @@ def self_collision_cost(
   sensor_name: str,
   force_threshold: float = 10.0,
 ) -> torch.Tensor:
-  """Penalize self-collisions.
-
-  When the sensor provides force history (from ``history_length > 0``),
-  counts substeps where any contact force exceeds *force_threshold*.
-  Falls back to the instantaneous ``found`` count otherwise.
-  """
+  """机器人自身肢体相互干涉碰撞惩罚 (Self-Collision Cost)."""
   sensor: ContactSensor = env.scene[sensor_name]
   data = sensor.data
   if data.force_history is not None:
-    # force_history: [B, N, H, 3]
-    force_mag = torch.norm(data.force_history, dim=-1)  # [B, N, H]
-    hit = (force_mag > force_threshold).any(dim=1)  # [B, H]
-    return hit.sum(dim=-1).float()  # [B]
+    force_mag = torch.norm(data.force_history, dim=-1)
+    hit = (force_mag > force_threshold).any(dim=1)
+    return hit.sum(dim=-1).float()
   assert data.found is not None
   return data.found.squeeze(-1)
 
 
-
-
 def dodge_cbf_joint_correction(env: ManagerBasedRlEnv) -> torch.Tensor:
-  """CBF-RL filter-correction penalty (<= 0; scale with ``RewardTermCfg.weight``).
+  """关节级 CBF-RL 滤波器动作修正量惩罚: - mean_j (v* - v_des)_j^2.
 
-  The PDF's ``-lambda_corr ||v* - v_des||^2_W`` term (W = I). ``CbfJointPositionAction`` projects
-  the policy's implicit joint-velocity command ``v_des`` onto the ball-avoidance half-space and
-  stashes the per-step correction; this returns ``-mean_j (v* - v_des)_j^2``. It is the actual
-  lever of joint CBF-RL: penalizing how hard the filter had to intervene trains the policy to
-  produce safe whole-body motion on its own, so the (train-only) filter is needed less and can be
-  dropped at deploy. Already zero where there is no threat (the filter is identity there).
+  这是关节级 CBF-RL 训练的核心驱动杠杆：
+  通过惩罚底层安全滤波器对策略期望速度所施加的修正量，
+  迫使策略网络自主学会输出无需滤波介入就能完全满足安全边界的全身规避动作。
   """
   corr_sq = getattr(env, "_cbf_joint_corr_sq", None)
   if corr_sq is None:
@@ -1057,12 +828,10 @@ def dodge_cbf_joint_buffer(
   env: ManagerBasedRlEnv,
   h_buf: float = 0.1,
 ) -> torch.Tensor:
-  """CBF-RL clearance-buffer penalty (<= 0; scale with ``RewardTermCfg.weight``).
+  """关节级 CBF-RL 安全净距缓冲惩罚: - max(0, h_buf - h_min)^2.
 
-  The PDF's ``-lambda_h [h_buf - h_min]_+^2`` term. ``h_min`` is the LINEAR clearance (metres) of
-  the most-threatened body point (``dist - D``, stashed by ``CbfJointPositionAction``); this
-  penalizes letting any defended body point come within ``h_buf`` metres of the clearance boundary,
-  gated on a live threat. Encourages a margin rather than skimming the safety surface.
+  惩罚最危险肢体刚体侵入到距碰撞边界 h_buf 缓冲区以内的行为，
+  确保策略在规避时保持从容的安全裕量，而非擦边越界。
   """
   hmin = getattr(env, "_cbf_joint_hmin", None)
   threat = getattr(env, "_cbf_joint_threat", None)
@@ -1070,5 +839,3 @@ def dodge_cbf_joint_buffer(
     return torch.zeros(env.num_envs, device=env.device)
   viol = torch.clamp(h_buf - hmin, min=0.0)
   return torch.where(threat, -(viol * viol), torch.zeros_like(viol))
-
-

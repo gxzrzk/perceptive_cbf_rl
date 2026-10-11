@@ -1,32 +1,69 @@
-# python scripts/csv_to_npz.py \
-#   --input-file motion_data_csv/lafan1/fallAndGetUp1_subject1.csv \
-#   --output-name fallAndGetUp1_subject1.npz \
-#   --input-fps 30 \
-#   --output-fps 50 \
-#   --line-range "(408,1953)" \
-#   --render True \
-#   --render-backend window \
-#   --window-realtime True \
-#   --window-realtime-scale 1.0
+"""动作数据 CSV 转 NPZ 格式转换与运动学前向求解工具 (CSV to NPZ Motion Converter)
 
-# python scripts/csv_to_npz.py \
-#   --input-file src/assets/motions/g1/dance1_subject2.csv \
-#   --output-name dance1_subject2.npz \
-#   --input-fps 30 \
-#   --output-fps 50 \
-#   --render True \
-#   --render-backend offscreen \
-#   --video-output src/assets/motions/g1/dance1_subject2.mp4
+本脚本用于将 36 列的机器人动作捕捉 CSV 文件转换为包含前向运动学全身各刚体位姿与数值微分速度的 NPZ 文件，
+供强化学习中的对抗运动先验 (AMP, Adversarial Motion Priors) 或全身跟踪任务 (Tracking) 作为高质量专家参考数据集。
 
-# python scripts/csv_to_npz.py \
-#   --input-dir /home/crp/wbc_mjlab/motion_data_csv/amp \
-#   --output-dir /home/crp/wbc_mjlab/motion_data_npz/amp \
-#   --input-fps 120 \
-#   --output-fps 50 \
-#   --render True \
-#   --render-backend window \
-#   --window-realtime True \
-#   --window-realtime-scale 1.0
+1. 数据转换与前向运动学计算原理 (Conversion Pipeline):
+   - 数据加载与四元数重排 (`MotionLoader._load_motion`):
+     * 读取 36 列 CSV（支持通过 `--line-range` 裁剪有效动作片段行数）。
+     * 提取根节点平移 `(x, y, z)`、根节点姿态四元数（由 CSV 的 xyzw 格式重排为 MuJoCo 所需的 wxyz 格式）、以及 29 个关节角。
+   - 时间序列插值重采样 (`MotionLoader._interpolate_motion`):
+     * 将原始动作帧率（如 30Hz 或 120Hz）统一重采样至仿真控制帧率（默认 50Hz，即 dt=0.02s）。
+     * 根节点位移与关节角度使用一维线性插值 (LERP)。
+     * 根节点旋转四元数采用严格的球面线性插值 (SLERP)，避免姿态旋转畸变。
+   - 速度数值微分计算 (`MotionLoader._compute_velocities`):
+     * 根节点线速度与关节角速度采用中心有限差分梯度 (`torch.gradient`) 计算。
+     * 根节点旋转角速度采用 SO(3) 李代数差分 (`_so3_derivative`)：基于相邻四元数相对旋转计算等效旋转向量与角速度。
+   - 仿真运动学求解与连杆数据采集 (`run_sim`):
+     * 构建 `unitree_g1_flat_tracking_env_cfg` 的 MuJoCo 仿真环境。
+     * 将重采样后的根节点位姿与 29 关节角度逐帧写入机器人状态并执行 `sim.forward()`。
+     * 从 MuJoCo 底层提取并记录全身每个刚体 (Body link) 在世界坐标系下的位置 (`body_pos_w`)、四元数 (`body_quat_w`)、
+       线速度 (`body_lin_vel_w`) 以及角速度 (`body_ang_vel_w`)。
+     * 严格校验数值微分得到的根节点线速度与角速度是否与 MuJoCo 内部计算一致。
+     * 将所有状态统一打包持久化保存为 `.npz` 文件。
+   - 渲染与视频导出 (可选):
+     * 支持交互式窗口播放 (`--render-backend window`)，可按真实时间比例对其进行慢放或快放。
+     * 支持离屏渲染 (`--render-backend offscreen`)，通过 `imageio` 输出跟随机器人机体视角的 `.mp4` 高清预览视频。
+
+2. 命令行参数解析机制 (tyro CLI):
+   - 输入输出控制:
+     * `--input-file`: 单个输入 CSV 文件路径。
+     * `--output-name`: 输出 NPZ 文件名称（搭配 `--input-file` 使用）。
+     * `--input-dir`: 包含多个 CSV 文件的输入目录（用于批量转换目录下的全部 CSV）。
+     * `--output-dir`: 转换后 NPZ 文件的输出保存目录（默认 `./motion_data_npz/amp/Recovery`）。
+     * `--input-fps`: 输入 CSV 的采样帧率（例如 30.0 或 120.0）。
+     * `--output-fps`: 期望输出的目标帧率（默认 50.0 Hz，对齐强化学习控制周期）。
+     * `--line-range`: CSV 读取行区间元组（1-based，如 `"(408, 1953)"`）。
+   - 渲染与可视化控制:
+     * `--render`: 是否开启可视化渲染（默认 False）。
+     * `--render-backend`: 渲染后端，可选 `window` (原生 GLFW 交互窗口) 或 `offscreen` (离屏生成视频)。
+     * `--window-realtime`: 窗口播放是否锁定时钟与现实物理时间保持同步。
+     * `--window-realtime-scale`: 窗口回放速度缩放系数（如 1.0 为原速，0.5 为半速慢放）。
+     * `--video-output`: 离屏视频的输出路径 (.mp4)。
+
+运行示例:
+    # 单文件转换并带原生窗口可视化:
+    python scripts/csv_to_npz.py \\
+      --input-file motion_data_csv/lafan1/fallAndGetUp1_subject1.csv \\
+      --output-name fallAndGetUp1_subject1.npz \\
+      --input-fps 30 --output-fps 50 \\
+      --line-range "(408,1953)" \\
+      --render True --render-backend window --window-realtime True
+
+    # 单文件转换并离屏录制视频:
+    python scripts/csv_to_npz.py \\
+      --input-file src/assets/motions/g1/dance1_subject2.csv \\
+      --output-name dance1_subject2.npz \\
+      --input-fps 30 --output-fps 50 \\
+      --render True --render-backend offscreen \\
+      --video-output src/assets/motions/g1/dance1_subject2.mp4
+
+    # 批量转换整个目录:
+    python scripts/csv_to_npz.py \\
+      --input-dir motion_data_csv/amp \\
+      --output-dir motion_data_npz/amp \\
+      --input-fps 120 --output-fps 50
+"""
 
 
 from pathlib import Path

@@ -1,47 +1,59 @@
-"""mjlab-FREE baked G1 constants for the single-cam depth-dodge deploy.
+"""G1 机器人实机部署常量固化模块（完全解耦 mjlab）。
 
-The robot runs this module with NO mjlab import (mjlab pulls in warp/mujoco at
-import time, which we do not want on the Jetson). Every number here is a frozen
-literal generated once from the dev-box source of truth
-``src.assets.robots.unitree_g1.g1_constants`` by
-``deploy/scripts/gen_deploy_constants.py``; ``deploy/tests/test_deploy_constants.py``
-re-derives and asserts equality to 1e-6 so the bake cannot silently drift.
+在部署架构中的角色：
+-------------------
+实机 Jetson 边缘计算平台运行的部署环境不需要、也不能导入 mjlab（mjlab 在导入时会依赖 Warp 和 MuJoCo，
+这些库未在 Jetson Orin Ubuntu 20.04/aarch64 部署环境中安装）。
+本模块中所有参数均为字面量形式固化的数组常量，由开发机上的生成脚本
+``deploy/scripts/gen_deploy_constants.py`` 从真理来源 ``src.assets.robots.unitree_g1.g1_constants`` 一次性导出。
+并通过 ``deploy/tests/test_deploy_constants.py`` 进行绝对误差小于 1e-6 的一致性断言，防止常量意外漂移。
 
-Re-bake whenever the G1 actuators / KNEES_BENT keyframe change:
+关节映射与参数更新说明：
+-----------------------
+若 G1 关节执行器参数或 KNEES_BENT 默认起立姿态发生变更，需重新生成：
+    uv run python deploy/scripts/gen_deploy_constants.py   # 在开发机打印生成数组
+    # 将输出的 DEFAULT_POS / KP / KD / ACTION_SCALE 粘贴到本文件中，并运行单元测试验证。
 
-    uv run python deploy/scripts/gen_deploy_constants.py   # prints the arrays
-    # paste DEFAULT_POS / KP / KD / ACTION_SCALE below, then run the test.
-
-NOTE: this repo assigns ``hip_pitch``/``hip_roll``/``knee`` to the 7520_22
-actuator and ``hip_yaw``/``waist_yaw`` to 7520_14, and wrists to 5010_16 -- a
-DIFFERENT mapping from the wbc deploy. The numbers below reflect THIS repo, so
-do not copy gains across projects; always regenerate.
+注意：本仓库中电机分配映射：
+- ``hip_pitch`` / ``hip_roll`` / ``knee`` 对应 7520_22 型号电机；
+- ``hip_yaw`` / ``waist_yaw`` 对应 7520_14 型号电机；
+- 腕部关节对应 5010_16 电机。
+这与其它部署工程（如 wbc 部署）可能存在差异，不可直接混用，务必严格以本仓库配置为准。
 """
 
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Joint order (the 29-DOF order the policy was trained with; identical to
-# amp_policy.py and the hardware_node). Hip/knee/ankle x2, waist x3,
-# shoulder/elbow/wrist x2.
+# 策略关节顺序 (Policy Joint Order)
 # ---------------------------------------------------------------------------
+# 策略训练与实机控制所依赖的 29 自由度标准关节顺序。
+# 依次排布：左腿 6 关节、右腿 6 关节、腰部 3 关节、左臂 7 关节、右臂 7 关节。
+# 必须与 Unitree SDK2 硬件驱动中的关节索引保持完全一致。
 POLICY_JOINT_NAMES = [
+    # 左腿 (6 DOF)
     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint",
     "left_knee_joint", "left_ankle_pitch_joint", "left_ankle_roll_joint",
+    # 右腿 (6 DOF)
     "right_hip_pitch_joint", "right_hip_roll_joint", "right_hip_yaw_joint",
     "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
+    # 躯干腰部 (3 DOF)
     "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint",
+    # 左上肢 (7 DOF)
     "left_shoulder_pitch_joint", "left_shoulder_roll_joint", "left_shoulder_yaw_joint",
     "left_elbow_joint", "left_wrist_roll_joint", "left_wrist_pitch_joint", "left_wrist_yaw_joint",
+    # 右上肢 (7 DOF)
     "right_shoulder_pitch_joint", "right_shoulder_roll_joint", "right_shoulder_yaw_joint",
     "right_elbow_joint", "right_wrist_roll_joint", "right_wrist_pitch_joint", "right_wrist_yaw_joint",
 ]
-NUM_JOINTS = len(POLICY_JOINT_NAMES)  # 29
+NUM_JOINTS = len(POLICY_JOINT_NAMES)  # 29 自由度
 
 # ---------------------------------------------------------------------------
-# Baked per-joint arrays (generated from g1_constants.py; do not hand-edit).
+# 固化的逐关节参数数组（从 g1_constants.py 生成，严禁手工修改数值）
 # ---------------------------------------------------------------------------
-# KNEES_BENT_KEYFRAME rest pose, resolved onto POLICY_JOINT_NAMES.
+
+# 标称站立默认姿态 (DEFAULT_POS):
+# 对应仿真中 KNEES_BENT_KEYFRAME（微屈膝平衡站立位）在 POLICY_JOINT_NAMES 上的映射值。
+# 在硬件节点启动和急停恢复时，机器人通过线性插值平滑移动至该默认角度。
 DEFAULT_POS = np.array([
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
     -0.312, 0.0, 0.0, 0.669, -0.363, 0.0,
@@ -50,8 +62,8 @@ DEFAULT_POS = np.array([
     0.2, -0.2, 0.0, 0.6, 0.0, 0.0, 0.0,
 ], dtype=np.float32)
 
-# PD position gains (= actuator stiffness; ankle/waist-pitch/roll carry the x2
-# parallel-linkage scaling).
+# 关节 PD 位置刚度增益 (KP, N*m/rad):
+# 对应各关节电机的刚度系数；注意踝关节和腰部俯仰/横滚采用平行连杆机构，带有 2 倍刚度缩放。
 KP = np.array([
     99.09842777666111, 99.09842777666111, 40.17923863450712, 99.09842777666111,
     28.50124619574858, 28.50124619574858, 99.09842777666111, 99.09842777666111,
@@ -63,7 +75,8 @@ KP = np.array([
     8.611032447370201,
 ], dtype=np.float32)
 
-# PD velocity gains (= actuator damping; same x2 scaling).
+# 关节 PD 速度阻尼增益 (KD, N*m*s/rad):
+# 对应各关节电机的微分阻尼系数；在阻尼保护状态下，机器人以 KP=0, KD=KD 进行平滑耗能制动。
 KD = np.array([
     6.308801853496639, 6.308801853496639, 2.557889775413375, 6.308801853496639,
     1.814445686584846, 1.814445686584846, 6.308801853496639, 6.308801853496639,
@@ -75,8 +88,10 @@ KD = np.array([
     0.548195351665136,
 ], dtype=np.float32)
 
-# Action scale (0.25 * effort_limit / stiffness per joint). target = DEFAULT_POS
-# + action * ACTION_SCALE.
+# 动作缩放系数 (ACTION_SCALE):
+# 计算公式为: 0.25 * effort_limit / stiffness。
+# 策略网络输出无量纲的 [-1, 1] 动作值，反归一化为实际物理位置指令:
+#   target_joint_pos = DEFAULT_POS + action * ACTION_SCALE
 ACTION_SCALE = np.array([
     0.35066146637882434, 0.35066146637882434, 0.5475464629911068, 0.35066146637882434,
     0.43857731392336724, 0.43857731392336724, 0.35066146637882434, 0.35066146637882434,
@@ -89,23 +104,26 @@ ACTION_SCALE = np.array([
 ], dtype=np.float32)
 
 # ---------------------------------------------------------------------------
-# Depth observation parameters (single head camera).
+# 深度观测参数 (Depth Observation Parameters - 单目头部相机)
 # ---------------------------------------------------------------------------
+# 深度图降采样网格分辨率 (行高 H=9, 列宽 W=16)，总计 144 维特征/帧
 DEPTH_H = 9
 DEPTH_W = 16
-# DepthImageObs data clip [near, far] (metres). The mujoco_warp sensor returns
-# true distance; the policy applies this as a clamp before normalising, exactly
-# as the live ZED path must.
+
+# 深度图裁剪范围 [near, far] (单位: 米)。
+# 测量有效距离夹紧至 [0.1m, 5.0m]，随后归一化至 [0, 1] 区间（0=最近, 1=最远/无障碍）。
 DEPTH_NEAR = 0.1
 DEPTH_FAR = 5.0
-# Depth frame stack offsets (steps ago; 0 = current). Must match the checkpoint
-# (the trained single-cam policy used (0, 3, 8, 18) -> 4 * 144 = 576 depth dims).
-# Override at launch to match a differently-trained checkpoint.
+
+# 深度历史帧堆叠偏移量 (单位: 控制步 steps ago; 0 代表当前最新帧)。
+# 必须与训练导出 ONNX 时保持绝对一致！
+# 训练所用单相机策略采用 (0, 3, 8, 18) 四个历史时刻帧，
+# 在 50 Hz 控制步下对应: 0ms, 60ms, 160ms, 360ms 前的时间窗口。
+# 堆叠后深度观测维度为 4 * 144 = 576 维。
 DEFAULT_FRAME_OFFSETS = (0, 3, 8, 18)
 
-# Camera mount (documentation / 2-cam extension). ``head_camera_single`` sits at
-# pos (0.05, 0, 0.45) in the robot head, tilted +20 deg up (vertical coverage
-# -7..+47 deg), fovy 54 deg, 16:9 aspect (HFOV ~= 84.5 deg) -- matches the ZED
-# Mini WVGA FOV. A 2nd (torso-down) camera would append another 144 per frame.
+# 头部相机物理安装几何属性（用于仿真建模与实机校准参考）：
+# head_camera_single 位于机器人头部坐标 (0.05, 0, 0.45) 处，机身仰角 +20 度，
+# 垂直视场角 FOV 54 度，16:9 画幅（水平视场角 HFOV 约为 84.5 度），完美对应 ZED Mini WVGA 分辨率。
 HEAD_CAMERA_FOVY_DEG = 54.0
 HEAD_CAMERA_TILT_UP_DEG = 20.0

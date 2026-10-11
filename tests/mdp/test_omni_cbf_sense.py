@@ -1,20 +1,22 @@
-"""Integration test: omni-aware CBF sense_radius scaling (4m -> 12m under OMNI_THROW).
+"""全向投球下控制障碍函数 (CBF) 感知半径与威胁边界测试 (Omni CBF Sense Radius Tests)。
 
-Proves that the 4bdce87 fix is load-bearing:
-  - With sense_radius=12 (OMNI_THROW=1 default) the CBF threat gate fires from the moment
-    an omni ball is launched (8-10 m away), because dist < 12 m.
-  - With sense_radius=4 (CBF_SENSE_RADIUS=4, old default) it does NOT fire at launch, because
-    the ball starts > 4 m from the robot.
+测试功能：
+- 验证 CBF 感知半径在全向高速来球场景 (OMNI_THROW=1) 下从 4m 扩展至 12m 的自适应缩放机制；
+- 证明该修改的核心必要性：
+  全向抛球模式下，小球生成在距离机器人 8-10m 的远端，初速度达 20-25 m/s；
+  1. 当 sense_radius = 12m 时，小球刚发射即可落入感知球内（dist < 12m），CBF 威胁门控 (threat gate)
+     在发射瞬间即可立刻触发，为机器人提供足够的躲避前置反应时间（约 0.4s）；
+  2. 当 sense_radius = 4m（旧版默认值）时，发射瞬间小球处于感知盲区（dist > 4m），CBF 门控无法触发，
+     直到小球飞至 4m 以内（仅剩约 0.18s）才响应，导致人形机器人无法来得及避让高速球。
 
-GPU required (builds a full sim env).  Keep num_envs tiny (64) to share GPU 0 safely with any
-concurrent training run.  The test steps physics exactly ONCE (via mujoco_warp.forward) then
-calls process_action directly, so GPU time is negligible.
+关键断言条件：
+- sense_radius == 12.0m 时：发射瞬时受威胁环境占比 >= 80%；
+- sense_radius == 4.0m 时：发射瞬时受威胁环境占比 <= 5%。
 
-Sim step flow note: env.step() runs process_action THEN physics THEN events.  The throw event
-fires AFTER process_action, so the CBF only sees the thrown ball on the next step.  The test
-bypasses this by writing the ball state, propagating via mujoco_warp.forward + entity.update(),
-then calling process_action directly -- identical to what happens when the CBF sees a ball that
-was thrown on the previous step.
+覆盖边界情况：
+- 全方位 360 度随机发射方位角 (bearing in [-pi, pi])；
+- 8-10m 随机远距离与 20-25m/s 高速弹道求解；
+- MuJoCo Warp GPU 动力学单步前向传播与 CBF 动作处理流程同步。
 """
 import math
 import os
@@ -24,14 +26,14 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# 辅助构建与场景状态注入函数
 # ---------------------------------------------------------------------------
 
 def _build_state_cbf_env(num_envs: int, sense_radius_override: str | None = None):
-    """Build the MimicKit state env with OMNI_THROW=1 and CBF_JOINT=1.
+    """构建启用 OMNI_THROW=1 和 CBF_JOINT=1 的 MimicKit 状态环境。
 
-    Calls the cfg builder directly (not load_env_cfg) so all env-vars are read
-    fresh at call time rather than at import time.
+    说明：
+        直接调用配置构建函数以在调用时动态获取环境变量，支持覆写 CBF_SENSE_RADIUS。
     """
     if sense_radius_override is not None:
         os.environ["CBF_SENSE_RADIUS"] = sense_radius_override
@@ -40,12 +42,12 @@ def _build_state_cbf_env(num_envs: int, sense_radius_override: str | None = None
     os.environ.update({
         "OMNI_THROW": "1",
         "CBF_JOINT": "1",
-        "CBF_JOINT_APPLY_FILTER": "0",   # reward shaping only; don't override actions
+        "CBF_JOINT_APPLY_FILTER": "0",   # 仅用于奖励塑形，不直接覆盖动作
         "CBF_JOINT_LAMBDA_CORR": "0",
         "CBF_JOINT_LAMBDA_BUF": "0",
     })
 
-    import src.tasks  # noqa: F401 -- triggers task registration side-effect
+    import src.tasks  # noqa: F401 -- 触发任务注册副作用
     from mjlab.envs import ManagerBasedRlEnv
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import g1_amp_dodge_mimickit_flat_env_cfg
 
@@ -57,17 +59,16 @@ def _build_state_cbf_env(num_envs: int, sense_radius_override: str | None = None
 
 
 def _place_omni_ball_and_run_cbf(env):
-    """Write omni-throw ball states (8-10 m, 20-25 m/s, all directions), propagate physics,
-    and run process_action so env._cbf_joint_threat reflects the threat gate.
+    """写入全向抛球状态（8-10m 距离、20-25m/s 速度、全向方位），前向物理动力学并运行 CBF 处理。
 
-    Returns the threat tensor (N,) bool.
-
-    The sim step flow is: process_action -> physics -> events (throw fires here).
-    So the CBF sees a freshly thrown ball on the NEXT step.  We simulate this by:
-      1. write_root_link_{pose,velocity}_to_sim  (as throw_ball_on_dwell does)
-      2. scene.write_data_to_sim() + mujoco_warp.forward()  (propagate to sim buffers)
-      3. ball.update()  (refresh entity data tensors from sim buffers)
-      4. process_action  (CBF reads updated ball.data.root_link_{pos,vel}_w)
+    测试数据构造：
+        1. 机器人当前位置：rp；
+        2. 球体发射方位角：在 [-pi, pi] 均匀采样；
+        3. 发射距离：dist 采样自 U(8, 10) 米；
+        4. 发射高度：采样自 U(1.5, 2.3) 米；
+        5. 球速：采样自 U(20, 25) m/s；
+        6. 调用 solve_ballistic_velocity 求解命中机器人的抛物线弹道速度向量；
+        7. 同步物理缓冲区并调用 process_action，返回 env._cbf_joint_threat 布尔张量。
     """
     from src.tasks.amp_loco.mdp.events import solve_ballistic_velocity
     import mujoco_warp as mjw
@@ -102,12 +103,12 @@ def _place_omni_ball_and_run_cbf(env):
     rv[:, 0:3] = vel
     ball.write_root_link_velocity_to_sim(rv)
 
-    # Propagate writes into the physics buffers so ball.data reflects them.
+    # 将写入的数据同步至物理引擎缓冲区，刷新 ball.data
     env.scene.write_data_to_sim()
     mjw.forward(env.sim.wp_model, env.sim.wp_data)
     ball.update(env.step_dt)
 
-    # Run the CBF action term (reads current ball.data.root_link_{pos,vel}_w).
+    # 执行 CBF 动作项处理（读取当前球体世界坐标与速度）
     zero_action = torch.zeros(n, env.action_manager.total_action_dim, device=dev)
     env.action_manager.process_action(zero_action)
 
@@ -115,12 +116,17 @@ def _place_omni_ball_and_run_cbf(env):
 
 
 # ---------------------------------------------------------------------------
-# Tests
+# 测试用例
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_sense_radius_12_fires_at_omni_launch():
-    """With sense_radius=12 the CBF threat fires immediately at omni-throw launch (8-10 m away)."""
+    """测试场景：在扩展后的感知半径 (sense_radius=12m) 下，全向来球在 8-10m 远端发射瞬间即触发威胁。
+
+    预期输出及验证逻辑：
+        1. 验证环境正确加载了 OMNI_THROW=1 默认的 sense_radius=12.0；
+        2. 发射 8-10m 远端小球后，由于距离小于 12m，至少 80% 的环境立即判定为受威胁 (threat=True)。
+    """
     env = _build_state_cbf_env(num_envs=64)
     term = env.action_manager.get_term("joint_pos")
 
@@ -144,11 +150,12 @@ def test_sense_radius_12_fires_at_omni_launch():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_sense_radius_4_does_not_fire_at_omni_launch():
-    """With sense_radius=4 (old default) the CBF threat does NOT fire at omni-throw launch (8-10 m).
+    """测试场景：对照实验——在旧版感知半径 (sense_radius=4m) 下，CBF 在发射瞬间处于盲区。
 
-    This is the control case that proves the scaling matters: the ball is 8-10 m from the robot,
-    which is outside the 4 m gate, so the CBF is blind at launch.  It would only engage with
-    ~0.18 s of lead time -- far too late for a 20-25 m/s ball.
+    预期输出及验证逻辑：
+        1. 强制设定 CBF_SENSE_RADIUS=4.0；
+        2. 小球在 8-10m 远端发射时，超出 4m 感知边界，受威胁环境占比 <= 5%（完全不触发），
+           证明旧版配置在全向高速抛球下存在严重的感知盲区与反应滞后。
     """
     env = _build_state_cbf_env(num_envs=64, sense_radius_override="4.0")
     term = env.action_manager.get_term("joint_pos")

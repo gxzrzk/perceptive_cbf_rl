@@ -1,51 +1,54 @@
-"""Controlled dodge benchmark: 100 throws (50 UP/duckable + 50 DOWN/low), one throw per env, robot
-reset to a CLEAN STAND with zero velocity command. Success = robot neither HIT nor FELL over during
-the trial window. Same seeded throws across all dodge policies for a fair head-to-head.
+"""受控躲避球基准测试套件 (Controlled Dodge Benchmark)
 
-Policy keys = the paper's perception x safety grid (see TASKS):
+本脚本用于对不同感知模态 (Perception) 与 CBF 安全屏障模式 (Safety Mode) 的策略进行标准化、可重复的横向对比评测。
+每个策略在相同固定随机种子下接受 100 次受控抛球测试（50 次高抛 UP/需低头下潜 + 50 次低抛 DOWN/需侧移闪避）。
+成功判定标准：在测试时间窗口内，机器人既未被球击中 (HIT) 也未失稳摔倒 (FELL)。
 
-  perception:  state_*  = state oracle (ground-truth ball obs, Unitree-G1-AMP-Dodge-MimicKit-Flat)
-               vision_* = fixed head camera, ball-only masked depth (BallOnly task)
-               gimbal_* = the same BallOnly task with the oracle-aimed camera-pitch gimbal
-                          (the benchmark auto-sets CAMERA_GIMBAL=1 CAMERA_PROPRIO=1 for these keys)
-  safety mode: *_none   = distance-to-core reward only (trained with NO_LINK_CBF=1)
-               *_link   = + per-link clearance CBF reward (the deployed configuration)
-               *_joint  = + joint-space CBF reward guidance (trained CBF_JOINT=1; eval'd bare)
-  "+filter":   run a *_joint key with BENCH_CBF_FILTER=1 to keep the joint-CBF projection active
-               at eval (privileged: reads ground-truth ball state; NOT hardware-deployable).
-  omni:        state_link_omni / state_joint_omni are trained with OMNI_THROW=1 and MUST be
-               eval'd with --omni (they run by default only when --omni is passed).
-  statue:      frozen-statue control (no checkpoint) -- the free-miss floor.
+1. 策略矩阵体系与任务键值 (Perception x Safety Grid, 见 TASKS):
+   - 感知模态 (Perception):
+     * `state_*`: 状态真值 Oracle 策略（直接获取球体在自身航向坐标系下的 6 维相对位置与速度，无相机，性能上限标尺）。
+     * `vision_*`: 固定俯仰角头部相机 (+20°)，输入经 EfficientTAM 分割后的 BallOnly 掩码深度图。
+     * `gimbal_*`: 在 BallOnly 深度相机基础上搭载真值引导的动态俯仰云台 (+/-30°)，测量主动瞄准带来的视场收益。
+   - 安全屏障模式 (Safety Mode):
+     * `*_none`: 无 CBF 屏障基线，仅采用基于距离的球体躲避惩罚奖励 (`NO_LINK_CBF=1`)。
+     * `*_link`: 带有各连杆碰撞间隙 CBF 屏障奖励（论文核心贡献，真机物理部署配置）。
+     * `*_joint`: 带有关节空间 CBF 导向奖励 (`CBF_JOINT=1`)。
+     * `+filter`: 对 `*_joint` 模型在评测时指定 `BENCH_CBF_FILTER=1`，激活运行期特权真值 CBF 投影安全滤波器。
+     * `omni`: 360° 全向高速抛球校准组 (`state_link_omni`, `state_joint_omni`，训练配置 `OMNI_THROW=1`)，
+       需通过 `--omni` 参数触发评测。
+     * `statue`: 原地完全静止不动的“雕像”对照基线（无需模型权重，测量不闪避时的天然未命中概率底线）。
 
-UP   = force_high=True  : launched low (~waist), arcs UP to torso/head height -> a ball to DUCK under.
-DOWN = force_high=False : launched high (~2 m), pure-horizontal, descends to the lower body -> sidestep.
+2. 抛球类型与动力学特性 (Throw Types):
+   - UP (高抛球, force_high=True):
+     从较低高度（约腰部）起抛，轨迹呈向上抛物线爬升至躯干与头部高度 -> 诱导机器人下潜、弯腰或低头躲避 (Duck)。
+   - DOWN (低抛球, force_high=False):
+     从约 2m 高度水平射出，在重力作用下下落穿过下半身与腿部区域 -> 诱导机器人横向侧跨步闪避 (Sidestep)。
 
-Per policy: reset->stand, settle (stabilize + fill the depth frame stack), inject the controlled throw
-(launch math mirrors throw_ball_on_dwell), run a window, and latch each env's FIRST termination using
-the env's OWN terms -- hit=ball_hit, fell={bad_orientation,bad_base_height,collapsed_crouch}; neither
-within the window => success. Auto-reset on termination is fine (post-latch envs are ignored).
+3. 三种评估体制 (Evaluation Regimes):
+   - 默认模式 (Reset regime):
+     每个环境单次抛球，机器人从标准的初始平稳站立姿态出发（对应论文中的 "Reset" 评测）。
+   - 部署恢复模式 (--walk-recover, Deployment regime):
+     镜像真实真机部署运行回路：在抛球间隙，自动调用基础步态行走网络 (`Unitree-G1-AMP-Flat`，由 `train_walk.sh` 训练)，
+     引导机器人自动走回并对齐初始站立工位，待完全平稳站立后再触发下一次抛球。
+   - 连续模式 (--continuous):
+     连续多轮次背靠背抛球（每轮交替 UP/DOWN），期间不重置机器人姿态，测试策略在连续动态冲击下的自稳定与流转能力。
 
-IMPORTANT -- two methodology lessons baked in (both flipped earlier results):
-  * HIT must be the env's ball_hit term (real contact), NOT a proximity threshold -- a 0.22 m
-    body-link proximity test counted near-misses as hits and made even the oracle look terrible.
-  * DEPTH policies must be eval'd WITH their training sim2real depth aug (--depth-aug, default True).
-    Clean depth is OOD for them. Run --depth-aug False to see the clean-depth numbers.
+4. 核心评测判定与统计逻辑 (Metrics & Statistics):
+   - 成功条件 (Success): `not hit and not fell`。
+   - 严谨的物理接触判定 (HIT):
+     必须采用 MuJoCo 物理引擎在当前步产生的实际几何接触项 (`ball_hit`)，严禁使用粗糙的空间欧氏距离阈值（避免贴身擦过被误判）。
+   - 跌倒判定 (FELL):
+     综合环境中的姿态失稳 (`bad_orientation`)、质心过度跌落 (`bad_base_height`) 以及跪地塌陷 (`collapsed_crouch`) 终止项。
+   - 深度域随机化规范:
+     对所有深度视觉策略，评测时必须默认应用训练时的 sim2real 域随机化增广 (`--depth-aug True`)，避免分布外 (OOD) 评估失真。
+   - 统计输出: 打印包含总成功率、高球成功率、低球成功率、命中率、摔倒率以及受击身体部位分布 (`hit_regions`) 的完整汇总表。
 
-Three regimes:
-  default        ONE throw per env from a clean stand (the paper's "Reset" regime)
-  --walk-recover the paper's "Deployment" regime: the WALK loco policy returns the robot to its
-                 station between throws, then the DODGE policy handles the throw. Mirrors the real
-                 deployment loop (walk<->dodge switch). Walk actor = Unitree-G1-AMP-Flat
-                 (384->29, train_walk.sh); pass --walk-ckpt or train the "walk" experiment first.
-  --continuous   back-to-back throws (alternating UP/DOWN per round), NO stand-reset between -- the
-                 robot flows from one throw into the next (only termination auto-resets).
-
-Usage:
-  uv run python scripts/dodge_benchmark.py                    # statue + all non-omni keys (Reset)
-  uv run python scripts/dodge_benchmark.py --walk-recover     # Deployment regime
-  uv run python scripts/dodge_benchmark.py --only vision_link
-  BENCH_CBF_FILTER=1 uv run python scripts/dodge_benchmark.py --only state_joint   # "+filter" cell
-  uv run python scripts/dodge_benchmark.py --omni             # omni-throw oracle calibration
+常用运行命令：
+  uv run python scripts/dodge_benchmark.py                    # 运行雕像基线与所有标准策略 (Reset 模式)
+  uv run python scripts/dodge_benchmark.py --walk-recover     # 运行真机部署模式 (带走回恢复)
+  uv run python scripts/dodge_benchmark.py --only vision_link # 仅评测真机部署的 vision_link 策略
+  BENCH_CBF_FILTER=1 uv run python scripts/dodge_benchmark.py --only state_joint   # 运行带真值 CBF 滤波的 state_joint
+  uv run python scripts/dodge_benchmark.py --omni             # 评测 360° 全向抛球策略
 """
 from __future__ import annotations
 import argparse, math, os

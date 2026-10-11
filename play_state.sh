@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# Play / visualize the trained STATE-BASED (oracle) dodge policy
-# (Unitree-G1-AMP-Dodge-MimicKit-Flat) in the viser web viewer (default http://localhost:8080).
-# This is the MimicKit/SMP faithful baseline: the actor sees the GROUND-TRUTH 6-D ball state
-# (relative pos + vel in the heading frame) directly -- NO camera, NO depth. It is the PERCEPTION
-# UPPER BOUND for the dodge task: how well the robot can dodge when it knows the ball perfectly.
-# Use it as the ceiling to compare the single-depth policy against. Works headless.
+# ==============================================================================
+# 状态真值 Oracle 避障策略可视化回放脚本 (Play State-based Oracle Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-Flat
+#    - 感知模式: 状态真值 Oracle 模态（策略直接读取球体在自身坐标系下的 6 维相对位置与速度）
+#               无相机渲染、无深度图，作为评估避障能力的“感知上限”对照基线。
+#    - 特点: 纯几何与物理交互，Viser 界面中无需打开深度面板，也不需要配置帧偏移参数。
+#    - 可视化平台: 启动 Viser Web 端可视化服务器 (默认访问 http://localhost:8080)。
 #
-# No depth obs, so there are no depth panels and no --depth-frame-offsets / --depth-aug flags
-# (unlike play_depth_single.sh). Just the scene + the robot dodging thrown balls.
+# 2. 检查点 (Checkpoint) 解析机制:
+#    - 第一个非 '-' 参数可显式传入检查点路径 (如 logs/rsl_rl/state_link/<run>/model_25000.pt)。
+#    - 若未指定，则自动搜索 logs/rsl_rl/${EXP_NAME}（或指定 RUN 目录下）最新的 model_*.pt 文件。
 #
-# The first positional arg is a direct checkpoint path; omit it to use the newest model_*.pt under
-# the experiment dir (logs/rsl_rl/state_link).
+# 3. 环境变量重载选项:
+#    - RUN: 指定训练子目录名 (如 2026-06-02_19-35-53)
+#    - NUM_ENVS: 可视化同屏机器人数量 (默认: 1)
+#    - EXP_NAME: 实验日志根目录名称 (默认: state_link)
+#    - RESET_STAND: 是否重置为标准稳定站立姿态 (默认: True)
 #
-# Usage:
-#   ./play_state.sh                                          # newest checkpoint
-#   ./play_state.sh logs/rsl_rl/state_link/<run>/model_25000.pt
-#   RUN=2026-06-02_19-35-53 ./play_state.sh                  # newest under a specific run dir
-#   NUM_ENVS=9 ./play_state.sh                               # more robots on screen
-#   ./play_state.sh --video True                             # forward extra play.py flags
-#
-# Env overrides: RUN, NUM_ENVS, EXP_NAME, RESET_STAND. Extra args -> scripts/play.py.
+# 4. 使用示例:
+#    ./play_state.sh                                          # 加载最新模型
+#    ./play_state.sh logs/rsl_rl/state_link/<run>/model_25000.pt
+#    RUN=2026-06-02_19-35-53 ./play_state.sh
+#    NUM_ENVS=4 ./play_state.sh
+#    ./play_state.sh --video True                             # 录制回放视频
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

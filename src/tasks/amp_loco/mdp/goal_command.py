@@ -1,25 +1,22 @@
-"""Goal-conditioned ("go to a point") command that the policy observes as a velocity.
+"""目标驱动的导航速度指令管理器模块 (Goal-Conditioned Navigation Commands).
 
-This command term implements the navigation layer of a goal-conditioned task while
-keeping the policy's command interface a pure velocity (vx, vy, wz) -- the goal point
-itself never enters the observation. Each control step it converts the *current* base ->
-goal error into a clamped proportional velocity command:
-
-    v_xy_b = clip(kp * R_yaw^{-1} (goal_xy - base_xy), v_max)
-    w_z    = clip(kp_yaw * wrap(atan2(goal - base) - heading))   # face the goal
-
-Because the command is proportional to the remaining error, its magnitude **decays to
-zero as the robot approaches the goal**. That decaying velocity is the only proximity
-cue available to the policy (there is no explicit distance/goal in the observation), and
-it is what lets a memoryless policy learn to slow down and stop at the target.
-
-Is "goal not in the observation" realistic? Yes -- this is the standard deployable
-decomposition: a navigation/planner layer turns a goal into a velocity command and the
-locomotion policy only ever sees a velocity (like a joystick). The goal still reaches the
-policy, but compressed into the velocity command. A truly goal-invisible observation
-(goal in the reward but with no path into the observation at all) would be an unsolvable
-POMDP. This is the same trick mjlab's UniformVelocityCommand already uses for
-``heading_command`` (heading error -> yaw-rate command), generalized to an xy point.
+【架构定位与理论机制】
+在腿足机器人的分层控制架构中，导航决策与底层步态运动控制通常进行解耦：
+1. 目标对策略的隐式呈现 (Goal Absent from Observations)：
+   本模块实现的指令项并不直接将目标三维坐标放入策略网络的观测空间，而是通过航向与位置误差计算，
+   实时转化为机器人机体坐标系下的名义速度指令 $[v_x, v_y, \\omega_z]$。策略网络只需像响应遥控手柄 (Joystick) 一样
+   执行速度跟踪。
+2. 比例衰减机制 (Proportional Decay Cue)：
+   速度指令大小正比于机器人距目标的剩余欧氏距离：
+       $v_{xy, b} = \\text{clip}(k_p \\cdot R_{\\text{yaw}}^{-1} (p_{\\text{goal}} - p_{\\text{base}}), v_{\\max})$
+       $\\omega_z = \\text{clip}(k_{p, \\text{yaw}} \\cdot \\text{wrap}(\\text{atan2}(p_{\\text{goal}} - p_{\\text{base}}) - \\psi), \\omega_{\\max})$
+   当机器人接近目标时，速度指令自动衰减归零，从而使无记忆的马尔可夫策略能够自然减速并精确悬停在目标点。
+3. 预测性控制屏障函数 (CBF) 躲避滤波 (`DodgeGoToGoalCommand`)：
+   在躲避球任务中，名义导航速度在下发前通过预测性 CBF 安全滤波器 (`cbf.py`) 处理。
+   若来球处于威胁航向，滤波器自动将速度指令沿来球航向的法向叠加剧烈侧移量，迫使机器人飞跃避让。
+   在纯 CBF-RL 训练模式下，滤波结果可仅作为特权安全奖励指导（不直接改写指令），强迫策略依靠自感知视觉学习躲避。
+4. 路径纯追踪 (Path Follow Pure Pursuit)：
+   在走廊避障任务中，指令器提取前方前视点作为动态目标，引导机器人沿着随机折线路径平滑巡航。
 """
 
 from __future__ import annotations
@@ -50,7 +47,7 @@ if TYPE_CHECKING:
 
 
 class GoToGoalCommand(CommandTerm):
-  """Velocity command derived from a sampled goal point (goal absent from obs)."""
+  """将采样的平面目标点转化为机体系速度指令的基础指令管理器 (目标点对策略隐式隐藏)."""
 
   cfg: GoToGoalCommandCfg
 
@@ -58,26 +55,22 @@ class GoToGoalCommand(CommandTerm):
     super().__init__(cfg, env)
     self.robot: Entity = env.scene[cfg.entity_name]
 
-    # World-frame goal (xy) and the resulting body-frame velocity command [vx, vy, wz].
+    # 世界坐标系下的目标位置 (xy) 与计算输出的机体系速度指令 [vx, vy, wz]
     self.goal_pos_w = torch.zeros(self.num_envs, 2, device=self.device)
     self.vel_command_b = torch.zeros(self.num_envs, 3, device=self.device)
     self.distance_to_goal = torch.zeros(self.num_envs, device=self.device)
-    # Per-step distance reduction toward the goal (meters); +ve = progress. Read by the
-    # goal_progress_reward. Set to 0 on (re)sample so a goal change is not seen as motion.
+    # 单步向目标靠近的距离差值 (米)，正值表示靠近，供 goal_progress_reward 奖励函数使用
     self.prev_distance = torch.zeros(self.num_envs, device=self.device)
     self.distance_delta = torch.zeros(self.num_envs, device=self.device)
+    # 纯静止环境掩码 (强制速度指令全为 0 且不扔球，作为静止站立步态锚点)
     self.is_standing_env = torch.zeros(
       self.num_envs, dtype=torch.bool, device=self.device
     )
-    # In-place-throw envs: zero velocity command (like standing) BUT NOT in is_standing_env, so the
-    # throw event (skip_standing_envs) still pelts them -- the robot must dodge from a standstill.
-    # Mutually exclusive with is_standing_env (partitioned from one uniform draw in _sample_stand_inplace).
+    # 原地等待来球环境掩码 (速度指令为 0，但依然会向其扔球，强迫策略学习从完全静止状态快速启动侧跃避让)
     self.is_inplace_env = torch.zeros(
       self.num_envs, dtype=torch.bool, device=self.device
     )
-    # Dwell-and-resample: once a (non-standing) env holds the goal for its dwell time, draw
-    # a new goal (the periodic timer remains a fallback). Keeps the robot actively leaping.
-    # The dwell duration is randomized per env (per goal) within cfg.dwell_time_range.
+    # 驻留与重采样计数器：当机器人在目标点停驻达到随机时长后，重新采样新目标
     self.dwell_counter = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self.dwell_steps = torch.full(
       (self.num_envs,),
@@ -91,13 +84,11 @@ class GoToGoalCommand(CommandTerm):
 
   @property
   def command(self) -> torch.Tensor:
-    # The policy only ever sees this velocity, never the goal coordinates.
+    """返回策略网络观测到的机体系线速度与角速度指令 [vx, vy, wz]."""
     return self.vel_command_b
 
   def _sample_stand_inplace(self, env_ids: torch.Tensor) -> torch.Tensor:
-    """Partition ``env_ids`` (one uniform draw) into permanently-standing (zero command, NO ball),
-    in-place-throw (zero command but balls STILL thrown), and normal. Sets is_standing_env and
-    is_inplace_env (mutually exclusive, exact fractions) and returns the standing mask."""
+    """按比例将重置环境划分为：永久站立环境、原地避让环境和普通移动目标跟踪环境."""
     r = torch.empty(len(env_ids), device=self.device).uniform_(0.0, 1.0)
     stand_p = self.cfg.rel_standing_envs
     inplace_p = self.cfg.rel_inplace_throw_envs
@@ -108,6 +99,7 @@ class GoToGoalCommand(CommandTerm):
     return standing
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
+    """在指定环境集合中重新采样随机目标点."""
     n = len(env_ids)
     if n == 0:
       return
@@ -115,13 +107,13 @@ class GoToGoalCommand(CommandTerm):
     radius = r.uniform_(*self.cfg.radius)
     angle = torch.empty(n, device=self.device).uniform_(-math.pi, math.pi)
     base_xy = self.robot.data.root_link_pos_w[env_ids, :2]
+    # 在以机器人当前位置为圆心、在给定半径区间内随机采样新目标位置
     self.goal_pos_w[env_ids, 0] = base_xy[:, 0] + radius * torch.cos(angle)
     self.goal_pos_w[env_ids, 1] = base_xy[:, 1] + radius * torch.sin(angle)
-    # A fraction of envs get a "stay put" goal (goal == current position).
+    # 对于纯站立环境，将目标点固定为当前位置
     standing = self._sample_stand_inplace(env_ids)
     self.goal_pos_w[env_ids[standing]] = base_xy[standing]
-    # Seed progress tracking to the new goal (delta 0 this step) and clear the dwell,
-    # sampling a fresh per-env dwell duration for the new goal.
+    # 初始化到新目标的距离并清空停驻计时器
     self.prev_distance[env_ids] = torch.norm(
       self.goal_pos_w[env_ids] - base_xy, dim=-1
     )
@@ -130,37 +122,37 @@ class GoToGoalCommand(CommandTerm):
     self.dwell_steps[env_ids] = (dwell_s / self._env.step_dt).round().long().clamp(min=1)
 
   def _update_command(self) -> None:
-    # --- Dwell-and-resample: non-standing envs that have held the goal long enough
-    # get a fresh goal (the periodic timer in compute() remains a fallback). ---
+    """每控制步更新目标距离、计算 P 控制机体系速度指令并处理停驻重采样."""
+    # 判定是否已进入到达圆域
     reached = (
       (self.distance_to_goal < self.cfg.arrive_radius)
       & ~self.is_standing_env
-      & ~self.is_inplace_env  # in-place dodgers hold for the whole episode (no goal resample)
+      & ~self.is_inplace_env
     )
     self.dwell_counter = torch.where(
       reached, self.dwell_counter + 1, torch.zeros_like(self.dwell_counter)
     )
+    # 达到停驻步数阈值后触发重采样
     resample_ids = (self.dwell_counter >= self.dwell_steps).nonzero(as_tuple=False).flatten()
     if len(resample_ids) > 0:
-      self._resample(resample_ids)  # new goal + resets timer, prev_distance, dwell
+      self._resample(resample_ids)
 
     base_pos_w = self.robot.data.root_link_pos_w[:, :2]
-    err_w = self.goal_pos_w - base_pos_w  # (N, 2), world frame
+    err_w = self.goal_pos_w - base_pos_w  # (N, 2) 世界系位置误差
     self.distance_to_goal = torch.norm(err_w, dim=-1)
 
-    # Rotate the xy error into the base yaw frame.
+    # 将世界系水平位置误差旋转到机器人当前偏航系 (Base Yaw Frame)
     err_w3 = torch.cat([err_w, torch.zeros_like(err_w[:, :1])], dim=-1)
     err_b = quat_apply_inverse(
       yaw_quat(self.robot.data.root_link_quat_w), err_w3
     )[:, :2]
 
-    # Proportional velocity command, clamped per axis. Magnitude decays with the
-    # remaining error, so the command -> 0 as the robot reaches the goal.
+    # 计算比例速度指令并进行轴向限幅截断
     v = self.cfg.kp * err_b
     v[:, 0] = v[:, 0].clamp(-self.cfg.max_lin_vel_x, self.cfg.max_lin_vel_x)
     v[:, 1] = v[:, 1].clamp(-self.cfg.max_lin_vel_y, self.cfg.max_lin_vel_y)
 
-    # Yaw: turn to face the goal (skipped very close, where direction is ill-defined).
+    # 偏航角速度：计算朝向目标所需的旋转角速度
     if self.cfg.simple_heading:
       heading_target = torch.atan2(err_w[:, 1], err_w[:, 0])
       yaw_err = wrap_to_pi(heading_target - self.robot.data.heading_w)
@@ -170,33 +162,30 @@ class GoToGoalCommand(CommandTerm):
     else:
       wz = torch.zeros_like(self.distance_to_goal)
 
-    # Arrived: inside the arrival radius, command zero so the robot stands.
+    # 到达目标点判定：进入 arrive_radius 范围内强制置零速度指令，促使原地平稳站立
     arrived = self.distance_to_goal < self.cfg.arrive_radius
     v[arrived] = 0.0
     wz[arrived] = 0.0
 
     self.vel_command_b[:, :2] = v
     self.vel_command_b[:, 2] = wz
-    # Standing envs: zero command (goal == current pos already, but be explicit).
+    # 对静止环境和原地避让环境强制设为 0 速度
     self.vel_command_b[self.is_standing_env] = 0.0
-    # In-place-throw envs: zero command too (the robot is told to hold still), but the throw event
-    # does NOT skip them -- so the policy must learn to dodge from a standstill (depth-driven).
     self.vel_command_b[self.is_inplace_env] = 0.0
 
-    # Progress this step (+ve = moved closer). Resampled envs got prev_distance reset
-    # above, so their delta is ~0 (no spurious jump from the goal change).
+    # 记录本步向目标靠近的净位移量
     self.distance_delta = self.prev_distance - self.distance_to_goal
     self.prev_distance = self.distance_to_goal.clone()
 
   def _update_metrics(self) -> None:
+    """更新评估指标."""
     self.metrics["distance_to_goal"] = self.distance_to_goal
     self.metrics["fraction_at_goal"] = (
       self.distance_to_goal < self.cfg.arrive_radius
     ).float()
 
-  # Visualization (goal marker + command vs. actual velocity arrows).
-
   def _debug_vis_impl(self, visualizer: "DebugVisualizer") -> None:
+    """在可视化查看器 (Viser/Viewer) 中绘制目标点橙色球体与指向箭头."""
     env_indices = visualizer.get_env_indices(self.num_envs)
     if not env_indices:
       return
@@ -217,37 +206,28 @@ class GoToGoalCommand(CommandTerm):
 
 @dataclass(kw_only=True)
 class GoToGoalCommandCfg(CommandTermCfg):
+  """GoToGoalCommand 参数配置项."""
+
   entity_name: str
   radius: tuple[float, float] = (1.0, 3.0)
-  """Min/max distance (m) of a freshly sampled goal from the robot."""
+  """新目标距离机器人根节点的最小/最大采样半径 (米)。"""
   rel_standing_envs: float = 0.05
-  """Stand ratio: fraction of envs whose command is forced to zero every step (stand
-  still) instead of being driven toward a goal -- same semantics as mjlab's
-  ``UniformVelocityCommand.rel_standing_envs``. Standing is rewarded by the velocity-
-  tracking reward: a zero command makes ``exp(-||0 - v||^2/std^2)`` maximal when the
-  robot is motionless. (The goal is also pinned to the current position so the goal
-  rewards stay consistent for these envs.) For the dodge task these envs are ALSO a
-  ball-free anchor (the throw event's ``skip_standing_envs`` skips them)."""
+  """纯静止环境比例 (无速度指令且不投球)。"""
   rel_inplace_throw_envs: float = 0.0
-  """In-place-throw ratio: fraction of envs whose command is forced to zero (like standing) but
-  which the throw event STILL pelts -- so the policy must learn to dodge from a standstill rather
-  than always being in locomotion mode. Mutually exclusive with ``rel_standing_envs`` (the two are
-  partitioned from one draw); the sum must be <= 1. Dodge task only (no ball -> no effect); 0 = off."""
+  """原地避球环境比例 (无速度指令但依然投球，训练从静止起步避碰)。"""
   kp: float = 1.5
-  """Proportional gain mapping xy position error (m) to commanded velocity (m/s)."""
+  """平面位置误差转换为线速度指令的比例增益 (m/s / m)。"""
   kp_yaw: float = 1.0
-  """Proportional gain mapping heading error (rad) to commanded yaw rate (rad/s)."""
+  """偏航角误差转换为偏航角速度指令的比例增益 (rad/s / rad)。"""
   max_lin_vel_x: float = 2.0
   max_lin_vel_y: float = 1.0
   max_ang_vel_z: float = 1.0
   arrive_radius: float = 0.25
-  """Within this distance the goal is considered reached and the command is zeroed."""
+  """到达判定半径 (米)。进入该距离后速度指令置零。"""
   dwell_time_range: tuple[float, float] = (1.0, 3.0)
-  """Seconds a (non-standing) env must hold the goal before a new goal is sampled,
-  sampled uniformly per env per goal. The periodic ``resampling_time_range`` timer
-  remains a fallback for goals never reached."""
+  """到达目标后停留驻留时间范围 (秒)。"""
   simple_heading: bool = True
-  """If True, command a yaw rate that turns the robot to face the goal."""
+  """是否下发偏航角速度指令以转向对齐目标方向。"""
 
   @dataclass
   class VizCfg:
@@ -261,18 +241,7 @@ class GoToGoalCommandCfg(CommandTermCfg):
 
 
 class DodgeGoToGoalCommand(GoToGoalCommand):
-  """GoToGoalCommand whose velocity command is filtered to dodge the ball's trajectory.
-
-  Each step the nominal goal-tracking velocity (from the parent) is passed through a
-  predictive control-barrier filter (see ``cbf.predictive_dodge_filter``) that, while a
-  ball is airborne and approaching, sidesteps the robot perpendicular to the ball's
-  predicted xy path -- keeping it clear of the *entire trajectory line*, not just the
-  ball's current point. The policy observes (and the velocity-tracking reward targets)
-  the filtered command, so the robot leaps out of the ball's path.
-
-  The escape side (which way to sidestep) is latched per env at the moment the threat
-  first appears, so it does not flip-flop while the robot is dodging.
-  """
+  """集成控制屏障函数 (CBF) 轨迹预测避险与折线路径纯追踪的高级指令管理器."""
 
   cfg: DodgeGoToGoalCommandCfg
 
@@ -280,101 +249,73 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     super().__init__(cfg, env)
     if cfg.turn_before_walk:
       if not cfg.simple_heading:
-        raise ValueError("turn_before_walk requires simple_heading")
+        raise ValueError("turn_before_walk 需要启用 simple_heading")
       if not 0 <= cfg.walk_full_speed_angle < cfg.walk_stop_angle <= math.pi / 2:
-        raise ValueError("walk angles must satisfy 0 <= full < stop <= pi/2")
+        raise ValueError("行走角度阈值必须满足 0 <= full < stop <= pi/2")
     self.ball: Entity = env.scene[cfg.ball_name]
-    # Share the heading gate with the safe-time stillness cost.
     self._walk_forward_scale = torch.ones(self.num_envs, device=self.device)
-    # Global geom id of the ball collision sphere, so the CBF can read the per-env ball
-    # radius (randomized each episode by the `randomize_ball_size` event) and widen its
-    # clearance for bigger balls. Resolved by name (scene prefixes entity geoms).
+    # 获取球体碰撞几何体 ID，用于读取每回合随机化后的真实球半径
     self._ball_geom_id = env.sim.mj_model.geom(f"{cfg.ball_name}/ball_collision").id
-    # Fixed "home" goal = each env's start (origin) xy, where robots reset to. In
-    # home_goal mode the goal is pinned here and never resampled, so after a dodge the
-    # P-controller drives the robot back -- it stays a goal-tracker (locomotion mode)
-    # instead of sinking into the dead-stand attractor that makes it freeze on a throw.
+    # 固定母港目标点 (Home Goal): 记录各环境的原点出生坐标
     self._home_xy = env.scene.env_origins[:, :2].clone()
-    # Body-frame forward unit vector, for placing a "behind the robot" goal (back_offset).
+    # 机体系前向基准单位向量 [1, 0, 0]
     self._forward_b = torch.tensor([1.0, 0.0, 0.0], device=self.device).repeat(
       self.num_envs, 1
     )
-    # Nominal (pre-filter) body-frame command, kept for logging / diagnosis.
+    # 名义未滤波机体系速度指令暂存
     self.vel_command_nominal_b = torch.zeros(self.num_envs, 3, device=self.device)
-    # Latched escape side (+/-1) and previous-step threat flag, per env.
+    # 锁定的逃避方向与威胁标志
     self._dodge_side = torch.ones(self.num_envs, device=self.device)
     self._dodge_threat = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-    # CBF-RL reward state, refreshed every step (read by mdp.dodge_cbf_reward):
-    #   _dodge_e_w    -- (N,2) world escape direction == barrier gradient d h / d v
-    #   _dodge_h      -- (N,)  barrier value s - D (>=0 safe)
-    #   _dodge_u_safe_w -- (N,2) the CBF-safe velocity command (world xy), clamped to the
-    #                     leap envelope -- i.e. "what the robot should do" this step.
+    
+    # CBF-RL 奖励所需的状态暂存变量 (供 rewards.py 读取):
+    # - _dodge_e_w: 世界坐标系逃逸方向 (屏障函数关于速度的雅可比梯度 nabla_v h)
+    # - _dodge_h: 屏障函数当前安全裕度 s - D
+    # - _dodge_u_safe_w: CBF 截断后的世界系理论安全速度
+    # - _dodge_tti: 预估撞击剩余时间 TTI (秒)
     self._dodge_e_w = torch.zeros(self.num_envs, 2, device=self.device)
     self._dodge_h = torch.zeros(self.num_envs, device=self.device)
     self._dodge_u_safe_w = torch.zeros(self.num_envs, 2, device=self.device)
-    # Time-to-impact (s), for the privileged critic observation (dodge_cbf_state_b).
     self._dodge_tti = torch.zeros(self.num_envs, device=self.device)
-    # Per-env ball radius (m), read from the model each step (privileged critic obs).
     self._dodge_ball_radius = torch.full(
       (self.num_envs,), DEFAULT_BALL_RADIUS, device=self.device
     )
-    # Path-follow state (cfg.path_follow; the WallWalk random-path task): the robot's
-    # current segment index and arc length along its env's random walk path (stash on
-    # env, see mdp/walk_path.py), and the last-seen path epoch (a bump = new episode's
-    # path -> restart progress). _path_s is also read by the wall-recycle event.
+
+    # 路径纯追踪状态变量 (WallWalk 任务):
     self._path_seg_idx = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
     self._path_s = torch.zeros(self.num_envs, device=self.device)
-    # Per-step arc-length progress (m); +ve = advanced along the path. Read by the
-    # walk_path_progress reward. ~0 on an episode's new path (a path change is not
-    # motion), mirroring prev_distance/distance_delta in GoToGoalCommand.
     self._path_s_delta = torch.zeros(self.num_envs, device=self.device)
-    # Lateral (perpendicular) distance from the robot to its closest point on the
-    # path (m); read by the walk_path_adherence reward. 0 = exactly on the route.
     self._path_lat_err = torch.zeros(self.num_envs, device=self.device)
     self._path_epoch_seen = torch.full(
       (self.num_envs,), -1, dtype=torch.long, device=self.device
     )
-    self._PATH_VIZ_SEGMENTS = 40  # path segments drawn ahead in the viewer
+    self._PATH_VIZ_SEGMENTS = 40
     self.metrics["cbf_active_frac"] = torch.zeros(self.num_envs, device=self.device)
     self.metrics["cbf_min_h"] = torch.zeros(self.num_envs, device=self.device)
 
   def _resample_command(self, env_ids: torch.Tensor) -> None:
+    """重采样指令：支持固定母港点 (home_goal) 模式."""
     if not self.cfg.home_goal:
       super()._resample_command(env_ids)
       return
-    # Home-goal mode: pin the goal to the env's start (home) xy and never sample a random
-    # point. Most envs are normal goal-trackers, so when displaced by a dodge the P-controller
-    # drives them back home.
     if len(env_ids) == 0:
       return
+    # 固定母港模式：将目标点钉死在出生原点，闪避飞跃后机器人会自动返航
     self.goal_pos_w[env_ids] = self._home_xy[env_ids]
-    # Sample the permanently-standing fraction (rel_standing_envs) -- a ball-free "clean stand"
-    # anchor (velocity hard-zeroed AND throw skipped) -- and the in-place-throw fraction
-    # (rel_inplace_throw_envs) -- velocity hard-zeroed but balls STILL thrown, so the policy learns
-    # to dodge from a standstill. Both hold for the whole episode; goal is home like everyone else.
-    # Both ratios = 0 in play -> none forced.
     self._sample_stand_inplace(env_ids)
     base_xy = self.robot.data.root_link_pos_w[env_ids, :2]
     self.prev_distance[env_ids] = torch.norm(self.goal_pos_w[env_ids] - base_xy, dim=-1)
     self.dwell_counter[env_ids] = 0
 
   def _update_path_goal(self) -> None:
-    """Pure-pursuit goal on the env's random walk path (see mdp/walk_path.py).
-
-    Tracks the robot's arc-length progress along its polyline path (segment
-    index + projection), extends the path when the horizon (lookahead +
-    the wall-recycle reach) runs off the end, and pins ``goal_pos_w`` to the
-    point ``path_lookahead`` metres ahead. The parent's P-controller + heading
-    logic turns that into a cruise-speed command that follows the path's curves.
-    """
+    """纯追踪 (Pure Pursuit) 更新：沿随机折线路径前向投射目标点."""
     env = self._env
-    pts = env._walk_path_pts  # (N, M, 2)
-    cum = env._walk_path_cumlen  # (N, M)
-    count = env._walk_path_n  # (N,)
+    pts = env._walk_path_pts
+    cum = env._walk_path_cumlen
+    count = env._walk_path_n
     ar = torch.arange(self.num_envs, device=self.device)
 
-    # A bumped epoch = this env reset into a new episode with a fresh path (the
-    # robot starts at the path origin by construction) -> restart progress.
+    # 检测到新路径代号时重置跟踪进度
     new_path = env._walk_path_epoch != self._path_epoch_seen
     self._path_seg_idx = torch.where(
       new_path, torch.zeros_like(self._path_seg_idx), self._path_seg_idx
@@ -385,8 +326,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     robot_xy = self.robot.data.root_link_pos_w[:, :2]
     allow_backtracking = getattr(self.cfg, "path_allow_backtracking", False)
 
-    # Update the segment index locally, including retreat when enabled. The
-    # capped loop handles several short rounded-corner segments or teleport edges.
+    # 局部更新线段索引，支持拐角自适应切换与倒退检测
     for _ in range(8):
       i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
       p0 = pts[ar, i]
@@ -394,9 +334,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       seg = p1 - p0
       l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
       u = ((robot_xy - p0) * seg).sum(dim=-1) / l2
-      # Near a corner, prefer the adjacent segment once the robot has entered
-      # it and is closer to it. Do not search the whole route: it can revisit
-      # the same intersection much later in the episode.
+      
+      # 转角平滑衔接判定
       has_next = i < count - 2
       p2 = pts[ar, torch.minimum(i + 2, count - 1)]
       next_seg = p2 - p1
@@ -412,8 +351,6 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       adv = ((u >= 1.0) | (near_corner & entered_next)) & has_next
       back = torch.zeros_like(adv)
       if allow_backtracking:
-        # Only consider the preceding segment, never a later visit to the same
-        # intersection. Retreat through a corner must decrease spawn-relative s.
         prev0 = pts[ar, (i - 1).clamp(min=0)]
         prev_seg = p0 - prev0
         prev_u = ((robot_xy - prev0) * prev_seg).sum(-1) / (
@@ -429,7 +366,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
         break
       self._path_seg_idx = self._path_seg_idx + adv.long() - back.long()
 
-    # Arc-length position: cum[i] + clamped projection onto the current segment.
+    # 计算沿路径的弧长位置 s
     i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
     p0 = pts[ar, i]
     p1 = pts[ar, i + 1]
@@ -440,37 +377,28 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     progress_u = torch.where(
       (i == 0) & allow_backtracking, projection.clamp(max=1.0), u
     )
-    # Extend the first segment's signed coordinate behind spawn so backing up
-    # from s=0 is negative progress rather than clamping to perpetual stillness.
     s_new = cum[ar, i] + progress_u * seg.norm(dim=-1)
-    # Lateral deviation from the route (perpendicular distance to the clamped
-    # projection point on the current segment).
     closest = p0 + u.unsqueeze(-1) * seg
     self._path_lat_err = (robot_xy - closest).norm(dim=-1)
-    # A fresh episode/path is a new reference, never a motion reward spike.
     self._path_s_delta = torch.where(new_path, 0.0, s_new - self._path_s)
     self._path_s = s_new
 
-    # Keep the path long enough for the goal lookahead AND the wall-recycle
-    # reach (path_wall_ahead > the recycle event's ahead_range max, so wall
-    # placement queries always land on generated path).
+    # 动态延长路径以保证前视与墙体放置视距
     total = cum[ar, count - 1]
     horizon = self._path_s + self.cfg.path_lookahead + self.cfg.path_wall_ahead
     need = total < horizon
     if need.any():
       extend_walk_path(env, ar[need], horizon[need] + 20.0)
 
+    # 在路径前方 path_lookahead 距离处提取前视引导目标点
     goal_xy, _ = walk_path_query(env, ar, self._path_s + self.cfg.path_lookahead)
     self.goal_pos_w[:] = goal_xy
     self.is_standing_env[:] = False
     self.is_inplace_env[:] = False
 
   def _debug_vis_impl(self, visualizer: "DebugVisualizer") -> None:
-    super()._debug_vis_impl(visualizer)  # goal marker + command arrow
-    # Path-follow mode: draw the env's random walk path as a polyline of
-    # cylinders (a couple of segments behind the robot for context, up to
-    # _PATH_VIZ_SEGMENTS ahead), plus a marker at the robot's current progress
-    # point. The path never enters the observation -- this is a viewer-only aid.
+    """可视化折线路径与当前追踪点."""
+    super()._debug_vis_impl(visualizer)
     if not self.cfg.path_follow or not hasattr(self._env, "_walk_path_pts"):
       return
     env_indices = visualizer.get_env_indices(self.num_envs)
@@ -494,7 +422,6 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
           radius=0.02,
           color=(0.2, 0.8, 0.3, 0.9),
         )
-      # Robot's current progress point on the path (query at _path_s).
       prog, _ = walk_path_query(
         self._env,
         torch.tensor([batch], device=self.device),
@@ -506,9 +433,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       )
 
   def _update_command(self) -> None:
-    # Back-offset mode: every step pin the goal back_offset metres behind the robot
-    # (opposite its heading) so the nominal command is a constant backpedal -- the robot
-    # is always moving (best dodge regime) and retreating from the front-thrown ball.
+    """综合目标模式、执行 CBF 速度滤波与步态平滑门控."""
+    # 1. 后退偏移模式 (Back-Offset Mode)
     if self.cfg.back_offset != 0.0:
       fwd_xy = quat_apply(
         yaw_quat(self.robot.data.root_link_quat_w), self._forward_b
@@ -519,23 +445,13 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       self.is_standing_env[:] = False
       self.is_inplace_env[:] = False
 
-    # Path-follow mode (WallWalk random-path task): pin the goal to a lookahead
-    # point on the env's random walk path (pure pursuit). Replaces forward_offset:
-    # the P-controller + simple_heading then steer ALONG the path's curves instead
-    # of straight ahead. The goal never gets closer (it advances with the robot's
-    # path progress), so the dwell/resample logic never fires, and the lookahead
-    # (2 m) >> arrive_radius (0.25 m) so the arrived-zeroing never triggers.
+    # 2. 路径跟踪模式 (Path-Follow Mode)
     path_active = False
     if self.cfg.path_follow and hasattr(self._env, "_walk_path_pts"):
       self._update_path_goal()
       path_active = True
 
-    # Forward-offset mode: every step pin the goal forward_offset metres AHEAD of the
-    # robot (along its heading) so the nominal command is a constant FORWARD walk
-    # (kp * forward_offset, clamped to max_lin_vel_x). Used by the walk-and-dodge
-    # task: the robot keeps advancing down the wall corridor while balls are thrown
-    # at it. Overrides home_goal. The goal never gets closer (it moves with the
-    # robot), so the dwell/resample logic never fires.
+    # 3. 前进偏移模式 (Forward-Offset Mode)
     if self.cfg.forward_offset != 0.0 and not path_active:
       fwd_xy = quat_apply(
         yaw_quat(self.robot.data.root_link_quat_w), self._forward_b
@@ -546,7 +462,8 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       self.is_standing_env[:] = False
       self.is_inplace_env[:] = False
 
-    super()._update_command()  # fills self.vel_command_b with the nominal command
+    # 计算父类名义速度指令
+    super()._update_command()
     self.vel_command_nominal_b = self.vel_command_b.clone()
     if not self.cfg.cbf_enabled:
       self._dodge_threat.zero_()
@@ -555,17 +472,16 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
 
     yq = yaw_quat(self.robot.data.root_link_quat_w)
 
-    # Nominal command body -> world (xy only; yaw command left untouched).
+    # 将机体系名义线速度转换至世界坐标系
     v_nom_b = self.vel_command_b[:, :2]
     v_nom_b3 = torch.cat([v_nom_b, torch.zeros_like(v_nom_b[:, :1])], dim=-1)
     u_nom_w = quat_apply(yq, v_nom_b3)[:, :2]
 
-    # Per-env ball radius (randomized each episode); widen the CBF clearance so a bigger
-    # ball is given more berth. cfg.safe_radius is the clearance tuned for the default ball,
-    # so add the size delta: safe_radius_eff = cfg.safe_radius + (r_ball - r_default).
+    # 根据当前球体的随机化真实半径，动态扩展安全防范距离
     self._dodge_ball_radius = self._env.sim.model.geom_size[:, self._ball_geom_id, 0]
     safe_radius = self.cfg.safe_radius + (self._dodge_ball_radius - DEFAULT_BALL_RADIUS)
 
+    # 调用预测性控制屏障函数 (CBF) 2D 滤波核
     u_safe_w, threat, perp_signed, h, e, tti = predictive_dodge_filter(
       u_nom_w,
       self.robot.data.root_link_pos_w,
@@ -582,9 +498,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       min_ball_speed=self.cfg.min_ball_speed,
     )
 
-    # Latch the escape side when a threat first appears (perp_signed ~ 0 for an on-target
-    # ball, so default to +1); hold it until the threat clears. The ball's xy velocity is
-    # constant in flight, so the side stays stable once chosen.
+    # 在威胁初次出现时锁定逃逸侧向符号 (+1 或 -1)，防止来回震荡
     new_threat = threat & ~self._dodge_threat
     default_side = torch.where(
       perp_signed >= 0.0, torch.ones_like(perp_signed), -torch.ones_like(perp_signed)
@@ -592,37 +506,29 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self._dodge_side = torch.where(new_threat, default_side, self._dodge_side)
     self._dodge_threat = threat
 
-    # Filtered command world -> body, then clamp to the leap velocity envelope.
+    # 将安全速度投影回机体坐标系，并截断在动力学包络内
     u_safe_w3 = torch.cat([u_safe_w, torch.zeros_like(u_safe_w[:, :1])], dim=-1)
     u_safe_b = quat_apply_inverse(yq, u_safe_w3)[:, :2]
     u_safe_b[:, 0] = u_safe_b[:, 0].clamp(-self.cfg.max_lin_vel_x, self.cfg.max_lin_vel_x)
     u_safe_b[:, 1] = u_safe_b[:, 1].clamp(-self.cfg.max_lin_vel_y, self.cfg.max_lin_vel_y)
 
-    # Stash the CBF-RL reward state (the clamped safe command in WORLD frame, the escape
-    # direction == barrier gradient, and the barrier value). dodge_cbf_reward reads these.
+    # 暂存 CBF-RL 奖励所需状态
     u_safe_clamped_b3 = torch.cat([u_safe_b, torch.zeros_like(u_safe_b[:, :1])], dim=-1)
     self._dodge_u_safe_w = quat_apply(yq, u_safe_clamped_b3)[:, :2]
     self._dodge_e_w = e
     self._dodge_h = h
     self._dodge_tti = tti
 
-    # Apply the filter to the command the policy SEES only if configured to. With
-    # cbf_filter_command=False (the CBF-RL training mode used by the depth task), the
-    # command stays nominal and the policy must LEARN to dodge from its observation
-    # (depth) -- the CBF here only supplies the reward signal (safe action + safety
-    # value), not a hard override. With True (default; play + the non-depth dodge tasks)
-    # the safe command replaces the nominal one as before.
+    # 决定是否改写策略网络实际观测到的速度指令
     if self.cfg.cbf_filter_command:
       self.vel_command_b[:, :2] = u_safe_b
 
-    # Use THIS step's threat flag, including the first frame of an incoming ball.
     self._apply_walk_heading_gate()
     self.metrics["cbf_active_frac"] = threat.float()
     self.metrics["cbf_min_h"] = h
 
-
   def _apply_walk_heading_gate(self) -> None:
-    """Turn first when safe; smoothly restore forward walking as yaw aligns."""
+    """航向对齐平滑门控：在安全状态下先原地转弯，对准目标后再向前平稳迈步."""
     self._walk_forward_scale.fill_(1.0)
     if not self.cfg.turn_before_walk:
       return
@@ -634,6 +540,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       (self.cfg.walk_stop_angle - yaw_error)
       / (self.cfg.walk_stop_angle - self.cfg.walk_full_speed_angle)
     ).clamp(0.0, 1.0)
+    # 平滑三次 S 曲线缩放
     scale = fraction.square() * (3.0 - 2.0 * fraction)
     moving = (
       (self.distance_to_goal >= self.cfg.arrive_radius)
@@ -643,87 +550,37 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       min=0.0, max=self.cfg.max_lin_vel_x
     ) * scale * moving
     safe = ~self._dodge_threat
-    # Keep the parent's yaw command and its arrived/standing/in-place zeroing.
-    # On threat rows preserve the original (possibly CBF-filtered) xy commands.
     for command in (self.vel_command_b, self.vel_command_nominal_b):
       command[:, 0] = torch.where(safe, forward, command[:, 0])
       command[:, 1] = torch.where(safe, 0.0, command[:, 1])
-    # Only waive stillness for deliberate turning, not an arrived/stalled goal.
     self._walk_forward_scale = torch.where(safe & moving, scale, 1.0)
 
 
 @dataclass(kw_only=True)
 class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
-  """GoToGoalCommandCfg + ball-avoidance CBF filter parameters."""
+  """DodgeGoToGoalCommand 参数配置项."""
 
   ball_name: str = "ball"
   home_goal: bool = False
-  """If True, pin the goal to each env's start (home) xy and never resample, so the robot
-  returns to its fixed start after every dodge instead of standing wherever it ends up.
-  Used in the play demo; training keeps random goals (home_goal=False)."""
   back_offset: float = 0.0
-  """If > 0, every step place the goal this many meters BEHIND the robot (opposite its
-  heading). The nominal command becomes a constant backpedal, so the robot is always in
-  locomotion mode (dodges far better than standing) and already retreating from the
-  front-thrown ball. Overrides home_goal. Used in the play demo."""
   forward_offset: float = 0.0
-  """If > 0, every step place the goal this many meters AHEAD of the robot (along its
-  heading). The nominal command becomes a constant FORWARD walk at
-  ``min(kp * forward_offset, max_lin_vel_x)`` m/s, so the robot keeps advancing while
-  dodging. Overrides home_goal. Used by the walk-and-dodge wall task."""
   turn_before_walk: bool = False
-  """When safe, command forward-only walking gated by goal heading alignment.
-  Incoming threats retain the original lateral/backward command freedoms."""
   walk_full_speed_angle: float = math.pi / 6
-  """Yaw error (radians) below which forward speed is unrestricted."""
   walk_stop_angle: float = math.pi / 2
-  """Yaw error (radians) at/above which safe walking becomes turning in place."""
   path_follow: bool = False
-  """If True, follow the env's random walk path (mdp/walk_path.py, generated at
-  reset by the ``reset_walk_path`` event): every step the goal is pinned to a
-  lookahead point ``path_lookahead`` metres ahead of the robot's arc-length
-  progress along the path, so the nominal command cruises at
-  ``min(kp * path_lookahead, max_lin_vel_x)`` m/s and the heading controller
-  steers through the path's random curves. Takes precedence over forward_offset.
-  Used by the WallWalk random-path task."""
   path_lookahead: float = 2.0
-  """Pure-pursuit lookahead distance (m) along the path. >> arrive_radius so the
-  command never decays to zero; small enough that the goal hugs the curves."""
   path_switch_radius: float = 0.0
-  """Allow early transition to the adjacent segment within this endpoint radius.
-  Zero keeps the crossing-only behavior; the classroom enables corner recovery."""
   path_allow_backtracking: bool = False
-  """Track signed spawn-relative progress through preceding route segments and
-  behind the spawn on the first segment. Classroom enables this for retreat costs."""
   path_wall_ahead: float = 11.0
-  """Extra path length (m) kept generated beyond the lookahead -- must exceed the
-  wall-recycle event's ahead_range max (10 m) so recycled walls always land on
-  already-generated path."""
   cbf_enabled: bool = True
   cbf_filter_command: bool = True
-  """If True, the CBF-safe velocity replaces the nominal command the policy observes/tracks
-  (a hard safety filter). If False, the command stays nominal and the CBF only computes the
-  safe action + barrier value for the ``dodge_cbf_reward`` (CBF-RL: the policy must LEARN to
-  dodge from its observation). ``cbf_enabled`` must still be True for the filter to run."""
   cbf_alpha: float = 4.0
-  """Class-K gain in ``h_dot >= -alpha * h``. Larger = react closer/later; smaller =
-  react earlier/more conservatively."""
   safe_radius: float = 0.6
-  """Safe 3D center-to-center distance (m) the filter tries to maintain from the ball
-  (ball radius + robot torso half-width + margin)."""
   sense_radius: float = 3.0
-  """Only filter when the ball is approaching and within this distance (m) along its
-  path."""
   z_active: float = 0.25
-  """Only filter when the ball is above this height (m), so a grounded/parked or rolling
-  ball (resting at ~radius height) is ignored."""
   momentum_time: float = 0.5
-  """Robot's velocity-command spin-up time (s). Subtracted from time-to-impact so the
-  sidestep is commanded early enough to actually build momentum (measured ~0.5 s)."""
   comfort_buffer: float = 0.3
-  """Extra time margin (s) the robot wants to be clear *before* the ball arrives."""
   min_ball_speed: float = 0.5
-  """Only filter when the ball's xy speed exceeds this (m/s); defines its heading."""
 
   def build(self, env: ManagerBasedRlEnv) -> DodgeGoToGoalCommand:
     return DodgeGoToGoalCommand(self, env)

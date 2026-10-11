@@ -1,28 +1,35 @@
 #!/usr/bin/env bash
-# Preview the BALL-ONLY masked-depth domain randomization for the ball-only dodge task
-# (Unitree-G1-AMP-Dodge-Depth-Single-BallOnly-Flat) live in the viser web viewer.
+# ==============================================================================
+# 单目固定深度视觉避障策略可视化回放与域随机化预览脚本 (Play Vision Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-Depth-Single-BallOnly-Flat (论文核心部署任务)
+#    - 感知模式: 固定仰角 (+20°) 单目头部深度相机，输入 BallOnlyDepthObs 掩码深度图
+#               （仅保留真实深度球体，其余背景填充为 far 远景值）。
+#    - 域随机化 (DR) 预览:
+#      * 默认开启 BALLONLY_AUG=1，在 Viser 网页端的 'head_depth_single' 深度面板中实时呈现
+#        训练阶段引入的真实噪声（球体深度抖动、整球瞬态丢帧、边缘像素闪烁等），确保评估处于分布内。
+#      * 设为 BALLONLY_AUG=0 可切换为纯净无噪的干净掩码球进行评估。
+#    - 倾角一致性: CAMERA_TILT_DEG 必须严格与训练时保持一致（默认 20°），否则会导致球体落在错误视场中。
+#    - 可视化平台: 启动 Viser Web 端可视化服务器 (默认访问 http://localhost:8080)。
 #
-# The obs is BallOnlyDepthObs: ONLY the ball is kept (real depth), everything else -> far -- the
-# representation the deploy EfficientTAM ball-segmenter produces. Plays WITH the masked-depth DR ON
-# by default (the policy trained on it -- in-distribution), so you watch in the 'head_depth_single'
-# depth panel exactly what it trained on: ball_depth_jitter, ball_noise_sigma, edge_tile_flicker,
-# whole-ball/pixel dropout (no full-frame speckle/clutter/bg-fill -- background stays clean far).
-# Set BALLONLY_AUG=0 to eval on the CLEAN masked ball instead. With no checkpoint it drives a
-# STANDING dummy (inspect the obs without a policy).
+# 2. 检查点 (Checkpoint) 解析机制:
+#    - 第一个非 '-' 参数可显式传入检查点路径 (如 logs/rsl_rl/vision_link/<run>/model_20000.pt)。
+#    - 若未传入检查点，则启动纯站立 Dummy Agent (agent=zero)，方便单独检验传感器输入与抛球轨迹。
 #
-# CAMERA_TILT_DEG MUST match the checkpoint's training tilt -- AUTO-INFERRED from the ckpt path
-# (a *_tilt0 ckpt -> 0 deg, else 20 deg); an explicit CAMERA_TILT_DEG overrides. (Mismatched tilt is
-# the usual cause of a good policy playing badly: the ball lands in the wrong image region.)
+# 3. 环境变量重载选项:
+#    - NUM_ENVS: 可视化同屏机器人数量 (默认: 1)
+#    - FRAME_OFFSETS: 历史时序深度帧偏移量元组 (默认: (0,3,8,18))
+#    - CAMERA_TILT_DEG: 头部相机仰角 (默认: 20)
+#    - BALLONLY_AUG: 是否开启深度域随机化预览 (默认: 1, 0 表示干净评测)
+#    - AGENT: 未指定模型时的 Dummy 类型 (默认: zero)
 #
-# Usage:
-#   ./play_vision.sh                                  # standing dummy + DR preview
-#   ./play_vision.sh logs/.../ballonly/<run>/model_*.pt        # 20deg auto
-#   ./play_vision.sh logs/.../ballonly_tilt0/<run>/model_*.pt  # 0deg auto-inferred
-#   BALLONLY_AUG=0 ./play_vision.sh <ckpt>            # eval on the CLEAN masked ball
-#   NUM_ENVS=4 ./play_vision.sh                       # more robots
-#
-# Env overrides: NUM_ENVS, FRAME_OFFSETS, CAMERA_TILT_DEG (default 20), AGENT (zero|random). Extra
-# args -> scripts/play.py.
+# 4. 使用示例:
+#    ./play_vision.sh                                      # 启动静止 Dummy + 观察深度 DR
+#    ./play_vision.sh logs/rsl_rl/vision_link/<run>/model_20000.pt
+#    BALLONLY_AUG=0 ./play_vision.sh <ckpt>                # 干净无噪深度图评测
+#    NUM_ENVS=4 ./play_vision.sh
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,27 +1,34 @@
 #!/usr/bin/env bash
-# Play / visualize the STATE-BASED (oracle) dodge + WALL policy
-# (Unitree-G1-AMP-Dodge-MimicKit-Wall-Flat) in the viser web viewer (default
-# http://localhost:8080). Same perception regime as play_state.sh (ground-truth
-# ball state, no camera), but a static wall stands beside the spawn point --
-# randomized side/distance each episode -- and the robot must dodge WITHOUT
-# touching it (wall contact terminates the episode).
+# ==============================================================================
+# 带静态障碍墙的真值状态避障策略可视化回放脚本 (Play State Wall Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-Wall-Flat
+#    - 感知模式: 状态真值 Oracle 模态 + 侧向静态墙体位置感知。
+#               注意：由于拼接了墙体相对坐标，本任务的球体观测组维度从 6 维扩展为 9 维，
+#               无法直接加载基础无墙任务 (Unitree-G1-AMP-Dodge-MimicKit-Flat) 的检查点！
+#    - 场景特性: 机器人出生点旁立有一面静态障碍墙（每回合随机选择左/右侧与间距），
+#               机器人必须在躲避高速袭来球体的同时严格避免接触墙壁（碰墙即判定失败终止）。
+#    - 可视化平台: 启动 Viser Web 端可视化服务器 (默认访问 http://localhost:8080)。
 #
-# NOTE: checkpoints from the plain state task (Unitree-G1-AMP-Dodge-MimicKit-Flat)
-# DO NOT load here -- the ball_state obs group grew from 6 to 9 dims (wall_state
-# appended). Train a wall-task checkpoint first:
-#   TASK=Unitree-G1-AMP-Dodge-MimicKit-Wall-Flat EXP_NAME=state_wall_link ./train_dodge_state.sh
+# 2. 检查点 (Checkpoint) 解析机制:
+#    - 第一个非 '-' 参数可显式传入检查点路径 (如 logs/rsl_rl/state_wall_link/<run>/model_25000.pt)。
+#    - 若未指定，则自动搜索 logs/rsl_rl/${EXP_NAME}（或指定 RUN 目录下）按迭代次数版本号最高
+#      (sort -V) 的最新 model_*.pt 文件。
 #
-# The first positional arg is a direct checkpoint path; omit it to use the newest
-# model_*.pt under the experiment dir (logs/rsl_rl/state_wall_link).
+# 3. 环境变量重载选项:
+#    - RUN: 指定训练子目录名 (如 2026-09-19_10-00-00)
+#    - NUM_ENVS: 可视化同屏机器人数量 (默认: 1)
+#    - EXP_NAME: 实验日志根目录名称 (默认: state_wall_link)
+#    - RESET_STAND: 是否重置为标准稳定站立姿态 (默认: True)
 #
-# Usage:
-#   ./play_wall.sh                                          # newest checkpoint
-#   ./play_wall.sh logs/rsl_rl/state_wall_link/<run>/model_25000.pt
-#   RUN=2026-09-19_10-00-00 ./play_wall.sh                  # newest under a specific run dir
-#   NUM_ENVS=9 ./play_wall.sh                               # more robots on screen
-#   ./play_wall.sh --agent zero                             # untrained (see the wall + throws now)
-#
-# Env overrides: RUN, NUM_ENVS, EXP_NAME, RESET_STAND. Extra args -> scripts/play.py.
+# 4. 使用示例:
+#    ./play_wall.sh                                          # 加载最新模型
+#    ./play_wall.sh logs/rsl_rl/state_wall_link/<run>/model_25000.pt
+#    RUN=2026-09-19_10-00-00 ./play_wall.sh
+#    NUM_ENVS=4 ./play_wall.sh
+#    ./play_wall.sh --agent zero                             # 无模型观察墙体与抛球
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

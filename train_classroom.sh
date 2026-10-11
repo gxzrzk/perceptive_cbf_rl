@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
-# Train the registered classroom task: random spawn pose and aisle routes,
-# 360-degree timed throws, state oracle, and the WallWalk AMP locomotion prior.
+# ==============================================================================
+# 教室走廊环境全向避障与巡航策略训练脚本 (Train Classroom Dodge Task)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat
+#    - 感知模式: 状态真值 Oracle 模态（观测球体真值 6 维状态）+ WallWalk 步态运动先验
+#    - 场景特性: 包含课桌课椅构建的真实教室过道走廊环境，随机初始站位与目标路径巡航。
+#               结合 360° 全向定时高速抛球，要求机器人在沿过道行进的同时成功闪避来球且不与桌椅碰撞。
+#    - 输出日志: logs/rsl_rl/state_classroom
 #
-# Usage:
-#   ./train_classroom.sh
-#   NUM_ENVS=512 ./train_classroom.sh --agent.max-iterations=40000
+# 2. 环境变量重载选项:
+#    - TASK: 任务环境名称 (默认: Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat)
+#    - NUM_ENVS: 并行环境数 (默认: 1024)
+#    - STAND_RATIO: 纯原地站立环境比例 (默认: 0.0，保持机器人在行走状态)
+#    - INPLACE_RATIO: 原地停滞受击环境比例 (默认: 0.0)
+#    - EXP_NAME: 实验日志名称 (默认: state_classroom)
+#    - TMPDIR / WARP_CACHE_PATH: 缓存与编译路径，防止系统盘 /tmp 分区占满
 #
-# Env overrides: TASK, NUM_ENVS, EXP_NAME, STAND_RATIO, INPLACE_RATIO.
-# Extra args -> scripts/train.py. The classroom defaults keep every robot walking.
+# 3. 使用示例:
+#    ./train_classroom.sh
+#    NUM_ENVS=512 ./train_classroom.sh --agent.max-iterations=40000
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

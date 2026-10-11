@@ -1,28 +1,27 @@
-"""Sim2sim node: drive the mjlab dodge env through the DEPLOY UDP path.
+"""Sim2sim 仿真节点：通过实机部署 UDP 协议驱动 MuJoCo 躲避仿真环境。
 
-Verifies the whole on-robot wiring without hardware. It plays the role of
-hardware_node + camera_node combined: it builds the real
-``Unitree-G1-AMP-Dodge-Depth-Single-Flat`` play env (ball + head depth camera +
-physics), extracts HARDWARE-LIKE raw signals (quat, body ang-vel, joint q/dq,
-raw depth metres), sends them over the same State/Depth datagrams the robot
-would, receives the policy's 29 joint targets, and applies them by inverting the
-unscale and stepping the env. The DEPLOY ``dodge_policy`` (ONNX, real obs
-assembly) is the brain -- so this exercises the deploy obs layout, depth
-offset-stacking, normalise, action unscale, and reset signalling end to end.
+在部署架构中的角色与意义：
+-------------------------
+本节点用于在**零硬件风险**的前提下，端到端完整验证实机部署软件栈的全部逻辑与通信链路。
+在架构中，它一人分饰两角，同时充当实机上的 ``hardware_node`` 与 ``camera_node``：
+1. 构建真实的 ``Unitree-G1-AMP-Dodge-Depth-Single-Flat`` 仿真环境（包含机器人刚体动力学、
+   投掷球体以及头部深度相机传感器渲染）；
+2. 提取硬件级原始观测物理量（机身四元数、局部角速度、29 关节 q/dq、米制原始深度图）；
+3. 将上述信号按照与实机完全相同的 UDP 数据包格式发送给后台的 ``dodge_policy`` 策略节点；
+4. 接收策略网络算出的 29 关节目标角度，逆向反求出动作值并作用于仿真步进 (env.step)。
 
-Runs in the DEV env (imports mjlab); the policy runs in the deploy uv env
-(onnxruntime). UDP on localhost bridges the two -- that decoupling is the point.
+环境解耦与架构验证：
+-------------------
+- ``sim_node`` 运行在开发机环境 (DEV env, 依赖 mjlab/MuJoCo/PyTorch)；
+- ``dodge_policy`` 运行在独立的部署环境 (DEPLOY env, 仅需 onnxruntime + numpy)；
+- 两个独立进程仅通过本地回路 UDP (:9870, :9871, :9872) 连接。
+这种进程间彻底解耦能够全面覆盖并检验实机部署中的：
+观测拼接排布、深度时间堆叠环形缓冲区、归一化算法、动作反归一化缩放以及复位重置信号。
 
-  # policy (deploy env, background):
-  uv run --project deploy python deploy/policy/dodge_policy.py model.onnx --frame-offsets '(0,3,8,18)'
-  # sim (dev env, foreground); --viewer viser to WATCH it dodge in a browser:
-  uv run python deploy/sim/sim_node.py Unitree-G1-AMP-Dodge-Depth-Single-Flat --viewer viser
-
-Or just: bash deploy/play_sim_dodge.sh   (VIEWER=viser by default)
-
-THE joint-order check: this asserts POLICY_JOINT_NAMES == the env's joint order
-(the order the ONNX was trained in) at startup -- the single most likely silent
-deploy bug.
+关键安全防线：
+-------------
+节点启动时会执行**致命关节点顺序强校验**：断言 ``POLICY_JOINT_NAMES`` 必须与 MuJoCo 环境中的
+关节索引顺序完全一致（这是实机部署中最隐蔽、最致命的静默 Bug，若顺序错位会导致机器人起立瞬间摔倒）。
 """
 
 import argparse
@@ -60,17 +59,12 @@ from deploy.common.udp_sync import (
 
 
 class UdpDodgeBridge:
-    """Policy-shaped callable bridging the mjlab env to the deploy dodge_policy.
+    """策略桥接类：将 MuJoCo 仿真环境与独立的 deploy dodge_policy 策略节点双向连通。
 
-    Each call (one control step): extract hardware-like raw signals from the env,
-    send State + Depth datagrams to the policy, receive its joint target, invert
-    the unscale to recover the raw action, and return it for ``env.step``. Used as
-    the ``policy`` of an mjlab viewer (which renders + steps) or in the headless
-    loop below -- the env stepping is identical either way.
-
-    ``step_id`` is the env's per-episode step count (``episode_length_buf``): it
-    resets to 0 on every episode reset, so the policy sees a backwards jump and
-    clears its history -- exactly the hardware-reset signal.
+    在每个控制步周期：
+    1. 提取仿真物理量并封装 State 与 Depth 数据包发送给策略节点；
+    2. 等待并接收策略节点输出的目标关节角度，反向计算无量纲动作供仿真 step 使用；
+    3. 在回合重置时将 step_id 归零，通知策略节点重置本体感受历史。
     """
 
     def __init__(self, env, torch_mod, device, gravity_dir, depth_key,
@@ -80,14 +74,13 @@ class UdpDodgeBridge:
         self.device = device
         self.depth_key = depth_key
         self.depth_aug = depth_aug
-        self.external_depth = False  # True: a real camera_node owns the depth port
-        self.zero_command = False  # True: force the twist command to 0 (in-place; camera-only motion)
-        self.mode = 0  # 0 = dodge, 1 = walk (shipped in the state packet)
-        # Manual twist (vx, vy, wz) from the viser sliders; overrides the env command
-        # when use_manual_cmd is set -- the walk driver in walk mode.
+        self.external_depth = False  # 若为 True，则由真实相机节点 (camera_node) 提供深度，本节点不发送仿真深度
+        self.zero_command = False    # 若为 True，强制下发 0 速度指令（原地站立躲避）
+        self.mode = 0                # 0 = 躲避模式 (Dodge), 1 = 行走模式 (Walk)
+        # Viser 交互界面手动速度调节滑条 (vx, vy, wz)
         self.manual_cmd = np.zeros(3, dtype=np.float32)
         self.use_manual_cmd = False
-        self.depth_decim = 1  # publish depth every N steps (N=5 -> 10 Hz at 50 Hz control)
+        self.depth_decim = 1         # 深度降采样间隔（每 N 步发送一帧深度，模拟低帧率相机）
         self._warned_no_stash = False
         self.state_sock = state_sock
         self.depth_sock = depth_sock
@@ -97,7 +90,7 @@ class UdpDodgeBridge:
         self.last_target = DEFAULT_POS.copy()
         self.seq = 0
         self._prev_len = -1
-        # stats
+        # 存活表现统计
         self.n_steps = 0
         self.episodes = 0
         self.ep_lens = []
@@ -105,14 +98,13 @@ class UdpDodgeBridge:
         self._dt = float(env.step_dt)
 
     def reset(self):
+        """重置内部关节目标为默认站立姿态。"""
         self.last_target = DEFAULT_POS.copy()
 
     def _depth_metres(self):
-        """The pooled depth in METRES that the camera would send. With depth_aug,
-        use DepthImageObs's stashed AUGMENTED metric frame (= what the policy
-        trained on / what real ZED noise stands in for); else the clean sensor
-        render. The deploy policy normalises either way -- exactly as it will the
-        real ZED depth."""
+        """提取仿真中头部相机的米制池化深度图。
+        若启用了 depth_aug，提取经过域随机化加噪后的米制深度（贴合训练分布）；
+        否则提取未经加噪的纯净传感器渲染深度。"""
         env = self.env
         if self.depth_aug:
             store = getattr(env, "_depth_aug_display", None)
@@ -120,20 +112,22 @@ class UdpDodgeBridge:
             if frame is not None:
                 return frame[0].reshape(DEPTH_H * DEPTH_W).detach().cpu().numpy().astype(np.float32)
             if not self._warned_no_stash:
-                print("[sim_node] WARN: depth-aug requested but no augmented frame stashed yet; "
-                      "falling back to clean sensor depth this step.", flush=True)
+                print("[sim_node] 警告: 请求了深度加噪但暂无暂存数据；当前步回退至纯净传感器深度。", flush=True)
                 self._warned_no_stash = True
         return (env.scene[self.depth_key].data.depth[0].reshape(DEPTH_H * DEPTH_W)
                 .detach().cpu().numpy().astype(np.float32))
 
     def __call__(self, obs=None):
+        """主控制步回调：提取状态 -> UDP发送 -> UDP接收动作 -> 反归一化返回给仿真环境。"""
         env = self.env
         step_id = int(env.episode_length_buf[0].item())
-        if 0 <= step_id < self._prev_len:  # episode just reset
+        # 检测回合重置：若步数反向跳变，记录存活统计
+        if 0 <= step_id < self._prev_len:
             self.episodes += 1
             self.ep_lens.append(self._prev_len)
         self._prev_len = step_id
 
+        # 提取仿真物理量
         q = env.scene["robot"].data.joint_pos[0].detach().cpu().numpy().astype(np.float32)
         dq = env.scene["robot"].data.joint_vel[0].detach().cpu().numpy().astype(np.float32)
         quat = env.scene["robot"].data.root_link_quat_w[0].detach().cpu().numpy().astype(np.float32)
@@ -141,24 +135,23 @@ class UdpDodgeBridge:
         proj_grav = env.scene["robot"].data.projected_gravity_b[0].detach().cpu().numpy().astype(np.float32)
         cmd = env.command_manager.get_command("twist")[0, :3].detach().cpu().numpy().astype(np.float32)
         if self.use_manual_cmd:
-            cmd = self.manual_cmd.copy()  # viser sliders drive the policy's twist command
+            cmd = self.manual_cmd.copy()
         elif self.zero_command:
-            cmd[:] = 0.0  # in-place command: the only motion driver is what the camera sees
+            cmd[:] = 0.0
 
+        # 向策略节点发送 State 状态报文
         self.state_sock.sendto(
             pack_state(step_id, quat, ang_vel, proj_grav, q, dq, cmd, mode=self.mode),
             (UDP_HOST, UDP_POLICY_PORT))
-        # Publish depth at the (decimated) camera rate: every depth_decim control
-        # steps. The policy's gate holds the last frame between, reproducing a
-        # slower real camera (e.g. depth_decim=5 -> 10 Hz depth at 50 Hz control,
-        # matching a 10fps-trained ckpt). depth_decim=1 = every step (50 Hz).
+
+        # 按设定的降采样间隔发送 Depth 深度报文（外部相机模式下跳过）
         if not self.external_depth and (self.seq % self.depth_decim == 0):
             depth_m = self._depth_metres()
             self.depth_sock.sendto(pack_depth(self.seq, time.time(), 1, depth_m),
                                    (UDP_HOST, UDP_DEPTH_PORT))
         self.seq += 1
 
-        # Receive the policy's target (drain to newest; hold the last on timeout).
+        # 接收策略节点发回的 Action 关节目标（清空缓冲区至最新帧，超时则保持上一步目标）
         data = None
         self.action_sock.settimeout(0.1)
         try:
@@ -175,60 +168,47 @@ class UdpDodgeBridge:
             self.action_sock.setblocking(True)
             self.last_target = unpack_action(data)
 
+        # 反归一化逆变换：action = (target_pos - DEFAULT_POS) / ACTION_SCALE
         action_np = (self.last_target - DEFAULT_POS) / ACTION_SCALE
         self.n_steps += 1
         now = time.perf_counter()
         if now - self._t_log >= 2.0:
             recent = self.ep_lens[-20:]
             mean_ep = (sum(recent) / len(recent)) if recent else float("nan")
-            print(f"[sim_node] steps={self.n_steps} episodes={self.episodes} "
-                  f"mean_recent_survival={mean_ep:.0f} steps ({mean_ep * self._dt:.1f}s) "
-                  f"cur_ep={step_id}", flush=True)
+            print(f"[sim_node] 仿真步数={self.n_steps} 回合数={self.episodes} "
+                  f"近期平均存活={mean_ep:.0f} 步 ({mean_ep * self._dt:.1f} 秒) "
+                  f"当前回合步数={step_id}", flush=True)
             self._t_log = now
         return self.torch.as_tensor(action_np, device=self.device).reshape(1, NUM_JOINTS)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Sim2sim dodge node (drives mjlab via the deploy UDP path)")
+    parser = argparse.ArgumentParser(description="Sim2sim 仿真节点 (通过部署 UDP 协议驱动 mjlab)")
     parser.add_argument("task_id", nargs="?", default="Unitree-G1-AMP-Dodge-Depth-Single-Flat")
     parser.add_argument("--frame-offsets", default="(0,3,8,18)",
-                        help="Must match the policy node / ONNX (sets env.depth_frame_offsets)")
-    parser.add_argument("--device", default=None, help="cuda:0 / cpu (default: cuda if available)")
+                        help="深度历史时间堆叠步数偏移，必须与策略节点及 ONNX 严格一致")
+    parser.add_argument("--device", default=None, help="运行设备 cuda:0 或 cpu (默认优先 cuda)")
     parser.add_argument("--viewer", default="none", choices=["none", "viser", "native"],
-                        help="none = headless stats; viser = browser viewer; native = local window")
+                        help="可视化模式: none (无头纯统计); viser (网页端可视化); native (本地 MuJoCo 窗口)")
     parser.add_argument("--reset-stand", action=argparse.BooleanOptionalAction, default=True,
-                        help="Reset episodes to the nominal default stand (matches "
-                             "play_depth_single.sh's RESET_STAND=True); --no-reset-stand keeps "
-                             "the dodge RSI motion resets. Terminations are unchanged either way.")
+                        help="是否在回合重置时回到默认标称站立位 (默认开启，对齐实机起步状态)")
     parser.add_argument("--depth-aug", action=argparse.BooleanOptionalAction, default=True,
-                        help="Send the training sim2real-AUGMENTED depth (matches "
-                             "play_depth_single.sh's DEPTH_AUG=True; clean depth is OOD for the "
-                             "DR-trained policy). The real ZED's own noise stands in for this on "
-                             "hardware. --no-depth-aug sends the clean render (clean-depth eval).")
+                        help="是否向策略发送带有 Sim2Real 域随机化加噪的深度图 (默认开启，贴合训练策略)")
     parser.add_argument("--external-depth", action="store_true",
-                        help="Do NOT publish depth: a real deploy/real/camera_node.py (live ZED) "
-                             "owns the depth port instead. Tests the full deploy perception path "
-                             "(real camera -> pooling -> UDP -> ONNX) against the sim robot. The "
-                             "policy then CANNOT see sim balls -- pair with --pause-throws and "
-                             "wave/throw real objects at the camera.")
+                        help="不发送仿真深度数据：由外部运行的真实相机节点 (如 camera_node_etam) 负责向策略提供深度。"
+                             "用于测试真实相机与仿真机器人的混合在环验证")
     parser.add_argument("--pause-throws", action="store_true",
-                        help="Suppress the env's automatic ball throws (the policy is blind to sim "
-                             "balls under --external-depth).")
+                        help="暂停仿真中的自动投掷球体（与 --external-depth 配合使用，允许向真实相机扔球）")
     parser.add_argument("--zero-command", action="store_true",
-                        help="Force the twist velocity command sent to the policy to 0 (in-place "
-                             "stand). Removes the play backpedal so the ONLY motion driver is what "
-                             "the camera sees -- a clean 'is it reacting to the ball' test. Matches "
-                             "the rel_inplace_throw regime the policy also trained on.")
+                        help="强制将速度指令置零 (原地站立)，去除回退偏置，纯粹检验策略对飞球的躲避响应")
     parser.add_argument("--depth-decimation", type=int, default=1,
-                        help="Publish depth every N control steps (the gate holds it between) to "
-                             "emulate a slower camera. Use 5 for a 10fps-trained ckpt (10 Hz depth "
-                             "at 50 Hz control). Default 1 = 50 Hz.")
-    parser.add_argument("--max-steps", type=int, default=0, help="Headless only: stop after N steps")
+                        help="深度发布间隔（每 N 步发送一帧深度，1=50Hz, 5=10Hz 模拟慢速相机）")
+    parser.add_argument("--max-steps", type=int, default=0, help="无头模式下最大运行步数 (0 表示无限运行)")
     args = parser.parse_args()
 
     import torch
 
-    import src.tasks.amp_loco.config.g1 as _g1  # noqa: F401  (registers the dodge tasks)
+    import src.tasks.amp_loco.config.g1 as _g1  # noqa: F401 (注册 G1 躲避任务)
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.tasks.registry import load_env_cfg
 
@@ -236,66 +216,58 @@ def main():
     offsets = tuple(ast.literal_eval(args.frame_offsets))
 
     env_cfg = load_env_cfg(args.task_id, play=True)
-    env_cfg.depth_frame_offsets = offsets  # keeps the env's own depth obs consistent (unused here)
+    env_cfg.depth_frame_offsets = offsets
     env_cfg.scene.num_envs = 1
-    # Match play_depth_single.sh (RESET_STAND=True): nominal default-stand resets instead of the
-    # dodge RSI motion resets, so the start distribution matches native play. Terminations are the
-    # play=True set either way (time_out, bad_orientation, bad_base_height, collapsed_crouch,
-    # ball_hit active immediately) -- identical to scripts/play.py, which never edits them.
+
+    # 替换重置事件：重置到默认标称站立姿态
     if args.reset_stand and "reset_from_motion" in env_cfg.events:
         from src.tasks.amp_loco.mdp.events import reset_to_default_stand
 
         stand_event = env_cfg.events["reset_from_motion"]
         stand_event.func = reset_to_default_stand
         stand_event.params = {}
-        print("[sim_node] reset_stand: episodes reset to the nominal default stand (matches play)")
+        print("[sim_node] reset_stand: 回合重置将回到默认标称站立姿态")
 
-    # Depth augmentation: clean rendered depth is OOD for the DR-trained policy, so by default
-    # send the SAME sim2real-augmented depth native play feeds (play_depth_single.sh DEPTH_AUG=True).
-    # On hardware the real ZED's noise replaces this; here enable_depth_aug_preview turns the
-    # DepthImageObs aug on + renders segmentation, and we stash the augmented METRIC frame to send.
+    # 开启深度图加噪预览
     if args.depth_aug:
         from src.tasks.amp_loco.config.g1.dodge_env_cfgs import enable_depth_aug_preview
 
         enable_depth_aug_preview(env_cfg)
-        print("[sim_node] depth_aug: sending the training-augmented depth (matches native play)")
+        print("[sim_node] depth_aug: 已开启训练级深度域随机化加噪数据流")
 
-    print(f"[sim_node] building {args.task_id} on {device} (offsets={offsets}, viewer={args.viewer}) ...")
+    print(f"[sim_node] 正在构建仿真环境 {args.task_id} (设备: {device}, offsets: {offsets}, viewer: {args.viewer})...")
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     if args.depth_aug:
-        # Make DepthImageObs._one stash its augmented metric frame in env._depth_aug_display.
         env._depth_aug_display_enabled = True
     env.reset()
 
+    # 核心安全校验：强行断言环境关节顺序与策略关节顺序完全一致！
     env_joint_names = list(env.scene["robot"].joint_names)
     if env_joint_names != list(POLICY_JOINT_NAMES):
-        print("[sim_node] FATAL: env joint order != POLICY_JOINT_NAMES.\n"
-              f"  env:    {env_joint_names}\n  policy: {list(POLICY_JOINT_NAMES)}", file=sys.stderr)
+        print("[sim_node] 致命错误: 仿真环境关节顺序 != POLICY_JOINT_NAMES！\n"
+              f"  仿真环境关节: {env_joint_names}\n  策略期望关节: {list(POLICY_JOINT_NAMES)}", file=sys.stderr)
         sys.exit(1)
-    print(f"[sim_node] joint order OK ({NUM_JOINTS} joints match POLICY_JOINT_NAMES)")
+    print(f"[sim_node] 关节顺序校验通过: {NUM_JOINTS} 个关节顺序严格吻合 POLICY_JOINT_NAMES")
 
     depth_key = "head_depth_single"
     try:
         _ = env.scene[depth_key]
     except KeyError:
-        print(f"[sim_node] FATAL: sensor '{depth_key}' not in the scene "
-              f"(is this the single-cam task?).", file=sys.stderr)
+        print(f"[sim_node] 致命错误: 场景中未找到深度传感器 '{depth_key}' (是否为单目任务？)", file=sys.stderr)
         sys.exit(1)
 
     state_sock = create_udp_socket(UDP_HOST, 0)
     depth_sock = create_udp_socket(UDP_HOST, 0)
     action_sock = create_udp_socket(UDP_HOST, UDP_HW_PORT)
     if args.external_depth:
-        print(f"[sim_node] state->{UDP_POLICY_PORT} depth: EXTERNAL (run deploy/real/camera_node.py) "
-              f"action<-{UDP_HW_PORT}")
+        print(f"[sim_node] 状态发送->{UDP_POLICY_PORT}, 深度模式: 外部输入(真实相机), 动作接收<-{UDP_HW_PORT}")
     else:
-        print(f"[sim_node] state->{UDP_POLICY_PORT} depth->{UDP_DEPTH_PORT} action<-{UDP_HW_PORT}")
-    print("[sim_node] start the policy node now (or use play_sim_dodge.sh).")
+        print(f"[sim_node] 状态发送->{UDP_POLICY_PORT}, 深度发送->{UDP_DEPTH_PORT}, 动作接收<-{UDP_HW_PORT}")
+    print("[sim_node] 请在另一个终端启动策略节点 (或运行 play_sim_dodge.sh 自动化脚本)。")
 
     if args.pause_throws:
-        # throw_ball_on_dwell honors this flag (the viser Dodgeball checkbox toggles it).
         env._dodge_throw_paused = True
-        print("[sim_node] sim ball throws PAUSED")
+        print("[sim_node] 仿真中自动抛球已暂停")
 
     bridge = UdpDodgeBridge(
         env, torch, device, np.array([0.0, 0.0, -1.0], dtype=np.float32), depth_key,
@@ -305,31 +277,32 @@ def main():
     bridge.zero_command = bool(args.zero_command)
     bridge.depth_decim = max(1, int(args.depth_decimation))
     if args.zero_command:
-        print("[sim_node] twist command FORCED to 0 (in-place; only the camera drives motion)")
+        print("[sim_node] 速度指令已强制置零 (原地躲避)")
 
     try:
         if args.viewer == "viser":
             from mjlab.viewer import ViserPlayViewer
 
             class _DodgeWalkViewer(ViserPlayViewer):
+                """定制 Viser 网页交互界面：包含双模式切换开关、速度摇杆滑条以及抛球调试控制箱。"""
                 def setup(self):
                     super().setup()
                     gui = self._server.gui
 
-                    # --- Walk/dodge mode (no gain swap: shared actuator config). ---
-                    cb = gui.add_checkbox("Walk mode", initial_value=False)
+                    # --- 行走/躲避模式切换控件 ---
+                    cb = gui.add_checkbox("行走模式 (Walk mode)", initial_value=False)
                     def _on_mode(_=None, _cb=cb):
                         bridge.mode = 1 if _cb.value else 0
-                        print(f"[sim_node] mode -> {'WALK' if bridge.mode else 'DODGE'}", flush=True)
+                        print(f"[sim_node] 模式切换 -> {'WALK (行走)' if bridge.mode else 'DODGE (躲避)'}", flush=True)
                     cb.on_update(_on_mode)
 
-                    # --- Manual twist command (vx, vy, wz) sliders -> the policy. ---
-                    with gui.add_folder("Command (vx, vy, wz)"):
-                        man = gui.add_checkbox("Manual cmd", initial_value=False)
-                        s_vx = gui.add_slider("vx", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
-                        s_vy = gui.add_slider("vy", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
-                        s_wz = gui.add_slider("wz", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
-                        stop = gui.add_button("Stop (zero cmd)")
+                    # --- 手动速度指令 (vx, vy, wz) 滑条控件 ---
+                    with gui.add_folder("手动速度指令 (vx, vy, wz)"):
+                        man = gui.add_checkbox("启用手动指令 (Manual cmd)", initial_value=False)
+                        s_vx = gui.add_slider("vx (前向速度)", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
+                        s_vy = gui.add_slider("vy (横向速度)", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
+                        s_wz = gui.add_slider("wz (偏航角速度)", min=-1.0, max=1.0, step=0.05, initial_value=0.0)
+                        stop = gui.add_button("立即归零 (Stop)")
 
                     def _push_cmd(_=None):
                         bridge.use_manual_cmd = man.value
@@ -342,12 +315,12 @@ def main():
                         _push_cmd()
                     stop.on_click(_on_stop)
 
-                    # --- Ball throw controls (honored by throw_ball_on_dwell). ---
-                    with gui.add_folder("Ball throws"):
-                        pause = gui.add_checkbox("Pause auto-throws", initial_value=False)
-                        b_hi = gui.add_button("Throw high (overhead)")
-                        b_lo = gui.add_button("Throw low (underbody)")
-                        b_rand = gui.add_button("Throw random")
+                    # --- 抛球控制控件 ---
+                    with gui.add_folder("抛球控制 (Ball throws)"):
+                        pause = gui.add_checkbox("暂停自动抛球", initial_value=False)
+                        b_hi = gui.add_button("高球 (头部上方)")
+                        b_lo = gui.add_button("低球 (下肢部位)")
+                        b_rand = gui.add_button("随机抛球")
                     pause.on_update(lambda _=None: setattr(env, "_dodge_throw_paused", pause.value))
                     def _throw(force_high):
                         env._dodge_throw_force_high = force_high
@@ -361,6 +334,7 @@ def main():
             from mjlab.viewer import NativeMujocoViewer
             NativeMujocoViewer(env, bridge).run()
         else:
+            # 无头纯命令行压测模式
             dt = float(env.step_dt)
             next_tick = time.perf_counter()
             while True:
@@ -381,7 +355,7 @@ def main():
         depth_sock.close()
         action_sock.close()
         env.close()
-        print(f"[sim_node] stopped. {bridge.episodes} episodes over {bridge.n_steps} steps.")
+        print(f"[sim_node] 仿真已停止。共执行 {bridge.episodes} 回合，累计 {bridge.n_steps} 步。")
 
 
 if __name__ == "__main__":

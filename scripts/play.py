@@ -1,4 +1,53 @@
-"""Script to play RL agent with RSL-RL."""
+"""基于 RSL-RL 策略模型的推理回放、可视化交互、ONNX 导出与硬件在环评测脚本 (Play & Evaluation Script)
+
+本脚本用于对训练完毕的强化学习策略进行全面评估、可视化回放 (Play/Render)、单文件 ONNX 模型导出
+以及物理双目相机硬件在环 (HIL, Hardware-In-The-Loop) 联调测试。
+
+1. 命令行参数解析机制 (PlayConfig 与 tyro CLI):
+   - 任务选择: 第一个位置参数为 Task ID（如 `Unitree-G1-AMP-Dodge-Depth-Single-BallOnly-Flat`）。
+   - 智能体与模型参数:
+     * `--agent`: 策略执行模式，可选：
+       - `trained` (默认): 加载训练好的神经网络权重模型执行推理。
+       - `zero`: 恒输出零动作的 Dummy Agent（用于测试纯物理站立稳定性或观察空场景）。
+       - `random`: 均匀随机动作 Dummy Agent。
+     * `--checkpoint-file`: 本地训练权重检查点文件路径 (`model_*.pt`)。
+     * `--num-envs`: 并行可视化环境数量（交互式查看一般设为 1，多环境可同屏观察）。
+     * `--device`: 推理运行设备 (`cuda:0` 或 `cpu`)。
+     * `--no-terminations`: 禁用所有回合终止条件（摔倒不重置，方便连续观察动作轨迹）。
+   - 可视化与交互参数:
+     * `--viewer`: 可视化窗口后端，可选 `auto` (默认)、`viser`、`native`:
+       - `auto`: 检测系统桌面环境变量，有图形界面时优先使用原生 GLFW 窗口，无头服务器自动启动 Web 端 Viser。
+       - `viser`: 启动 Web 交互服务 (默认 http://localhost:8080)，在网页端提供 Dodgeball 交互控制面板
+         （支持一键暂停抛球、强制投掷高球 Overhead / 低球 Underbody 等实时控制）。
+       - `native`: 启动 MuJoCo 原生交互式渲染窗口。
+     * `--video`: 是否录制推理回放过程并保存为 MP4 格式视频。
+     * `--video-length`: 录制视频的持续步数。
+   - 视觉与深度感知参数:
+     * `--depth-frame-offsets`: 深度图多帧历史时间偏移量（如 `(0,3,8,18)`），必须严格匹配模型训练时
+       的帧历史堆叠设置，否则 Actor 输入特征维度不匹配。
+     * `--depth-aug`: 仿真回放中是否开启与训练一致的深度图域随机化 (DR) 噪声，保证评估处于分布内。
+     * `--depth-aug-preview`: 在 Viser 中额外打开一个 `head_depth_single_aug` 实时窗口，
+       用于并排对比原始干净深度图与送入神经网络的带噪/随机化深度图。
+   - 硬件在环 (HIL) 实机相机参数:
+     * `--zed-camera`: 启用实机硬件在环模式，使用物理连接的 ZED Mini 双目深度相机替代仿真中的头部相机。
+     * `--zed-depth-mode`: ZED SDK 深度计算模式（如 `PERFORMANCE`，兼顾低延迟与高帧率）。
+     * `--zed-pool-percentile`: 深度图下采样至策略输入分辨率 (如 16x9) 时的分位数滤波（采用 Soft-min 保留近处小球）。
+     * `--zed-sim-ball`: 在真实 ZED 深度画面中动态叠加由仿真物理引擎抛出的虚拟小球（语义分割 Mask + Min-pooling），
+       实现在真实物理背景下安全受控地评测避障策略。
+   - 部署导出与状态复位:
+     * `--export-onnx`: 模型加载成功后，自动将 Actor 网络与观测归一化器导出为紧凑的单文件 ONNX 模型
+       （保存于 `<log_dir>/export/<task>_<checkpoint>.onnx`）。
+     * `--reset-stand`: 每次重置时强制恢复为标准平静站立姿态（XML Init Keyframe），而非激进的动态躲避初始姿态，
+       专为实机部署演示与 HIL 调试优化。
+
+2. 核心评估流程 (Evaluation Pipeline):
+   - 环境与网络配置装载: 根据任务 ID 加载环境配置 `env_cfg` 与算法配置 `agent_cfg`。
+   - 传感器与显示重写: 覆写相机的 `_compute_data` 钩子函数，统一近远距离截断 (Clamp to [0.1, 5.0]m)，
+     使 Viser 显示画面与策略网络输入在数值和视觉呈现上严格对齐。
+   - 硬件在环接入 (可选): 初始化 `ZedDepthSource`，启动异步相机拉流线程并处理球体图层合成。
+   - 策略加载与 ONNX 导出: 实例化 Runner，恢复权重检查点，自动提取 `act_inference` 并导出为标准单文件 ONNX。
+   - 交互式运行循环: 启动选定的 Viewer，持续驱动物理步进、接收动作输入并渲染更新画面。
+"""
 
 import os
 import inspect
@@ -23,6 +72,7 @@ from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 @dataclass(frozen=True)
 class PlayConfig:
+  """策略推理与回放配置类 (Play Configuration)"""
   agent: Literal["zero", "random", "trained"] = "trained"
   checkpoint_file: str | None = None
   motion_file: str | None = None
@@ -101,17 +151,14 @@ class PlayConfig:
 
 
 class _DodgePlayViewer(ViserPlayViewer):
-  """ViserPlayViewer + a Dodgeball control folder (only for envs that throw balls).
+  """专为 Dodgeball 避障任务定制的 Viser 网页端交互可视化器
 
-  A "Pause ball throws" checkbox suppresses the automatic throw stream (the last ball lands and
-  stays put); two buttons launch a single ball at every robot on the next step regardless of the
-  pause state -- "Throw overhead" (the HIGH throw: a low-arc ball that rises to torso/HEAD height
-  -> duck / lean away) and "Throw underbody" (the LOW throw: a ~2 m ball descending across the
-  LOWER body / legs -> sidestep / step over). All drive plain flags on the env that
-  ``throw_ball_on_dwell`` reads
-  (``_dodge_throw_paused`` / ``_dodge_throw_once`` / ``_dodge_throw_force_high``); a checkbox, not a
-  button, for the toggle because viser button labels are immutable so a checkbox is the only control
-  that visibly reflects on/off state."""
+  在通用 ViserPlayViewer 基础上扩展了 "Dodgeball" 控件面板：
+  - "Pause ball throws" 复选框：一键暂停自动周期性抛球，方便静态观察机器人站立姿态。
+  - "Throw overhead" 按钮：手动触发投掷高球（高弧线到达躯干/头部高度，测试策略低头/弯腰/下潜躲避）。
+  - "Throw underbody" 按钮：手动触发投掷低球（平射直接掠过下半身/腿部高度，测试策略侧跨步闪避）。
+  通过在环境实例上修改 `_dodge_throw_paused` / `_dodge_throw_once` / `_dodge_throw_force_high` 标志位实现通信。
+  """
 
   def setup(self) -> None:
     super().setup()
@@ -161,8 +208,9 @@ class _DodgePlayViewer(ViserPlayViewer):
 
 
 def run_play(task_id: str, cfg: PlayConfig):
+  """执行策略评估推理与可视化主循环 (Play Core Function)"""
   def onnx_export_kwargs_single_file() -> dict:
-    """Build kwargs that request single-file ONNX export across torch versions."""
+    """构建用于跨不同 PyTorch 版本导出单文件 ONNX 的参数字典"""
     try:
       params = inspect.signature(torch.onnx.export).parameters
     except (TypeError, ValueError):

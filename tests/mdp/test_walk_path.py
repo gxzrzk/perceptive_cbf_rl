@@ -1,17 +1,30 @@
-"""Integration tests: random walk paths on the MimicKit WallWalk dodge task.
+"""走廊随机导航路径生成、进度追踪与沿路径对齐奖励测试 (Walk Path Integration Tests)。
 
-Proves the random-path wiring is load-bearing:
-  - reset_walk_path generates a per-env polyline that starts at the robot's
-    post-reset pose, aligned with its heading, with a DIFFERENT shape per env
-    (random turns), and >= initial_len metres long.
-  - walk_path_query interpolates arc-length stations correctly (endpoints + a
-    mid-segment point) and extends past the end.
-  - extend_walk_path lengthens the path continuously (old vertices untouched).
-  - The path-follow command pins the goal to the lookahead point and tracks the
-    robot's arc-length progress (teleport the robot along the path -> _path_s
-    follows, goal stays lookahead metres ahead).
+测试功能：
+- 验证 WallWalk 任务中随机走廊多段折线路径的动态生成算法 (reset_walk_path)；
+- 验证路径起始几何特性：起点严格位于机器人重置后的 (X, Y) 坐标，首段航向角与机器人初始朝向完全对齐，
+  各并行环境生成具有差异化拐弯特性的独立随机路径，初始生成总长度 >= 80 米；
+- 验证弧长插值与查询函数 (walk_path_query)：在起点、终点、线段中点等桩号下进行线性插值，
+  并准确计算该处的切线航向角 (tangent yaw)；超出终点查询时平滑截断于末端顶点；
+- 验证路径连续动态延长机制 (extend_walk_path)：在旧路径末端无缝追加新线段，旧顶点与历史累计弧长保持绝对不变；
+- 验证目标指令跟踪 (DodgeGoToGoalCommand)：当机器人被瞬移或行进时，弧长进度 _path_s 紧密追踪，
+  目标点 goal_pos_w 始终锁定在超前前视距离 (path_lookahead = 2m) 的路径桩号上；
+- 验证沿路径前进速度奖励 (walk_path_progress_reward) 与横向贴合度奖励 (walk_path_adherence_reward)；
+- 验证沿路径顺向抛球事件 (throw_ball_on_dwell with along_path=True)：球体从机器人前方路径中央发射并沿走廊逆向飞袭；
+- 验证走廊约束瞄准机制：即使机器人大范围侧滑闪避脱离走廊，球体落点瞄准依然被限制在走廊中央安全带宽内，防止球体撞击侧翼墙壁；
+- 验证威胁激活时进度奖励与停滞惩罚的完全清零门控。
 
-GPU required (builds full sim envs). Same pattern as test_wall_cbf.py.
+关键断言条件：
+- 路径起点与机器人重置坐标重合 (误差 < 1e-3)，首段偏航角误差 < 1e-2 rad，总长 >= 80m；
+- 走廊侧向偏差 0.5m 时贴合度奖励为 exp(-1) ≈ 0.37；
+- 威胁激活时 walk_path_progress_when_safe 和 walk_path_stillness_when_safe 强制为 0.0；
+- 沿路径抛球轨迹与走廊中轴线横向偏离始终处于安全带宽内。
+
+覆盖边界情况：
+- 机器人处于路径起点、中途瞬移、大跨度侧偏；
+- 查询桩号超出路径总长时的截断；
+- 机器人闪避至走廊外 1.2m 极限工况下的抛球防撞墙测试；
+- 剧集跨步重置前后 epoch 递增与进度归零。
 """
 
 import torch
@@ -19,7 +32,8 @@ import pytest
 
 
 def _build_wallwalk_env(num_envs: int = 64):
-    import src.tasks  # noqa: F401 -- triggers task registration side-effect
+    """构建包含 64 个环境的 WallWalk 动态走廊避障仿真任务实例。"""
+    import src.tasks  # noqa: F401 -- 触发任务注册副作用
     from mjlab.envs import ManagerBasedRlEnv
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
         g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
@@ -33,7 +47,7 @@ def _build_wallwalk_env(num_envs: int = 64):
 
 
 def _refresh(env, *entities):
-    """Propagate direct state writes into the entity data tensors."""
+    """辅助函数：将底层的显式状态写入同步至物理仿真数据结构并刷新实体张量缓存。"""
     import mujoco_warp as mjw
 
     env.scene.write_data_to_sim()
@@ -43,14 +57,21 @@ def _refresh(env, *entities):
 
 
 def _path_total(env):
+    """辅助函数：获取当前各环境中完整折线路径的总弧长。"""
     ar = torch.arange(env.num_envs, device=env.device)
     return env._walk_path_cumlen[ar, env._walk_path_n - 1]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_path_starts_at_robot_aligned_with_heading():
-    """Path origin == robot post-reset xy; first segment runs along the robot's
-    heading; total length >= initial_len (80 m); shapes differ across envs."""
+    """测试场景：验证路径起点坐标、首段航向对齐性、初始长度及跨环境多样性。
+
+    预期输出及验证逻辑：
+        1. 路径原点 env._walk_path_pts[:, 0] 与机器人重置后的 XY 坐标在 1e-3 容差内完全吻合；
+        2. 路径第一分段的方向角 path_yaw0 与机器人的初始朝向 robot_yaw 差值 < 1e-2 rad；
+        3. 所有并行环境生成的初始折线总长度均 >= 80.0m；
+        4. 延伸到第 6 段时，由于各环境独立随机拐弯，各环境的段航向角标准差 > 0.05 rad，证明路线形态具备多样性。
+    """
     env = _build_wallwalk_env()
     robot = env.scene["robot"]
     ar = torch.arange(env.num_envs, device=env.device)
@@ -88,7 +109,14 @@ def test_path_starts_at_robot_aligned_with_heading():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_query_endpoints_and_interpolation():
-    """s=0 -> origin; s=total -> last vertex; a mid-segment s interpolates linearly."""
+    """测试场景：验证 walk_path_query 在起点、终点、中段及越界桩号下的插值精度与切向角。
+
+    输入假数据与测试流程：
+        1. 查询 s = 0 处坐标，断言等于起点原点；
+        2. 查询 s = total 处坐标，断言等于最后一个顶点；
+        3. 查询第 0 段中点 (s = 0.5 * c1)，断言线性插值坐标等于两顶点几何中点，切向角与段方向一致；
+        4. 查询超出路径总长 (s = total + 50m)，断言平滑截断于最后一个顶点坐标。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -119,8 +147,16 @@ def test_walk_path_query_endpoints_and_interpolation():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_extend_walk_path_continuous_and_longer():
-    """extend_walk_path appends segments: old vertices/cumlen untouched, the new
-    total >= requested, and the appended chain continues from the old endpoint."""
+    """测试场景：验证路径动态追加延长函数的平滑连续性与历史不可篡改性。
+
+    输入假数据与测试流程：
+        记录当前顶点与累计弧长快照，调用 extend_walk_path 请求延长 50m。
+    预期输出及验证逻辑：
+        1. 顶点数量增加 (n1 > n0)；
+        2. 原有的前缀顶点坐标与弧长保持完全不变（无数值漂移）；
+        3. 延伸后的总弧长 >= 原总长 + 50m；
+        4. 新增的第一个分段起点与旧路径终点完全衔接，且新增线段长度在合理的 [2, 4] 米步长区间内。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -158,8 +194,15 @@ def test_extend_walk_path_continuous_and_longer():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_command_tracks_progress_and_lookahead_goal():
-    """Teleport the robot to the path point at s=10 -> the command's _path_s follows
-    and the goal sits path_lookahead (2 m) further along the path."""
+    """测试场景：瞬移机器人沿路径前行，验证控制器进度追踪与前视目标锁定。
+
+    输入假数据与测试流程：
+        将机器人直接传送至路径弧长 s = 10m 的点上，更新控制器指令。
+    预期输出及验证逻辑：
+        1. 控制器的进度变量 cmd._path_s 紧密收敛至 10.0m (误差 < 0.3m)；
+        2. 追踪的目标点 cmd.goal_pos_w 恰好等于路径上 s = 10 + 2 = 12m 处的三维位置；
+        3. 正常走廊行进模式下，无环境被标记为原地站立或定点抛球模式。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -188,9 +231,13 @@ def test_command_tracks_progress_and_lookahead_goal():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_progress_reward():
-    """walk_path_progress_reward = arc-length rate along the path (m/s, clipped):
-    ~0 when stationary, strongly positive after a forward teleport (clipped at the
-    2.0 m/s cap), ~0 again right after (no stale delta)."""
+    """测试场景：沿路径前行速率奖励项的饱和与瞬时重置。
+
+    预期输出及验证逻辑：
+        1. 静止在原点时，进度奖励接近 0 (< 0.5)；
+        2. 沿路径瞬移 0.5m（等效瞬时速度 25 m/s），奖励饱和截断在上限 +2.0 附近 (> 1.5)；
+        3. 随后停止移动，下一时间步奖励立即回落至 ~0，无历史增量残留。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -229,9 +276,13 @@ def test_walk_path_progress_reward():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_adherence_reward():
-    """walk_path_adherence_reward = exp(-d^2/0.5^2) on lateral distance to the path:
-    ~1 on the route, exp(-1) ~ 0.37 after a 0.5 m sideways teleport, and the
-    tracked _path_lat_err matches the teleported offset."""
+    """测试场景：横向偏离路径惩罚与贴合度高斯奖励 (exp(-d^2 / sigma^2))。
+
+    输入假数据与测试流程：
+        1. 位于路径正中央时，横向误差 ~0，贴合度奖励接近 1.0 (> 0.95)；
+        2. 沿垂直切线方向瞬移 0.5m，横向误差 cmd._path_lat_err 读数约为 0.5m，
+           贴合度奖励精确衰减至 exp(-1.0) ≈ 0.368。
+    """
     import math
     import src.tasks.amp_loco.mdp as mdp
 
@@ -270,8 +321,14 @@ def test_walk_path_adherence_reward():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_throw_along_path_launches_from_path_ahead():
-    """along_path throw: the ball launches from a point ON the walk path at station
-    s_robot + U(2,3), and its velocity points back down the corridor at the robot."""
+    """测试场景：沿走廊抛球事件中，球体位于前方路径中轴线上发射并逆向迎面飞来。
+
+    预期输出及验证逻辑：
+        1. 测量发射起点到路径折线的欧氏距离，最大离轴距离 < 0.05m（严格位于路径上）；
+        2. 发射桩号位于机器人前方 s0 + [2, 3] 米范围内；
+        3. 球体水平速度方向直指机器人（速度向量与指向机器人向量的余弦夹角 > 0.85）；
+        4. 球体速度与走廊切线方向相反（迎面飞来，逆向夹角 cos < -0.5）。
+    """
     import src.tasks.amp_loco.mdp as mdp
     from tests.mdp.test_wall_cbf import _path_distance_and_station
 
@@ -325,8 +382,13 @@ def test_throw_along_path_launches_from_path_ahead():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_progress_when_safe_gated():
-    """walk_path_progress_when_safe: pays forward progress when threat=0, and is
-    exactly 0 when threat=1 (never pulls against a dodge)."""
+    """测试场景：安全状态下正常奖励前向进度，来球威胁时奖励严格清零。
+
+    预期输出及验证逻辑：
+        1. 安全无威胁时，前向移动 0.5m 获得饱和正奖励 (> 1.4)；
+        2. 强制设置 _dodge_threat = True，完全相同的物理前向运动下，奖励输出严格为 0.0，
+           确保策略在面临飞球危险时全力躲闪，不与安全避障目标竞争。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -361,7 +423,13 @@ def test_walk_path_progress_when_safe_gated():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_progress_when_safe_idle_cost():
-    """Idle costs are independent of lookahead distance; forward motion pays."""
+    """测试场景：怠速停滞惩罚独立于前视目标距离，且在受到威胁时清零。
+
+    预期输出及验证逻辑：
+        1. 原地站立时支付固定的停滞惩罚 -0.6；
+        2. 向前瞬移时获得前向全额奖励 +1.5；
+        3. 威胁触发时，整个项被门控置零 (== 0.0)。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -400,8 +468,13 @@ def test_walk_path_progress_when_safe_idle_cost():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_stillness_when_safe_gated():
-    """walk_path_stillness_when_safe (cost): ~1 when parked on the path with no
-    threat, decays after a forward teleport, and exactly 0 under threat."""
+    """测试场景：静止惩罚项在停滞时接近 1.0，运动时衰减至 0，威胁激活时强制置 0。
+
+    预期输出及验证逻辑：
+        1. 原地停滞时 cost > 0.9；
+        2. 高速前行时 cost < 0.05；
+        3. 威胁激活时 cost 严格为 0.0，使机器人在躲避阶段原地急停稳固姿态不承受任何惩罚。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -441,9 +514,16 @@ def test_walk_path_stillness_when_safe_gated():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_throw_along_path_aim_stays_in_corridor():
-    """Corridor-tethered aim: even with the robot dodged 1.2 m OFF the path (beyond
-    the corridor band), the ball's aim is pulled back inside +-0.6 m of the path, so
-    the trajectory can never be blocked by a flanking wall."""
+    """测试场景：走廊瞄准防碰撞边界保护——即使机器人大幅闪避出走廊，弹道依然保持在走廊内部。
+
+    输入假数据与测试流程：
+        1. 将机器人向垂直于路径方向推移 1.2m（已经完全脱离走廊并靠近侧墙）；
+        2. 执行 along_path 抛球事件；
+        3. 沿球体前向飞行轨迹采样 59 个时间切片，测量轨迹到路径折线的欧氏距离。
+    预期输出及验证逻辑：
+        1. 轨迹到路径的距离始终被约束在安全走廊宽度内 (< 0.86m)，绝不会撞上 1.05m 外的侧墙；
+        2. 球体虽然被约束在走廊内，但依然朝向机器人所在桩号飞行（距离机器人的最短交会间隙 < 1.7m）。
+    """
     import src.tasks.amp_loco.mdp as mdp
     from tests.mdp.test_wall_cbf import _path_distance_and_station
 
@@ -513,8 +593,13 @@ def test_throw_along_path_aim_stays_in_corridor():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_path_debug_vis_draws_polyline():
-    """The command's debug-vis draws the walk path: a chain of path cylinders plus
-    a progress-point sphere (and the inherited goal marker) for each visualized env."""
+    """测试场景：验证路径调试可视化钩子函数 debug_vis 能正确绘制折线圆柱与目标球体。
+
+    预期输出及验证逻辑：
+        1. 绘制的圆柱体数量 > 40（覆盖多段折线段）；
+        2. 每个绘制圆柱的起点坐标均精准落在所生成的路径折线点集合上；
+        3. 进度球与目标球数量满足预期。
+    """
     env = _build_wallwalk_env(num_envs=4)
     cmd = env.command_manager.get_term("twist")
 
@@ -554,8 +639,13 @@ def test_path_debug_vis_draws_polyline():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_path_regenerated_per_episode_reset():
-    """A fresh env.reset() regenerates every env's path: epoch bumps, command
-    progress restarts at 0, and the new path still starts at the robot."""
+    """测试场景：剧集重置 (env.reset()) 触发路径再生与 epoch 递增。
+
+    预期输出及验证逻辑：
+        1. 重置后所有环境的 env._walk_path_epoch 均大于初始 epoch；
+        2. 控制器的累计进度 cmd._path_s 重新归零 (< 1.0m)；
+        3. 新路径的原点依然与机器人的重置坐标对齐。
+    """
     env = _build_wallwalk_env()
     robot = env.scene["robot"]
 
@@ -572,8 +662,11 @@ def test_path_regenerated_per_episode_reset():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_step_smoke_no_nan():
-    """Step the env a few times with zero actions: obs/command/path stay finite and
-    the goal keeps tracking the lookahead (the command recomputes every step)."""
+    """测试场景：执行 10 步空动作步进冒烟测试，验证数据流数值有限性。
+
+    预期输出及验证逻辑：
+        步进后速度指令、路径进度以及路径坐标张量均全为有限数 (无 NaN/Inf)。
+    """
     env = _build_wallwalk_env()
     cmd = env.command_manager.get_term("twist")
     for _ in range(10):

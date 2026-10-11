@@ -1,28 +1,39 @@
-"""Convert NVIDIA SEED retargeted G1 CSVs into the AMP CSV format used by this repo.
+"""NVIDIA SEED G1 动作数据至 AMP CSV 格式转换工具 (SEED to AMP CSV Converter)
 
-The SEED g1 CSVs (``seed/g1/csv/<date>/<clip>.csv``) have a header row and store:
+本脚本用于将 NVIDIA SEED 重定向的人形机器人 G1 动作捕捉 CSV 数据转换为当前代码库 AMP (Adversarial Motion Priors)
+强化学习训练管道所要求的 36 列标准 CSV 格式。
 
-    Frame, root_translateX/Y/Z (cm), root_rotateX/Y/Z (intrinsic? -> extrinsic 'xyz'
-    Euler **degrees**), then 29 ``*_dof`` joint angles in **degrees**.
+1. 数据格式对比与转换映射 (Data Format Specification):
+   - 输入数据格式 (SEED G1 CSV, 通常位于 `seed/g1/csv/<date>/<clip>.csv`):
+     * 含有第 1 行表头说明，每行包含 36 列数据：
+       - 列 0: 帧序号 (`Frame`)
+       - 列 1-3: 根节点世界平移坐标 (`root_translateX/Y/Z`)，单位为厘米 (cm)
+       - 列 4-6: 根节点姿态外旋欧拉角 (`root_rotateX/Y/Z`)，'xyz' 外旋顺序，单位为角度 (degrees)
+       - 列 7-35: 29 个关节自由度角度 (`*_dof`)，单位为角度 (degrees)
+   - 目标数据格式 (AMP 36 列 CSV, 供 `scripts/csv_to_npz.py` 与 `MotionLoader` 加载):
+     * 无表头 (Headerless)，每行包含 36 列双精度浮点数：
+       - 列 0-2: 根节点平移 `x, y, z`，单位为米 (m，由 cm / 100 换算)
+       - 列 3-6: 根节点旋转四元数 `qx, qy, qz, qw` (xyzw 规范，由欧拉角转换生成)
+       - 列 7-35: 29 个关节角弧度 (radians，由 degrees 转换为弧度)
+   - 关节顺序映射：
+     SEED 文件中的关节排列顺序与 `csv_to_npz.py` 内部固定的 29 个 G1 关节顺序完全一致，转换时无需调整列顺序。
+     经数值验证，转换精度与代码库现存 `motion_data_csv/amp/*.csv` 完全一致（四元数 L1 误差为 0，关节误差 < 1e-6）。
 
-The AMP pipeline (``scripts/csv_to_npz.py`` -> ``MotionLoader``) expects a headerless
-36-column CSV:
+2. 命令行参数解析机制 (tyro CLI):
+   - `--output-dir`: 转换后 AMP CSV 文件的输出目录路径。
+   - `--input-file`: 单个输入的 SEED G1 CSV 文件绝对或相对路径。
+   - `--manifest`: 文本清单文件路径（每行包含一个 SEED CSV 路径，支持以 '#' 开头的注释行）。
+     支持在路径后附加空格分隔的截取帧区间 `start:end`（1-based 闭区间，如 `/path/clip.csv 1:246` 用于裁剪尾部失稳晃动）。
 
-    x, y, z (meters), qx, qy, qz, qw (xyzw quaternion), 29 joint angles (radians)
-
-The joint column order in the SEED file already matches the ``joint_names`` order used
-by ``csv_to_npz.py``, so no reordering is needed. The conversion below was verified to
-reproduce this repo's existing ``motion_data_csv/amp/*.csv`` clips bit-for-bit
-(quaternion L1 error 0.0, joint error < 1e-6) from their SEED sources.
-
-Usage (single file):
-    python scripts/seed_g1_to_amp_csv.py \
-        --input-file <SEED_ROOT>/g1/csv/230509/broad_jump_002__A359.csv \
+使用示例:
+    # 单文件转换模式:
+    python scripts/seed_g1_to_amp_csv.py \\
+        --input-file seed/g1/csv/230509/broad_jump_002__A359.csv \\
         --output-dir motion_data_csv/amp_leap
 
-Usage (manifest of SEED csv paths, one per line, '#' comments allowed):
-    python scripts/seed_g1_to_amp_csv.py \
-        --manifest motion_data_csv/amp_leap_manifest.txt \
+    # 清单批量转换模式:
+    python scripts/seed_g1_to_amp_csv.py \\
+        --manifest motion_data_csv/amp_leap_manifest.txt \\
         --output-dir motion_data_csv/amp_leap
 """
 

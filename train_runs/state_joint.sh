@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
-# state_joint -- state oracle x Joint-CBF -- adds the joint-space CBF module as reward guidance
-# (CBF_JOINT=1). Benchmark this checkpoint bare for the Joint-CBF cell, or with
-# BENCH_CBF_FILTER=1 for the privileged '+filter' cell.
+# ==============================================================================
+# 实验组: state_joint (状态真值 × 关节级 CBF 引导)
+# ==============================================================================
+# 1. 论文实验矩阵定位:
+#    - 感知模态: 状态真值 Oracle 模态（直接观测球体真值 6 维相对状态，无相机渲染）。
+#    - 安全模式: 关节空间 CBF 奖励引导 (Joint-space CBF, CBF_JOINT=1)
+#    - 评测对照: 裸模型评测对应 Joint-CBF 单元格；附加 BENCH_CBF_FILTER=1 评测对应 '+filter' 单元格。
+# 2. 环境变量重载:
+#    - NUM_ENVS: 并行环境数 (默认: 8192，非默认值自动追加后缀如 state_joint_4096)
+# ==============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export NUM_ENVS="${NUM_ENVS:-8192}"

@@ -1,4 +1,25 @@
-"""Check navigable clearance using collision envelopes, including chair backs."""
+"""教室几何布局、无碰撞路径规划与任务注册配置测试 (Classroom Layout Tests)。
+
+测试功能：
+- 验证教室中 34 个静态障碍物（15 套桌椅对应 30 个实体，以及 4 堵外围边界墙）的精确空间尺寸与走廊通道净宽；
+- 验证主通道、纵向侧走廊以及横向排间过道的通行余量与路径站点对齐；
+- 验证教室随机巡航折线路径生成算法 (generate_classroom_route)：在纵横交错的走廊中生成不穿透任何家具的高自由度安全路径；
+- 验证路径离散采样点到所有课桌、椅背碰撞几何包络的安全距离均满足阈值；
+- 验证注册表中的任务配置完整性、AMP 训练配置以及朝向奖励项参数。
+
+关键断言条件：
+- 障碍物数量为 34，且无 mocap 自由度；
+- 中央走道宽度约为 2.20m，侧走道宽度约为 1.84m，横向过道宽度约为 1.80m；
+- 随机生成的 80 段路径折线总长度 > 200m，各段长度 > 0.79m；
+- 路径任意分段上的连续采样点到 30 个家具外壳的最短欧氏距离 >= 安全阈值；
+- 教室任务在任务注册表已正确注册，且配置隔离不影响其他任务。
+
+覆盖边界情况：
+- 沿 X/Y 轴边界的极限坐标与碰撞半长；
+- 课桌与椅背的不同包络几何；
+- 多条走廊车道 (lane) 的随机生成与边界检查；
+- 目标朝向奖励在不同 Sharpness 陡峭度参数下的非线性响应。
+"""
 import pytest
 from src.assets.objects.classroom import (
     CLASSROOM_COLUMN_Y, CLASSROOM_ROW_PITCH, CLASSROOM_ROUTE_STATIONS,
@@ -10,6 +31,20 @@ from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
 
 
 def test_classroom_clearance_and_wiring():
+    """测试场景：教室静态家具排布尺寸、走廊通道通行净空及仿真事件绑定。
+
+    输入假数据：
+        解析教室任务配置中的 initialize_static_classroom 事件参数与碰撞模型。
+    预期输出及验证逻辑：
+        1. 障碍物命名列表长度严格为 34（30个家具几何体 + 4面外围墙体）；
+        2. 验证场景中各排各列过道净宽：
+           - 中央走道净宽 = COLUMN_Y[2] - COLUMN_Y[1] - 课桌宽(1.2) ≈ 2.1988m；
+           - 侧走道净宽 = COLUMN_Y[1] - COLUMN_Y[0] - 课桌宽(1.2) ≈ 1.8411m；
+           - 排间横向过道净宽 = 1.7988m；
+        3. 教室总平面面积满足 (x_max - x_min) * (y_max - y_min) 预期；
+        4. 课桌碰撞半长为 (0.4, 0.6, 0.38)，椅子碰撞半长为 (0.25, 0.25, 0.45)；
+        5. 所有静态物体的碰撞体全部位于教室有效边界内部。
+    """
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     params = cfg.events['initialize_static_classroom'].params
     poses = params['layout']
@@ -62,6 +97,18 @@ def test_classroom_clearance_and_wiring():
 
 
 def test_random_routes_stay_clear_of_furniture():
+    """测试场景：批量生成的教室随机巡航路线对所有家具的避让安全性。
+
+    输入假数据：
+        生成 128 条随机路径，初始位置位于 X=12.0m，Y=0.0m，固定随机种子。
+    预期输出及验证逻辑：
+        1. 路线张量维度为 (128, 80, 2)，即 128 个环境各包含 80 个 2D 路径拐点；
+        2. 各环境路径呈现多样性（不完全相同），具有前行和后退分支；
+        3. 每段直线长度均 > 0.79m，总路径长度均 > 200m；
+        4. 关键几何安全性校验：在路径每两相邻拐点间线性采样 17 个点，
+           计算所有采样点到教室 30 个桌椅长方体碰撞包络的带符号欧氏距离，
+           断言最短距离全部满足安全间隙阈值 (CLASSROOM_ROW_PITCH - 1.6) / 2。
+    """
     import torch
     from src.tasks.amp_loco.mdp.classroom import generate_classroom_route
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
@@ -92,6 +139,14 @@ def test_random_routes_stay_clear_of_furniture():
 
 
 def test_classroom_registered_task_configs():
+    """测试场景：验证教室避障任务在 mjlab 全局任务注册表中的注册项与配置参数。
+
+    预期输出及验证逻辑：
+        1. 任务名 'Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat' 正确存在于全局注册表中；
+        2. Runner 训练类为 AMPOnPolicyRunner；
+        3. 训练与演示配置中重置路径事件函数绑定为 reset_classroom_robot，抛球模式为全向抛球；
+        4. RL 运行配置中实验名称与动作库文件路径一致。
+    """
     import src.tasks  # noqa: F401 -- register all project tasks
     from mjlab.tasks.registry import (
         list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls,
@@ -115,6 +170,18 @@ def test_classroom_registered_task_configs():
 
 
 def test_goal_heading_reward_front_side_back_and_threat():
+    """测试场景：多朝向工况与来袭威胁状态下的目标朝向奖励响应。
+
+    输入假数据：
+        7 种典型状态：正前 (0°)、侧向 (90°)、正后 (180°)、反向侧向 (-90°)、
+        存在威胁时的正前、存在威胁时的正后、目标点与机器人重合。
+    预期输出及验证逻辑：
+        1. 正前方对齐获得满分 1.0；
+        2. 侧向与背向未转向时获得停止惩罚 -1.0；
+        3. 威胁激活时奖励项输出强制为 0.0；
+        4. 目标重合时同样输出 0.0；
+        5. 空间旋转不变性：同时将机器人与目标沿 Z 轴旋转 90°，输出奖励值保持不变。
+    """
     from types import SimpleNamespace
     import math
     import torch
@@ -146,7 +213,15 @@ def test_goal_heading_reward_front_side_back_and_threat():
 
 
 def test_goal_heading_reward_sharpness():
-    """Inside the 30deg turn threshold, sharpness still shapes alignment."""
+    """测试场景：朝向对齐奖励中的非线性指数锐化参数 (sharpness) 作用机理。
+
+    输入假数据：
+        机器人的朝向偏差为 ±20°（在 30° 容忍度以内）。
+    预期输出及验证逻辑：
+        1. 当 sharpness=4.0 时，奖励值为 cos(20°)^4；
+        2. 当 sharpness=1.0 时，奖励值为 cos(20°)；
+        3. 超出 30° 阈值（如偏差 180°）时，无论 sharpness 取何值，静止不转向的惩罚始终锁定为 -1.0。
+    """
     from types import SimpleNamespace
     import math
     import torch

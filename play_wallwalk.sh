@@ -1,29 +1,35 @@
 #!/usr/bin/env bash
-# Play / visualize the STATE-BASED (oracle) dodge WHILE WALKING through a wall
-# corridor policy (Unitree-G1-AMP-Dodge-MimicKit-WallWalk-Flat) in the viser web
-# viewer (default http://localhost:8080). Each episode gets a RANDOMLY SHAPED
-# walking path (gentle-curve polyline); the robot walks along it continuously
-# (~1.3 m/s, pure-pursuit lookahead) while dodging the thrown ball AND slaloming
-# WALLWALK_NUM_WALLS (default 3) static walls flanking the path -- walked-past
-# walls recycle back ahead along the curve, so the corridor is endless.
+# ==============================================================================
+# 行走穿障走廊避障策略可视化回放脚本 (Play State WallWalk Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-WallWalk-Flat
+#    - 感知模式: 状态真值 Oracle 模态 + 走廊侧墙障碍感知。
+#               注意：由于加入了侧向墙体相对坐标，本任务的球体观测组维度扩展为 6 + 3*WALLWALK_NUM_WALLS
+#               (默认 3 面墙时为 15 维)，不能直接加载无墙或静止单墙的普通 state 检查点！
+#    - 场景特性: 机器人沿随机生成的平滑曲线路径持续行走巡航 (~1.3 m/s)，在绕开走廊两侧障碍墙的同时
+#               闪避袭来的抛球。越过的墙体会在前方循环生成，构成无尽走廊。
+#    - 可视化平台: 启动 Viser Web 端可视化服务器 (默认访问 http://localhost:8080)。
 #
-# NOTE: checkpoints from the plain state task OR the standing wall task DO NOT
-# load here -- the ball_state obs group is 6 + 3*WALLWALK_NUM_WALLS dims (15 by
-# default). Train a wallwalk checkpoint first:
-#   TASK=Unitree-G1-AMP-Dodge-MimicKit-WallWalk-Flat EXP_NAME=state_wallwalk ./train_dodge_state.sh
+# 2. 检查点 (Checkpoint) 解析机制:
+#    - 第一个非 '-' 开头的位置参数可显式指定检查点路径 (如 logs/rsl_rl/state_wallwalk/<run>/model_25000.pt)。
+#    - 若未显式传入，则自动搜索 logs/rsl_rl/${EXP_NAME}（或指定 RUN 目录下）按迭代次数版本号最高
+#      (sort -V) 的最新 model_*.pt 文件。
 #
-# The first positional arg is a direct checkpoint path; omit it to use the newest
-# model_*.pt under the experiment dir (logs/rsl_rl/state_wallwalk).
+# 3. 环境变量重载选项:
+#    - RUN: 指定训练子目录名 (如 2026-09-19_10-00-00)
+#    - NUM_ENVS: 可视化同屏机器人数量 (默认: 1)
+#    - EXP_NAME: 实验日志根目录名称 (默认: state_wallwalk)
+#    - RESET_STAND: 是否重置为标准稳定站立姿态 (默认: True)
+#    - WALLWALK_NUM_WALLS: 走廊侧向障碍墙数量 (默认: 3)
 #
-# Usage:
-#   ./play_wallwalk.sh                                          # newest checkpoint
-#   ./play_wallwalk.sh logs/rsl_rl/state_wallwalk/<run>/model_25000.pt
-#   RUN=2026-09-19_10-00-00 ./play_wallwalk.sh                  # newest under a specific run dir
-#   NUM_ENVS=9 ./play_wallwalk.sh                               # more robots on screen
-#   WALLWALK_NUM_WALLS=5 ./play_wallwalk.sh --agent zero        # denser corridor, untrained
-#
-# Env overrides: RUN, NUM_ENVS, EXP_NAME, RESET_STAND, WALLWALK_NUM_WALLS,
-# WALK_PATH_LOOKAHEAD, WALK_PATH_TURN_MAX, WALK_MAX_VEL_X. Extra args -> scripts/play.py.
+# 4. 使用示例:
+#    ./play_wallwalk.sh                                          # 加载最新模型
+#    ./play_wallwalk.sh logs/rsl_rl/state_wallwalk/<run>/model_25000.pt
+#    RUN=2026-09-19_10-00-00 ./play_wallwalk.sh
+#    NUM_ENVS=4 ./play_wallwalk.sh
+#    ./play_wallwalk.sh --agent zero                             # 无模型纯场景回放
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

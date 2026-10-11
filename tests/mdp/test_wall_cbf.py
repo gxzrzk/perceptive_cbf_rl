@@ -1,18 +1,28 @@
-"""Integration tests: static-wall obstacles on the MimicKit Wall / WallWalk dodge tasks.
+"""控制障碍函数 (CBF) 静态墙体安全边界、距离惩罚与走廊循环摆放测试 (Wall CBF Integration Tests)。
 
-Proves the wall wiring is load-bearing:
-  - reset_wall_pose places the wall BESIDE the robot relative to its post-RSI
-    heading (both sides across envs), clear of the RSI reset poses.
-  - pin_wall restores the sampled pose after the wall is knocked away (kinematic
-    static obstacle).
-  - wall_link_cbf_reward is ~0 when the robot stands still far from the wall, and
-    negative when the robot moves TOWARD the wall (the CBF constraint bites).
-  - The WallWalk task drives a constant forward command, scatters multiple walls
-    along the path, recycles walked-past walls back ahead, and observes the k
-    nearest walls sorted by distance.
+测试功能：
+- 验证针对静态墙体障碍物的控制障碍函数 (CBF) 状态与安全约束；
+- 验证墙体相对机器人初始朝向的自适应侧向随机摆放算法 (reset_wall_pose)；
+- 验证被碰撞击飞后的运动学复位锁止机制 (pin_wall)；
+- 验证 CBF 障碍物安全距离与逼近惩罚函数 ``wall_link_cbf_reward`` 的屏障条件：
+  1. 机器人静止且距离墙体足够远时，屏障条件成立，CBF 惩罚接近 0；
+  2. 机器人高速向墙体靠近时，由于距离变化率 h_dot < 0 导致约束违反，CBF 产生显著负奖励惩罚；
+- 验证防误触机制：在有墙任务中关闭基于球速不连续的击中兜底判定 (delta_v_fallback)，防止球体砸墙反弹被误判为击中机器人；
+- 验证走廊多墙体任务 (WallWalk) 中，多堵墙沿路径随桩号散布放置；
+- 验证越过墙体的动态回收推进算法 (recycle_walls_ahead)：当机器人走过某堵墙后，该墙体自动传送到前方 7-10m 的新桩号，维持连续避障环境；
+- 验证距离排序观测函数 (dodge_wall_state_b)：返回按中心欧氏距离严格升序排列的 k 个最近墙体。
 
-GPU required (builds full sim envs).  Kept at 64 envs / a handful of forwards, so
-GPU time is negligible (same pattern as test_omni_cbf_sense.py).
+关键断言条件：
+- 墙体相对初始朝向的侧向间隙在 [0.6, 1.0] 米之间，且双侧均有分布；
+- 静止安全状态下 CBF 惩罚 min > -0.05；逼近墙体时 > 90% 的环境触发强烈负奖励惩罚 (r < -0.1)；
+- 机器人后方 > 1m 的墙体成功回收并重新布置在前方 7-10m；
+- 墙体观测项向量严格按照近到远的顺序排列。
+
+覆盖边界情况：
+- 机器人在世界系具有不同随机航向（-90° 附近）；
+- 机器人全向各连杆向侧墙以 1 m/s 整体冲刺；
+- 墙体被外力移动后的运动学复位与速度归零；
+- 沿曲折随机路径的投影距离与弧长桩号计算。
 """
 
 import torch
@@ -20,8 +30,8 @@ import pytest
 
 
 def _build_wall_env(num_envs: int = 64):
-    """Build the MimicKit-Wall state env (env-vars read at call time by the builder)."""
-    import src.tasks  # noqa: F401 -- triggers task registration side-effect
+    """构建包含单面侧墙的 MimicKit-Wall 仿真任务环境。"""
+    import src.tasks  # noqa: F401 -- 触发任务注册副作用
     from mjlab.envs import ManagerBasedRlEnv
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
         g1_amp_dodge_mimickit_wall_flat_env_cfg,
@@ -35,8 +45,8 @@ def _build_wall_env(num_envs: int = 64):
 
 
 def _build_wallwalk_env(num_envs: int = 64):
-    """Build the MimicKit-WallWalk state env (3 walls, forward-walk command)."""
-    import src.tasks  # noqa: F401 -- triggers task registration side-effect
+    """构建包含 3 堵连续路径墙体的 MimicKit-WallWalk 走廊避障仿真任务环境。"""
+    import src.tasks  # noqa: F401 -- 触发任务注册副作用
     from mjlab.envs import ManagerBasedRlEnv
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
         g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
@@ -50,7 +60,7 @@ def _build_wallwalk_env(num_envs: int = 64):
 
 
 def _refresh(env, *entities):
-    """Propagate direct state writes into the entity data tensors."""
+    """辅助函数：将显式写入的状态同步至物理仿真数据结构并刷新实体张量缓存。"""
     import mujoco_warp as mjw
 
     env.scene.write_data_to_sim()
@@ -60,7 +70,7 @@ def _refresh(env, *entities):
 
 
 def _heading_frame_from_yaw(yaw: torch.Tensor):
-    """(fwd_xy, perp_xy) for a batch of yaws; perp = 90deg left of fwd."""
+    """根据偏航角计算前进方向前向向量 fwd 与垂直向左侧向向量 perp。"""
     fwd = torch.stack([torch.cos(yaw), torch.sin(yaw)], dim=-1)
     perp = torch.stack([-torch.sin(yaw), torch.cos(yaw)], dim=-1)
     return fwd, perp
@@ -68,9 +78,16 @@ def _heading_frame_from_yaw(yaw: torch.Tensor):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wall_placement_randomized_beside_spawn_heading_relative():
-    """Wall sits BESIDE the robot relative to its reset heading: |lateral| in
-    [0.6, 1.0], |along| <= 0.5, both sides present (RSI yaws are ~-90deg, so this
-    must NOT be checked in world axes)."""
+    """测试场景：验证墙体相对机器人初始朝向的侧方随机摆放（非世界坐标系绝对固定）。
+
+    预期输出及验证逻辑：
+        1. 检查各环境暂存的墙体坐标 env._wall_pos_w；
+        2. 将墙体与机器人的相对位移投影到机器人航向局部系：
+           - 侧向距离绝对值 |lat| 严格位于 [0.6, 1.0] 米之间；
+           - 纵向距离绝对值 |along| 位于 [-0.5, 0.5] 米之间；
+        3. 双侧双峰分布：在 64 个环境中，机器人左侧 (lat > 0) 与右侧 (lat < 0) 均有墙体分布；
+        4. 墙体高度中心恰好在地面上方半高处（Z = 1.0m）。
+    """
     env = _build_wall_env()
     wall = env.scene["wall"]
     robot = env.scene["robot"]
@@ -100,7 +117,13 @@ def test_wall_placement_randomized_beside_spawn_heading_relative():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_pin_wall_restores_pose():
-    """After teleporting the wall away, pin_wall puts it back at the sampled pose."""
+    """测试场景：墙体在外力冲击或被挪开后，pin_wall 事件函数能将其牢固锁回原位。
+
+    输入假数据与测试流程：
+        1. 手动将墙体坐标在 Y 轴方向平移推开 2.0m；
+        2. 调用 mdp.pin_wall；
+        3. 验证墙体坐标精准恢复至初始暂存的位姿，且线速度彻底归零。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wall_env()
@@ -125,7 +148,14 @@ def test_pin_wall_restores_pose():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wall_link_cbf_zero_when_standing_far():
-    """Standing still with the wall >= 0.6 m away -> barrier satisfied -> ~0 penalty."""
+    """测试场景：静止且远离墙体时，控制障碍函数 (CBF) 约束自然满足，惩罚接近 0。
+
+    输入假数据与测试流程：
+        将机器人关节速度和根速度全部清零，保持在原点静止（距离墙体 >= 0.6m）。
+    预期输出及验证逻辑：
+        调用 wall_link_cbf_reward，计算各连杆 barrier 条件 h_dot + alpha * h >= 0；
+        惩罚值 r.max() <= 0.0 且 r.min() > -0.05（几乎完全无惩罚）。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wall_env()
@@ -152,7 +182,14 @@ def test_wall_link_cbf_zero_when_standing_far():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wall_link_cbf_penalizes_approach():
-    """Moving the robot TOWARD the wall -> h_dot < 0 -> negative CBF reward."""
+    """测试场景：机器人以高速向墙体冲去时，CBF 约束被破坏，产生显著负奖励惩罚。
+
+    输入假数据与测试流程：
+        驱动整个机器人以 1.0 m/s 的线速度直接朝向墙体侧向平移。
+    预期输出及验证逻辑：
+        由于向墙体逼近，距离导数 h_dot < 0 导致 h_dot + alpha * h < 0，
+        超过 90% 的环境触发明显惩罚 (r < -0.1)，起到安全防护引导作用。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wall_env()
@@ -185,8 +222,11 @@ def test_wall_link_cbf_penalizes_approach():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_ball_hit_dv_fallback_disabled():
-    """The wall task must disable the ball-hit velocity-discontinuity fallback (a ball
-    bouncing off the wall near the robot would otherwise falsely register as a body hit)."""
+    """测试场景：验证有墙场景下禁用了球体速度跳变 (delta_v) 兜底判定，防止弹墙误判。
+
+    预期输出及验证逻辑：
+        ball_hit 终止项配置中的 delta_v_threshold 必须为 0.0。
+    """
     env = _build_wall_env()
     params = env.termination_manager.get_term_cfg("ball_hit").params
     assert params.get("delta_v_threshold", 0.0) == 0.0, (
@@ -195,7 +235,7 @@ def test_ball_hit_dv_fallback_disabled():
 
 
 # ---------------------------------------------------------------------------
-# WallWalk task: forward-walk command, multi-wall corridor, recycling, obs.
+# WallWalk 走廊避障任务测试：前向指令、多墙体分布、动态循环回收与排序观测
 # ---------------------------------------------------------------------------
 
 _WALLWALK_NAMES = ("wall_0", "wall_1", "wall_2")
@@ -203,10 +243,12 @@ _WALLWALK_NAMES = ("wall_0", "wall_1", "wall_2")
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_forward_command_constant():
-    """Path-follow pure pursuit pins the goal 2 m ahead ON THE PATH -> at reset the
-    path's first segment is aligned with the robot heading (and >= the lookahead),
-    so the command is the same constant clamped forward walk as before
-    (kp * 2.0 = 3.0 > max_lin_vel_x = 1.3 -> vx = 1.3 m/s for every env)."""
+    """测试场景：走廊路径追踪在初始对齐状态下输出稳定的前向巡航速度 (1.3 m/s)。
+
+    预期输出及验证逻辑：
+        重置后首段路径与朝向完全对齐，纯追踪目标锁定在前方 2m 处；
+        前向速度 vx 稳定饱和在最大线速度 1.3 m/s，侧向速度 vy 与角速度 wz 均为 0。
+    """
     env = _build_wallwalk_env()
     cmd = env.command_manager.get_command("twist")  # (N, 3): vx, vy, wz
     assert cmd.shape == (env.num_envs, 3)
@@ -220,8 +262,7 @@ def test_wallwalk_forward_command_constant():
 
 
 def _path_distance_and_station(env, points_xy: torch.Tensor):
-    """(min distance, arc-length station of the closest point) from each (N, 2) xy
-    point to its env's walk-path polyline. Vectorized over all segments."""
+    """辅助向量化函数：计算平面上一组点到各环境折线路径的最短距离及对应的弧长桩号。"""
     pts = env._walk_path_pts  # (N, M, 2)
     cum = env._walk_path_cumlen  # (N, M)
     count = env._walk_path_n  # (N,)
@@ -246,9 +287,13 @@ def _path_distance_and_station(env, points_xy: torch.Tensor):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_walls_scattered_ahead_on_path():
-    """Walk-path placement: wall i sits at arc-length station U(2.5,4)+3i along the
-    random path, offset 1.1-1.5 m perpendicular to the local tangent (station/distance
-    measured against the polyline, toleranced for curve geometry)."""
+    """测试场景：WallWalk 任务中 3 堵侧墙沿随机走廊路径的桩号与横向间隙排布。
+
+    预期输出及验证逻辑：
+        遍历 3 堵墙体：
+        1. 距离路径中轴线的横向距离位于 [1.1, 1.5] 米区间；
+        2. 沿路径的弧长桩号随序号递进，第 i 堵墙位于 2.5 + 3i 到 4.0 + 3i 附近。
+    """
     env = _build_wallwalk_env()
 
     assert env._wall_pos_w.shape == (env.num_envs, 3, 3)
@@ -267,8 +312,17 @@ def test_wallwalk_walls_scattered_ahead_on_path():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_recycle_moves_walked_past_walls_ahead():
-    """A wall > 1 m behind the robot teleports to a path station 7-10 m ahead of the
-    robot's path progress, offset 0.9-1.4 m from the path (along_path mode)."""
+    """测试场景：机器人走过后方墙体的动态循环利用（瞬移至前方 7-10m 新桩号）。
+
+    输入假数据与测试流程：
+        1. 将 wall_0 挪至机器人后方 3.0m 处，保持 wall_1 与 wall_2 在前方不变；
+        2. 执行 recycle_walls_ahead(along_path=True, lateral_range=(1.1, 1.6))；
+    预期输出及验证逻辑：
+        1. wall_0 的新桩号被成功重置在当前机器人进度前方 7-10m 处；
+        2. wall_0 到路径中轴线的横向距离落在 [1.1, 1.6] 米范围内；
+        3. 前方的 wall_1 和 wall_2 保持位置完全未动；
+        4. 物理实体的世界坐标成功同步刷新。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()
@@ -310,7 +364,13 @@ def test_wallwalk_recycle_moves_walked_past_walls_ahead():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_wallwalk_obs_k_nearest_sorted():
-    """dodge_wall_state_b returns (N, 3k) with the k walls sorted by centre distance."""
+    """测试场景：多墙体观测函数返回按中心距离严格排序的近邻特征向量。
+
+    预期输出及验证逻辑：
+        1. dodge_wall_state_b 输出维度为 (N, 9)（3 个障碍物 * 3 维特征）；
+        2. 计算各墙体中心到机器人的实际几何距离并排序，与观测向量中解包出的距离顺序完全相符；
+        3. 环境观测管理器中 ball_state 组总维度等于 6 (球) + 9 (墙) = 15 维。
+    """
     import src.tasks.amp_loco.mdp as mdp
 
     env = _build_wallwalk_env()

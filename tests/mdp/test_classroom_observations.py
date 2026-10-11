@@ -1,4 +1,26 @@
-"""Collision geometry observations: selection, coordinates and policy integration."""
+"""教室场景障碍物几何感知观测与网络前向传播测试 (Classroom Observations Tests)。
+
+测试功能：
+- 验证 CBF 与策略所依赖的障碍物三维几何特征观测函数 ``dodge_obstacle_geometry_b``；
+- 验证障碍物排序依据：基于外表面最短欧氏距离 (surface distance) 排序，而非简单的几何中心距离；
+- 验证具有较大尺寸的狭长墙体（中心距离较远但表面极近）能够被正确置于最高优先级；
+- 验证障碍物在机器人自身基座坐标系 (body frame) 下的相对中心坐标 (rel_x, rel_y, rel_z)、尺寸 (half_x, half_y, half_z)、偏航角 (cos_yaw, sin_yaw) 以及表面距离计算；
+- 验证观测对世界坐标系平移与旋转的绝对不变性 (SE(2) / SE(3) 不变性)；
+- 验证机器人穿入障碍物内部时，表面距离被平滑截断为 0.0（数值保持有限，无 NaN）；
+- 验证并行 GPU 环境下，Actor-Critic 网络结构对包含 8 个最近障碍物几何特征（共 72 维）的观测进行完整推理与步进。
+
+关键断言条件：
+- 狭长障碍物因表面距离更近 (0.9m < 0.95m)，排在几何中心更近 (1.0m < 5.1m) 的小物体前面；
+- 改变障碍物尺寸后，排序与几何特征实时更新（验证无不合法的静态尺寸缓存）；
+- 两个在世界坐标系下具有不同平移和旋转但在机器人局部系下相对姿态一致的环境，观测特征完全相等；
+- GPU 仿真前向传播中，actor 动作输出、critic 价值输出以及 step() 返回的奖励和观测全为有限数值 (torch.isfinite)。
+
+覆盖边界情况：
+- 远中心但近表面的各向异性长条形障碍物；
+- 具有任意偏航角旋转的长方体障碍物；
+- 机器人处于障碍物内部或边界表面；
+- 并行环境下的张量批量运算与网络输入维度对齐。
+"""
 from dataclasses import asdict
 from types import SimpleNamespace as NS
 
@@ -13,6 +35,15 @@ from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
 
 
 def make_env(centres, half, yaw=None, heading=None, root=None):
+    """构造用于测试几何体观测计算的精简仿真环境 Mock。
+
+    参数：
+        centres: (n, w, 3) 各环境中障碍物的世界中心坐标
+        half: (n, w, 3) 障碍物长方体沿各轴的半长
+        yaw: (n, w) 障碍物绕 Z 轴的旋转角
+        heading: (n,) 机器人自身的航向角
+        root: (n, 3) 机器人根连杆的世界坐标
+    """
     centres = torch.tensor(centres, dtype=torch.float32)
     n, w, _ = centres.shape
     yaw = torch.zeros(n, w) if yaw is None else torch.tensor(yaw)
@@ -33,6 +64,20 @@ def make_env(centres, half, yaw=None, heading=None, root=None):
 
 
 def test_near_long_wall_beats_nearer_centre_and_updates_geometry():
+    """测试场景：表面距离优先于中心距离排序，且几何体动态形变能实时刷新。
+
+    输入假数据：
+        障碍物 0：中心在 (5, 1, 1.5)，尺寸半长 (6, 0.1, 1.5)，是一面巨幅狭长墙体；
+        障碍物 1：中心在 (1, 0, 0.38)，尺寸半长 (0.05, 0.05, 0.38)，是一个小方块。
+        机器人位于原点 (0, 0, 0)。
+    预期输出及验证逻辑：
+        1. 障碍物 0 的表面最近距离 = 1.0 - 0.1 = 0.9m；
+        2. 障碍物 1 的表面最近距离 = 1.0 - 0.05 = 0.95m；
+        3. 尽管障碍物 1 的中心距离 (1.0m) 远小于障碍物 0 的中心距离 (~5.1m)，
+           但根据表面距离排序，障碍物 0 必须排在第 1 位 (obs[0, 0] == 5, obs[0, 8] == 0.9)；
+        4. 动态增大障碍物 1 的 X 轴半长至 0.5m，其表面距离缩短为 0.5m，
+           重新计算观测，验证障碍物 1 成功升至第 1 位，证明排序没有死锁旧缓存。
+    """
     env, names = make_env([[[5., 1., 1.5], [1., 0., .38]]],
                           [[[6., .1, 1.5], [.05, .05, .38]]])
     obs = dodge_obstacle_geometry_b(env, wall_names=names, k=1)
@@ -47,6 +92,15 @@ def test_near_long_wall_beats_nearer_centre_and_updates_geometry():
 
 
 def test_yaw_rotated_box_distance_and_robot_frame():
+    """测试场景：带有偏航角旋转的障碍物在机器人机体坐标系下的相对位姿投影。
+
+    输入假数据：
+        机器人位于 (0, 0, 1)，航向角为 90°；障碍物中心位于世界坐标 (0, 2, 0.5)，自身旋转 90°。
+    预期输出及验证逻辑：
+        1. 机器人系下的相对中心位置应旋转变换为 (2.0, 0.0, -0.5)；
+        2. 障碍物相对航向角的 (cos, sin) 表示为 (0.0, 1.0)；
+        3. 表面距离经旋转投影计算精确为 0.0m。
+    """
     env, names = make_env([[[0., 2., .5]]], [[[2., .2, .5]]],
                           yaw=[[torch.pi / 2]], heading=[torch.pi / 2], root=[[0., 0., 1.]])
     obs = dodge_obstacle_geometry_b(env, wall_names=names, k=1)[0]
@@ -56,6 +110,13 @@ def test_yaw_rotated_box_distance_and_robot_frame():
 
 
 def test_world_translation_rotation_invariance_across_envs():
+    """测试场景：验证机体观测特征对全局世界坐标系刚体变换的不变性。
+
+    输入假数据：
+        环境 0 位于原点，航向 0°；环境 1 整体平移至 (10, 20, 4) 且旋转 90°，但两者的内部相对几何完全相同。
+    预期输出及验证逻辑：
+        两环境在机体坐标系下生成的几何观测特征向量 obs[0] 与 obs[1] 严格相同 (atol=1e-6)。
+    """
     # Same geometry and relative pose, second environment translated and rotated 90 deg.
     env, names = make_env([[[2., 1., .5]], [[9., 22., 3.5]]],
                           [[[.4, .6, .5]], [[.4, .6, .5]]],
@@ -66,6 +127,14 @@ def test_world_translation_rotation_invariance_across_envs():
 
 
 def test_inside_distance_is_finite_and_equal_distances_keep_scene_order():
+    """测试场景：穿透内部时的平滑截断与等距稳定排序。
+
+    输入假数据：
+        机器人中心位于两个重叠障碍物的包络内部。
+    预期输出及验证逻辑：
+        1. 表面距离 clamped 为 0.0，整个张量无 NaN 或 Inf；
+        2. 当距离完全相等时，排序保持稳定的初始场景顺序。
+    """
     env, names = make_env([[[0., 0., .4], [.1, 0., .5]]],
                           [[[.4, .6, .4], [.5, .5, .5]]])
     obs = dodge_obstacle_geometry_b(env, wall_names=names, k=2).reshape(2, 9)
@@ -74,6 +143,12 @@ def test_inside_distance_is_finite_and_equal_distances_keep_scene_order():
 
 
 def test_classroom_wiring_leaves_wallwalk_unchanged():
+    """测试场景：任务配置项隔离性核查。
+
+    验证逻辑：
+        1. 教室任务（训练与 play 模式）绑定 dodge_obstacle_geometry_b，追踪 k=8 个障碍物（34 堵墙中筛选）；
+        2. WallWalk 走廊任务仍绑定旧的 dodge_wall_state_b，不受教室新感知项影响。
+    """
     for play in (False, True):
         cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=play)
         term = cfg.observations['ball_state'].terms['wall_state']
@@ -85,6 +160,18 @@ def test_classroom_wiring_leaves_wallwalk_unchanged():
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='needs GPU sim')
 def test_gpu_observation_and_actor_critic_forward():
+    """测试场景：GPU 上包含 16 个环境的完整强化学习模型前向推理与仿真步进链路。
+
+    输入假数据与测试流程：
+        1. 构建 16 环境的真实 GPU 仿真；
+        2. 计算几何观测项，断言维度为 (16, 72)（8 个物体 * 9 维特征）；
+        3. 距离字段必须按升序排列（即 distances.diff >= 0）；
+        4. 初始化 AMPOnPolicyRunner，提取 Actor 与 Critic 网络；
+        5. 在推理模式下输入观测字典，前向计算 action 与 value，执行 3 步 wrapper.step()。
+    预期输出及验证逻辑：
+        1. 动作形状为 (16, num_actions)，价值形状为 (16, 1)；
+        2. 动作、价值、奖励与下一步观测全部有限 (torch.isfinite)。
+    """
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import RslRlVecEnvWrapper
     from src.tasks.amp_loco.rl import AMPOnPolicyRunner

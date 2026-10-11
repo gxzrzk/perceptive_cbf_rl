@@ -1,12 +1,27 @@
-"""Replay motion_data_csv 36-col CSV clips on the G1 -> one labeled mp4.
+"""36 列动作捕捉 CSV 数据批量前向运动学可视化与视频导出工具 (Visualize Motion CSVs)
 
-Sibling of ``visualize_leap_motions.py`` that reads the headerless 36-col AMP CSVs
-(``x,y,z (m), qx,qy,qz,qw, 29 joints (rad)``) directly -- so it works on clips that
-exist only as CSV (e.g. restored ``motion_data_csv`` extras), no npz needed. Reuses that
-script's MuJoCo setup, upper-left name label, and offscreen video writer.
+本脚本用于直接读取 `motion_data_csv` 目录下的 36 列 AMP 格式动作捕捉 CSV 片段，在 Unitree G1 人形机器人上
+执行纯前向运动学姿态回放，并在画面左上角自动绘制片段名称水印标签，最终拼接导出为单份高清 MP4 视频或在本地窗口中实时播放。
+无需预先将 CSV 转换为 NPZ 格式即可快速浏览检查原始动作数据质量。
 
-Example:
-    uv run python scripts/visualize_motion_csvs.py \
+1. 核心流程与数据加载 (`_load_clip_csv`):
+   - 数据解析: 直接加载无表头 36 列数据 (`x, y, z` 平移(米), `qx, qy, qz, qw` 四元数, 29 个关节角(弧度))。
+   - 帧率降采样: 按 `round(src_fps / target_fps)` 步长对动作序列进行降采样，以匹配目标视频帧率。
+   - 姿态转换: 将根节点四元数从 CSV 的 xyzw 格式重排拼接为 MuJoCo 所要求的 wxyz 格式。
+   - 前向运动学渲染: 由于纯前向运动学仅依赖 qpos (基座与关节位置)，速度项自动填充零，随后送入仿真渲染器。
+   - 画面合成与导出: 复用 `visualize_leap_motions.py` 中的画面标注器与视频写出器，按名称顺序无缝衔接各动作片段。
+
+2. 命令行参数解析机制 (tyro CLI):
+   - `--motion-dir`: 包含待回放 36 列 CSV 片段的目录路径（默认 `motion_data_csv/amp_dodge`）。
+   - `--video-output`: 离屏渲染输出的 MP4 视频文件路径（默认 `amp_dodge_clips.mp4`）。
+   - `--src-fps`: 原始 CSV 文件的采样率（例如 SEED 动作库数据通常为 120.0 fps）。
+   - `--target-fps`: 输出视频与重采样后的目标帧率（默认 30.0 fps）。
+   - `--realtime-scale`: 视频回放速度缩放比例（1.0 表示原速，0.5 表示 2 倍慢动作）。
+   - `--render-backend`: 渲染后端，可选 `offscreen` (离屏录制 MP4 视频) 或 `window` (原生窗口实时交互查看)。
+   - `--device`: 仿真与张量计算设备（默认 `cuda:0`）。
+
+使用示例:
+    uv run python scripts/visualize_motion_csvs.py \\
         --motion-dir motion_data_csv/amp_dodge --video-output amp_dodge_clips.mp4
 """
 from __future__ import annotations
@@ -24,7 +39,7 @@ from mjlab.scene import Scene
 from mjlab.sim.sim import Simulation, SimulationCfg
 from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
 
-# Reuse the leap viz machinery (label drawing, frame writer, offscreen/window runners).
+# 复用 leap viz 模块中的渲染器（文本水印绘制、视频帧编码、离屏/窗口主循环）
 from visualize_leap_motions import _run_offscreen, _run_window  # noqa: E402
 
 

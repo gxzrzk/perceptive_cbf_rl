@@ -1,20 +1,31 @@
-"""Obs-assembly contract tests for dodge_policy.
+"""部署端策略观测向量装配契约测试 (Obs-Assembly Contract Tests)。
 
-Reproduces, in pure numpy, the exact actor-obs vector the sim builds for the
-``Unitree-G1-AMP-Dodge-Depth-Single-Flat`` policy:
+测试功能：
+- 验证真机部署端与仿真端完全等价的策略输入观测向量拼接协议；
+- 策略输入总结构：actor input = actor_proprio (384维) ++ depth (144 * 4 = 576维) = 960 维；
+- 验证本体感知历史缓存 (ProprioHistory)：
+  采用“项优先” (TERM-MAJOR) 时序排列：先排同一物理量的所有历史帧（由旧到新），
+  再排下一物理量；物理项顺序依次为：基座角速度 (3)、投影重力 (3)、速度指令 (3)、
+  关节相对位置 (29)、关节相对速度 (29)、上一动作 (29)；
+  在 4 帧历史下总维度为 (3+3+3+29+29+29) * 4 = 384 维；
+- 验证深度图归一化 (depth_metres_to_obs)：将物理距离 [0.1m, 5.0m] 线性映射归一化至 [0.0, 1.0]，
+  盲区或越界近景安全映射至远端 (1.0)；
+- 验证深度图环形缓冲区 (DepthRing)：
+  支持按照 (0, 3, 8, 18) 等指定帧偏移量重采样，采用“由新到旧” (NEWEST->OLDEST) 顺序堆叠；
+  在初始帧数不足时自动以最旧帧安全回退填充，重置后隔绝前一剧集历史；
+- 验证视觉数据新鲜度门控 (DepthGate)：当相机帧率掉帧或超时卡顿时，安全保持最后一帧且标记陈旧，
+  首帧未到达前返回全远端占位，避免人形机器人因瞬态异常发生姿态失控或摔倒。
 
-  actor input = actor_proprio(384) ++ depth(144 * n_offsets)
+关键断言条件：
+- 归一化后深度：0.05m -> 1.0 (盲区), 0.1m -> 0.0, 5.0m -> 1.0, 2.55m -> 0.5；
+- 本体感知输出形状严格为 (384,)，排列严格满足 term-major 顺序；
+- 拼接后完整观测矩阵形状为 (1, 960)，前 384 维为本体，后 576 维为深度图；
+- 深度门控在超时后返回 is_stale=True 且不阻塞动作输出。
 
-* proprio is a 4-frame TERM-MAJOR history (oldest->newest per term), term order
-  base_ang_vel, projected_gravity, command, joint_pos, joint_vel, actions
-  (matches src/tasks/amp_loco/amp_env_cfg.py actor_terms + mjlab default
-  history_ordering="term").
-* depth stacks the ring buffer at frame_offsets NEWEST->OLDEST (offset 0 first),
-  each frame the DepthImageObs-normalised [0,1] 144-vector (no-hit->far, clamp,
-  normalise) -- matches mdp/observations.py DepthImageObs.__call__.
-
-A layout/offset drift here is a fall on the robot, so these pin it. No sim, no
-GPU: the layout is hand-derived from the config.
+覆盖边界情况：
+- 深度图极小盲区与超远距离截断；
+- 环形缓冲区初启单帧、半填充及跨剧集清空；
+- 相机首帧未接收前的空包回退。
 """
 
 import os
@@ -28,9 +39,19 @@ from deploy.policy import dodge_policy as P
 
 
 # ---------------------------------------------------------------------------
-# Depth metres -> normalised obs (DepthImageObs._one, no aug / no ground-far-out)
+# 深度米制距离 -> 归一化观测值映射 [0, 1]
 # ---------------------------------------------------------------------------
 def test_depth_metres_to_obs():
+    """测试场景：米制深度图到 [0, 1] 归一化空间的无量纲化映射。
+
+    输入假数据：
+        [0.05 (近于盲区 0.1m), 0.1 (最近有效距离), 5.0 (远端截断距离), 2.55 (正中距离)]。
+    预期输出及验证逻辑：
+        1. 盲区距离 (0.05m) 映射为远端 (1.0)；
+        2. 0.1m 映射为 0.0；
+        3. 5.0m 映射为 1.0；
+        4. 中间值 2.55m 映射为 (2.55 - 0.1) / (5.0 - 0.1) = 0.5。
+    """
     near, far = 0.1, 5.0
     frame = np.array([0.05, 0.1, 5.0, 2.55], dtype=np.float32)  # below-near, near, far, mid
     out = P.depth_metres_to_obs(frame, near, far)
@@ -39,15 +60,29 @@ def test_depth_metres_to_obs():
 
 
 def test_depth_metres_to_obs_clamps_above_far():
+    """测试场景：远距离超出 far 上限的像素被平滑截断至 1.0。
+
+    输入假数据：
+        1000.0 米的超远距离。
+    预期输出及验证逻辑：
+        输出值截断在 1.0。
+    """
     near, far = 0.1, 5.0
     out = P.depth_metres_to_obs(np.array([1000.0], dtype=np.float32), near, far)
     np.testing.assert_allclose(out, [1.0], atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
-# Proprio term-major history
+# 本体感知 TERM-MAJOR 历史时序排列测试
 # ---------------------------------------------------------------------------
 def test_proprio_dim_is_384_at_history_4():
+    """测试场景：验证 4 帧本体感知历史向量的总维度为 384 维。
+
+    输入假数据：
+        全零的角速度 (3)、投影重力 (3)、指令 (3)、关节位置 (29)、关节速度 (29)、上一动作 (29)。
+    预期输出及验证逻辑：
+        单帧 96 维 * 4 帧历史 = 384 维。
+    """
     h = P.ProprioHistory(history_length=4)
     h.append(
         base_ang_vel=np.zeros(3), proj_grav=np.zeros(3), command=np.zeros(3),
@@ -57,6 +92,14 @@ def test_proprio_dim_is_384_at_history_4():
 
 
 def test_proprio_term_major_layout():
+    """测试场景：严格校验 term-major（项优先：各物理项内部按由旧到新展开）的时序内存布局。
+
+    输入假数据：
+        设置 history_length=2，第 0 帧与第 1 帧赋予特征分明的常数哨兵值：
+        角速度 (10->11), 重力 (20->21), 指令 (30->31), 关节位置 (40->41), 速度 (50->51), 动作 (60->61)。
+    预期输出及验证逻辑：
+        向量各切片必须严格按照 [旧帧, 新帧] 连续排布，与仿真环境 mjlab 的默认格式完全对齐。
+    """
     # history_length=2, distinct per-term sentinel values so the layout is checkable.
     h = P.ProprioHistory(history_length=2)
     # frame 0
@@ -83,6 +126,11 @@ def test_proprio_term_major_layout():
 
 
 def test_proprio_reset_zeros_history():
+    """测试场景：本体感知历史重置清零。
+
+    预期输出及验证逻辑：
+        调用 reset() 后，返回的 384 维向量全部恢复为 0。
+    """
     h = P.ProprioHistory(history_length=4)
     h.append(
         base_ang_vel=np.full(3, 1.0), proj_grav=np.full(3, 1.0), command=np.full(3, 1.0),
@@ -93,9 +141,16 @@ def test_proprio_reset_zeros_history():
 
 
 # ---------------------------------------------------------------------------
-# Depth ring buffer: offset stacking newest->oldest
+# 深度图环形缓冲区：帧偏移堆叠由新到旧 (newest -> oldest)
 # ---------------------------------------------------------------------------
 def test_depth_ring_first_frame_fills_all_offsets():
+    """测试场景：深度图缓冲区刚接收首帧时，所有历史延迟分头均填充该首帧数据。
+
+    输入假数据：
+        指定偏移量 (0, 1, 3)，推入单帧 144 维常数数据 (0.7)。
+    预期输出及验证逻辑：
+        输出维度为 3 * 144 = 432，且 3 个槽位全部等于该首帧数据。
+    """
     ring = P.DepthRing(frame_offsets=(0, 1, 3))
     f0 = np.full(144, 0.7, dtype=np.float32)
     out = ring.push(f0)
@@ -105,6 +160,14 @@ def test_depth_ring_first_frame_fills_all_offsets():
 
 
 def test_depth_ring_newest_first_ordering():
+    """测试场景：多帧推入后，深度图切片按照最新帧优先（newest first）排列。
+
+    输入假数据：
+        连续推入序号为 0 到 5 的 6 帧图像，指定偏移量为 (0, 1, 3)。
+    预期输出及验证逻辑：
+        当前最新帧为 5，偏移 0 对应帧 5、偏移 1 对应帧 4、偏移 3 对应帧 2；
+        输出拼接向量依次为 [5.0, 4.0, 2.0] 各自平铺 144 维。
+    """
     ring = P.DepthRing(frame_offsets=(0, 1, 3))
     frames = [np.full(144, float(i), dtype=np.float32) for i in range(6)]
     out = None
@@ -116,6 +179,13 @@ def test_depth_ring_newest_first_ordering():
 
 
 def test_depth_ring_partial_history_clamps_to_oldest():
+    """测试场景：当历史帧数不足以满足深层延迟偏移量时，自动截断回退到最旧的可用帧。
+
+    输入假数据：
+        定义偏移量为 (0, 3, 8, 18)，先后仅推入两帧 a (1.0) 和 b (2.0)。
+    预期输出及验证逻辑：
+        最新偏移 0 读取 b (2.0)，更深层的偏移 3、8、18 均安全回退读取最早的帧 a (1.0)。
+    """
     ring = P.DepthRing(frame_offsets=(0, 3, 8, 18))
     a = np.full(144, 1.0, dtype=np.float32)
     b = np.full(144, 2.0, dtype=np.float32)
@@ -127,6 +197,13 @@ def test_depth_ring_partial_history_clamps_to_oldest():
 
 
 def test_depth_ring_reset_reinits_to_next_frame():
+    """测试场景：调用 reset() 后彻底隔离历史帧污染。
+
+    输入假数据与测试流程：
+        推入旧数据后执行 reset()，再推入新帧 (9.0)。
+    预期输出及验证逻辑：
+        所有偏移量槽位全被新帧 9.0 填充，无旧剧集历史残留。
+    """
     ring = P.DepthRing(frame_offsets=(0, 1))
     ring.push(np.full(144, 1.0, dtype=np.float32))
     ring.push(np.full(144, 2.0, dtype=np.float32))
@@ -137,9 +214,14 @@ def test_depth_ring_reset_reinits_to_next_frame():
 
 
 # ---------------------------------------------------------------------------
-# Full assembly: proprio ++ depth, dim must equal the ONNX input
+# 完整装配测试：本体感知 ++ 深度时序图，维度必须严格等于 ONNX 输入
 # ---------------------------------------------------------------------------
 def test_assemble_obs_concatenates_proprio_then_depth():
+    """测试场景：验证本体感知 (384) 与深度观测 (576) 的总装配，输出形状为 (1, 960)。
+
+    预期输出及验证逻辑：
+        前 384 维完全等于 proprio，后 576 维完全等于 depth。
+    """
     proprio = np.arange(384, dtype=np.float32)
     depth = np.arange(384, 384 + 576, dtype=np.float32)  # 4 offsets * 144
     obs = P.assemble_obs(proprio, depth)
@@ -149,9 +231,18 @@ def test_assemble_obs_concatenates_proprio_then_depth():
 
 
 # ---------------------------------------------------------------------------
-# Depth freshness gate
+# 深度数据新鲜度门控 (Depth Freshness Gate)
 # ---------------------------------------------------------------------------
 def test_freshness_gate_holds_last_frame_when_stale():
+    """测试场景：相机数据传输超时后，门控报警但依然保持最后一帧可用图像，防止策略无数据崩溃。
+
+    输入假数据与测试流程：
+        在 t=0.0 时传入图像帧，超时阈值设为 0.1s。
+    预期输出及验证逻辑：
+        1. 在 t=0.05s 时，is_stale 为 False（新鲜）；
+        2. 在 t=0.25s 时，is_stale 为 True（陈旧报警）；
+        3. gate.frame() 依然完整返回上一有效帧数据，维持控制回路持续运转。
+    """
     gate = P.DepthGate(n_cam=1)
     f = np.full(144, 0.3, dtype=np.float32)
     gate.update(f, t=0.0)
@@ -163,6 +254,12 @@ def test_freshness_gate_holds_last_frame_when_stale():
 
 
 def test_freshness_gate_stale_before_first_frame():
+    """测试场景：尚未收到首帧图像时的初始待机状态。
+
+    预期输出及验证逻辑：
+        is_stale 为 True，且 frame() 默认返回全 1.0（远端空旷）深度图，
+        保证机器人在视觉模块启动就绪前保持平稳站立，不会误触发剧烈躲避动作。
+    """
     gate = P.DepthGate(n_cam=1)
     # no datagram yet -> stale, and frame() returns a far (empty) image so the
     # robot just stands rather than crashing.
@@ -171,6 +268,7 @@ def test_freshness_gate_stale_before_first_frame():
 
 
 def _run():
+    """直接执行测试（开发机无需 pytest 支持）。"""
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()

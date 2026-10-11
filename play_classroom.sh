@@ -1,15 +1,32 @@
 #!/usr/bin/env bash
-# Play the registered classroom policy in the viser web viewer.
-# Loads the newest checkpoint under logs/rsl_rl/state_classroom by default.
+# ==============================================================================
+# 教室过道环境全向避障与巡航策略可视化回放脚本 (Play Classroom Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat
+#    - 感知与场景模式: 状态真值 Oracle 模态 + 真实教室多排课桌过道几何 + 360° 全向高速抛球。
+#    - 动作特性: 机器人遵循随机生成的过道巡航路径持续行进，并在遭遇全向来球时灵活闪避且避免触碰课桌。
+#    - 可视化平台: 启动 Viser Web 端可视化服务器 (默认访问 http://localhost:8080)。
 #
-# Usage:
-#   ./play_classroom.sh
-#   ./play_classroom.sh logs/rsl_rl/state_classroom/<run>/model_25000.pt
-#   ./play_classroom.sh --agent zero                  # preview without a model
-#   RUN=<run> NUM_ENVS=9 ./play_classroom.sh
+# 2. 检查点 (Checkpoint) 解析机制:
+#    - 第一个非 '-' 参数可显式传入检查点路径 (如 logs/rsl_rl/state_classroom/<run>/model_25000.pt)。
+#    - 若未指定且未开启 dummy 模式，自动搜索 logs/rsl_rl/${EXP_NAME}（或指定 RUN 目录下）按迭代
+#      版本号最高 (sort -V) 的最新 model_*.pt 文件。
+#    - 支持传入 `--agent zero` 或 `--agent random` 直接在无模型状态下交互预览空场景。
 #
-# Env overrides: RUN, NUM_ENVS, EXP_NAME, RESET_STAND.
-# Extra args -> scripts/play.py. WallWalk checkpoints have different obs dimensions.
+# 3. 环境变量重载选项:
+#    - RUN: 指定训练子目录名 (如 2026-09-19_10-00-00)
+#    - NUM_ENVS: 可视化同屏机器人数量 (默认: 1)
+#    - EXP_NAME: 实验日志根目录名称 (默认: state_classroom)
+#    - RESET_STAND: 是否重置为标准稳定站立姿态 (默认: True)
+#    - TMPDIR / WARP_CACHE_PATH: 缓存目录配置，避免系统盘空间不足
+#
+# 4. 使用示例:
+#    ./play_classroom.sh                                          # 加载最新模型
+#    ./play_classroom.sh logs/rsl_rl/state_classroom/<run>/model_25000.pt
+#    ./play_classroom.sh --agent zero                             # 无模型场景预览
+#    RUN=<run> NUM_ENVS=4 ./play_classroom.sh
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# Train the STATE-BASED (oracle) dodge policy (Unitree-G1-AMP-Dodge-MimicKit-Flat): the MimicKit/SMP
-# faithful baseline where the actor sees the GROUND-TRUTH 6-D ball state (relative pos+vel in the
-# heading frame) directly -- NO camera, NO depth. This is the PERCEPTION UPPER BOUND: how well the
-# robot can dodge when it knows the ball perfectly. Use it as the ceiling to judge the single-depth
-# policy against.
+# ==============================================================================
+# 状态真值 Oracle 避障策略训练脚本 (Train State-based Oracle Dodge Policy)
+# ==============================================================================
+# 1. 任务与算法定位:
+#    - 任务环境: Unitree-G1-AMP-Dodge-MimicKit-Flat (MimicKit/SMP 规范基线)
+#    - 感知模式: 状态真值 Oracle（直接观测球体在机体航向坐标系下的 6 维相对位置与速度向量）
+#               无相机渲染、无深度图，作为全论文体系中避障控制能力的理论“感知性能上限”。
+#    - 训练优势: 无需执行光栅化/光线追踪深度渲染，是训练速度最快、吞吐量最高的避障任务。
+#    - 核心环境超参数:
+#      * STAND_RATIO (0.2): 恒定平稳站立且不抛球的环境比例，防止网络步态退化。
+#      * INPLACE_RATIO (0.4): 原地停滞受击环境比例，专门强化机器人零初始速度下的瞬间闪避爆发力。
+#    - 论文实验组推荐: 建议优先使用 train_runs/state_*.sh 封装脚本启动对齐实验。
 #
-# No camera, so this is the FASTEST dodge task to train (no depth rendering).
+# 2. 环境变量重载选项:
+#    - TASK: 任务环境名称 (默认: Unitree-G1-AMP-Dodge-MimicKit-Flat)
+#    - NUM_ENVS: 并行环境数 (默认: 8192)
+#    - STAND_RATIO: 纯原地站立不抛球环境比例 (默认: 0.2)
+#    - INPLACE_RATIO: 原地停滞受击环境比例 (默认: 0.4)
+#    - EXP_NAME: 实验日志名称 (默认: state_link)
 #
-# "Standing ratio" = rel_standing_envs (permanently-standing ball-free anchor); "In-place ratio" =
-# rel_inplace_throw_envs (zero velocity but pelted -> dodge from a standstill).
-#
-# Prefer the train_runs/state_*.sh wrappers, which pin the paper cohort settings and set the
-# experiment name the benchmark auto-discovers.
-#
-# Usage:
-#   ./train_dodge_state.sh                           # stand 0.2, inplace 0.4, 8192 envs, 25k iters
-#   ./train_dodge_state.sh --agent.max-iterations=40000   # forward extra train.py flags
-#
-# Env overrides: TASK, NUM_ENVS, STAND_RATIO, INPLACE_RATIO. Extra args -> scripts/train.py.
+# 3. 使用示例:
+#    ./train_dodge_state.sh
+#    ./train_dodge_state.sh --agent.max-iterations=40000
+#    NUM_ENVS=4096 ./train_dodge_state.sh
+# ==============================================================================
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
