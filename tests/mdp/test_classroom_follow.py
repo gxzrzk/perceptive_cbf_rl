@@ -12,7 +12,7 @@ from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
     g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
 )
 from src.tasks.amp_loco.mdp.classroom import (
-    classroom_follow_state, classroom_path_follow_reward, classroom_path_success,
+    classroom_follow_state, classroom_path_follow_reward, classroom_navigation_update,
     generate_classroom_route, round_classroom_route,
 )
 from src.tasks.amp_loco.mdp.rewards import is_terminated_except
@@ -166,35 +166,33 @@ def test_reward_and_command_reads_are_idempotent_and_resets_are_per_env():
     assert state.turn_stall[1] == 0 and state.follow_stall[1] == 0
 
 
-def test_route_end_terminates_before_reward_and_success_has_no_failure_cost():
+def test_route_end_does_not_terminate_stop_or_pay_an_endpoint_bonus():
     command, env = follower(points=((0., 0.), (1., 0.)))
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     env.fail = torch.zeros(1, dtype=torch.bool)
     terms = {
         "collision": TerminationTermCfg(func=lambda env: env.fail),
-        "path_success": cfg.terminations["path_success"],
+        "navigation_update": cfg.terminations["navigation_update"],
     }
     env.termination_manager = TerminationManager(terms, env)
     manager = RewardManager({"follow": cfg.rewards["classroom_path_follow"]}, env, scale_by_dt=True)
     advance(command, env, xy=[[.9, 0.]])
-    assert env.termination_manager.compute().item()
-    assert env.termination_manager.get_term("path_success").item()
-    assert is_terminated_except(env, exclude_terms=("path_success",)).item() == 0
-    assert manager.compute(dt=.02).item() == pytest.approx(10.04)
-    assert env._walk_path_n.item() == 2  # route is finite, never extended
+    assert not env.termination_manager.compute().item()
+    assert manager.compute(dt=.02).item() == pytest.approx(.06)
+    assert classroom_follow_state(command).command_speed.item() > 0
     env.fail[:] = True
     advance(command, env)
     assert env.termination_manager.compute().item()
-    assert not env.termination_manager.get_term("path_success").item()
+    assert not env.termination_manager.get_term("navigation_update").item()
     assert manager.compute(dt=.02).item() == 0
-    assert is_terminated_except(env, exclude_terms=("path_success",)).item() == 1
+    assert is_terminated_except(env).item() == 1
 
 
-def test_same_endpoint_on_earlier_lap_is_not_success():
+def test_same_endpoint_on_earlier_lap_never_terminates():
     command, env = follower(points=((0., 0.), (5., 0.), (5., 4.), (0., 4.), (0., 0.)))
-    assert not classroom_path_success(env).item()
+    assert not classroom_navigation_update(env).item()
     advance(command, env, xy=[[0., .1]])
-    assert not classroom_path_success(env).item()
+    assert not classroom_navigation_update(env).item()
 
 
 def test_continuous_terms_scale_with_dt_and_round_trip_cannot_pay():
@@ -219,7 +217,10 @@ def test_classroom_config_and_short_routes_leave_wallwalk_unchanged():
         cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=play)
         assert cfg.scale_rewards_by_dt
         assert cfg.events['reset_walk_path'].params['route_nodes'] == 4
-        assert 'path_success' in cfg.terminations
+        assert 'path_success' not in cfg.terminations
+        assert 'navigation_update' in cfg.terminations
+        assert cfg.rewards['classroom_safe_completion'].params['bonus'] == 10.
+        assert 'success_bonus' not in cfg.rewards['classroom_path_follow'].params
         assert cfg.rewards['is_terminated'].func.__name__ == 'classroom_failure_cost'
         for name in ('walk_goal_heading_when_safe', 'walk_path_progress_when_safe', 'walk_path_adherence'):
             assert name not in cfg.rewards
@@ -231,7 +232,8 @@ def test_classroom_config_and_short_routes_leave_wallwalk_unchanged():
     assert 'path_success' not in wall.terminations
     assert wall.rewards['walk_path_progress_when_safe'].params == {'command_name': 'twist'}
     torch.manual_seed(5)
-    x = torch.rand(128) * 18.694
+    from src.assets.objects.classroom import CLASSROOM_ROUTE_STATIONS
+    x = torch.rand(128) * CLASSROOM_ROUTE_STATIONS[-1]
     lane = torch.randint(2, (128,))
     from src.assets.objects.classroom import CLASSROOM_SPAWN_LANES
     y = torch.tensor(CLASSROOM_SPAWN_LANES)[lane]
@@ -270,7 +272,7 @@ def test_tracking_cost_is_neutral_at_rest_and_negative_for_error():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='needs GPU sim')
-def test_gpu_success_reward_and_partial_auto_reset():
+def test_gpu_safe_timeout_reward_and_partial_auto_reset():
     from mjlab.envs import ManagerBasedRlEnv
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     cfg.scene.num_envs = 2
@@ -278,26 +280,20 @@ def test_gpu_success_reward_and_partial_auto_reset():
     try:
         env.reset()
         command = env.command_manager.get_term('twist')
-        # Shorten one existing clear initial aisle leg, then arrive at its end.
-        env._walk_path_n[0] = 2
-        env._walk_path_epoch[0] += 1
-        env.command_manager.compute(dt=0.)
         epoch = env._walk_path_epoch.clone()
-        endpoint = env._walk_path_pts[0, 1]
-        pose = env.scene['robot'].data.root_link_pose_w[:1].clone()
-        pose[0, :2] = endpoint
-        ids = torch.tensor([0], device='cuda')
-        env.scene['robot'].write_root_link_pose_to_sim(pose, env_ids=ids)
-        env.scene['robot'].write_root_link_velocity_to_sim(torch.zeros(1, 6, device='cuda'), env_ids=ids)
-        env.scene.write_data_to_sim()
-        env.sim.forward()
-        _, value, terminated, _, _ = env.step(torch.zeros(2, env.action_manager.total_action_dim, device='cuda'))
-        assert terminated[0] and env.termination_manager.get_term('path_success')[0]
+        env.episode_length_buf[0] = env.max_episode_length - 1
+        _, value, terminated, truncated, _ = env.step(torch.zeros(2, env.action_manager.total_action_dim, device='cuda'))
+        assert not terminated[0] and truncated[0]
         assert value[0] > 5.  # one-shot +10 survives the other task costs
+        terms = dict(env.reward_manager.get_active_iterable_terms(0))
+        assert terms['classroom_safe_completion'][0] * env.step_dt == pytest.approx(10.)
         assert env._walk_path_epoch[0] == epoch[0] + 1
         assert env._walk_path_epoch[1] == epoch[1]
         state = classroom_follow_state(command)
         assert state.turn_delta[0] == 0 and command._path_s_delta[0] == 0
-        assert not state.success[0]
+        # The next physics step must not pay the previous episode's bonus again.
+        env.step(torch.zeros(2, env.action_manager.total_action_dim, device='cuda'))
+        terms = dict(env.reward_manager.get_active_iterable_terms(0))
+        assert terms['classroom_safe_completion'][0] == 0.
     finally:
         env.close()

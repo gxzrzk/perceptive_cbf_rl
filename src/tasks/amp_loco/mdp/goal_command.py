@@ -389,9 +389,6 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     logic turns that into a cruise-speed command that follows the path's curves.
     """
     env = self._env
-    pts = env._walk_path_pts  # (N, M, 2)
-    cum = env._walk_path_cumlen  # (N, M)
-    count = env._walk_path_n  # (N,)
     ar = torch.arange(self.num_envs, device=self.device)
 
     # A bumped epoch = this env reset into a new episode with a fresh path (the
@@ -402,6 +399,16 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     )
     self._path_s = torch.where(new_path, torch.zeros_like(self._path_s), self._path_s)
     self._path_epoch_seen = env._walk_path_epoch.clone()
+
+    if getattr(self.cfg, "classroom_follow", False):
+      from .classroom import extend_classroom_route
+      # Extend before projection. Rounding the old final junction must affect
+      # only future geometry, never the segment currently earning progress.
+      reserve = max(self.cfg.path_wall_ahead, 2.0)
+      extend_classroom_route(env, ar, self._path_s.clamp_min(0) + self.cfg.path_lookahead + reserve)
+    pts = env._walk_path_pts  # (N, M, 2)
+    cum = env._walk_path_cumlen  # (N, M)
+    count = env._walk_path_n  # (N,)
 
     robot_xy = self.robot.data.root_link_pos_w[:, :2]
     allow_backtracking = getattr(self.cfg, "path_allow_backtracking", False)
@@ -655,7 +662,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       from .classroom import classroom_follow_state
       state = classroom_follow_state(self)
       safe = ~self._dodge_threat
-      moving = ~self.is_standing_env & ~self.is_inplace_env & ~state.success
+      moving = ~self.is_standing_env & ~self.is_inplace_env
       if not self.cfg.path_follow:
         moving &= self.distance_to_goal >= self.cfg.arrive_radius
       forward = state.command_speed * moving
@@ -716,7 +723,7 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   """When safe, command forward-only walking gated by goal heading alignment.
   Incoming threats retain the original lateral/backward command freedoms."""
   classroom_follow: bool = False
-  """Finite-route alignment/following with current-step rewards; classroom only."""
+  """Continuous alignment/following with current-step rewards; classroom only."""
   align_enter_angle: float = math.radians(75)
   align_exit_angle: float = math.radians(25)
   path_v_ref: float = 0.6

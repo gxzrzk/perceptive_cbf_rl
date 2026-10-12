@@ -27,6 +27,7 @@ from dataclasses import dataclass, fields, replace
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
+from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.observation_manager import (
@@ -163,18 +164,31 @@ _DODGE_RESET_DIR = os.path.normpath(
   )
 )
 
-# RSI motion dir for the WALLWALK task: ``amp_dodge_walk`` = the full amp_dodge set
-# PLUS all 17 WalkandRun locomotion clips (walk/jog forward/backward/sideways/arc +
-# idle turns, symlinked from amp/WalkandRun). The amp_dodge prior alone contains ZERO
-# locomotion clips (dodges + one-leg idles at 0.03-0.39 m/s + short jumps at
-# 0.24-0.57 m/s), so without this the robot would NEVER reset into a mid-walk state
-# for a task whose whole point is sustained 1.3 m/s walking. ~45% of frames are
-# locomotion -> ~45% of episodes start mid-gait, matching the walk-vs-dodge time
-# split of the task.
+# RSI motion dir for the WALLWALK task: ``amp_dodge_walk`` = a pruned amp_dodge
+# subset (27 of 37 clips: 9 diagonal sideway jumps + 1 backward jump removed
+# 2026-10-12) PLUS all 17 WalkandRun locomotion clips (walk/jog forward/backward/
+# sideways/arc + idle turns, symlinked from amp/WalkandRun). The amp_dodge prior
+# alone contains ZERO locomotion clips (dodges + one-leg idles at 0.03-0.39 m/s +
+# short jumps at 0.24-0.57 m/s), so without this the robot would NEVER reset into a
+# mid-walk state for a task whose whole point is sustained walking.
 _WALLWALK_RESET_DIR = os.path.normpath(
   os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "..", "..", "..", "..", "assets", "motions", "g1", "amp_dodge_walk",
+  )
+)
+
+# RSI motion dir for the CLASSROOM task: ``amp_classroom`` = the same 27-clip pruned
+# amp_dodge subset PLUS all 17 WalkandRun locomotion clips PLUS the 20 zxg_motion
+# slow-walk clips (0.15-0.75 m/s: slow/cautious/normal forward, slow backward/sideway,
+# slow arcs, step-rotate idle; see zxg_motion/README.md), symlinked from amp/WalkandRun
+# and the repo-root zxg_motion/npz. The zxg set adds 4-8x more frames per gait class at
+# classroom-relevant speeds (the 0.6 m/s cruise and sub-0.4 m/s aisle maneuvers).
+# FK-verified against this repo's G1 spec (2026-10-12).
+_CLASSROOM_RESET_DIR = os.path.normpath(
+  os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "assets", "motions", "g1", "amp_classroom",
   )
 )
 
@@ -1257,24 +1271,32 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
 
 
 def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """22.45 x 8.59 m classroom: 20% less area, 15 unchanged desk/chair pairs."""
+  """15 desk/chair pairs with 2 m clear internal and perimeter passages."""
   from src.assets.objects.classroom import (
     get_furniture_cfg, get_static_wall_cfg, CLASSROOM_ROWS, CLASSROOM_COLUMN_Y,
     CLASSROOM_ROW_START, CLASSROOM_ROW_PITCH,
     CLASSROOM_X_BOUNDS, CLASSROOM_Y_BOUNDS,
+    CLASSROOM_DESK_HALF_SIZE, CLASSROOM_CHAIR_HALF_SIZE,
+    CLASSROOM_CHAIR_OFFSET, CLASSROOM_WALL_HALF_THICKNESS,
   )
   from src.tasks.amp_loco.mdp.classroom import (
     initialize_static_classroom, reset_classroom_robot,
-    classroom_path_follow_reward, classroom_path_success,
+    classroom_path_follow_reward, classroom_navigation_update,
   )
   from mjlab.managers.metrics_manager import MetricsTermCfg
   from src.tasks.amp_loco.mdp.path_navigation import (
     classroom_navigation_observation, classroom_navigation_metric, classroom_failure_cost,
+    classroom_safe_completion_reward,
   )
 
   cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
+  # RSI from the classroom motion set (27 dodge + 20 zxg slow-walk clips) instead of
+  # the inherited wallwalk set; the discriminator dir is switched in the matching
+  # runner cfg (g1_amp_dodge_mimickit_classroom_ppo_runner_cfg).
+  cfg.events["init_motion_loader"].params["motion_dir"] = _CLASSROOM_RESET_DIR
+  cfg.events["reset_from_motion"].params["motion_dir"] = _CLASSROOM_RESET_DIR
   # Continuous terms scale by dt; the unified follower compensates angular
-  # differences and the success event so they are applied once without dt.
+  # differences; safe-completion/failure events also compensate dt.
   cfg.scale_rewards_by_dt = True
   old_names = cfg.events["pin_wall"].params["wall_names"]
   cfg.scene.entities = {k: v for k, v in cfg.scene.entities.items() if k not in old_names}
@@ -1283,21 +1305,23 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.events.pop("recycle_walls_ahead", None)
   layout, assets = [], []
   # Pair extends from x-1.2 (chair back) to x+0.4 (desk front).
-  # ~3.40 m row pitch gives ~1.80 m clear cross aisles without shrinking furniture.
+  # 3.6 m row pitch leaves 2 m clear cross aisles.
   for row in range(CLASSROOM_ROWS):
     for y in CLASSROOM_COLUMN_Y:
       x = CLASSROOM_ROW_START + row * CLASSROOM_ROW_PITCH
-      layout.extend(((x, y, 0.38, 0.0), (x - 0.95, y, 0.45, 0.0)))
+      layout.extend(((x, y, CLASSROOM_DESK_HALF_SIZE[2], 0.0),
+                     (x - CLASSROOM_CHAIR_OFFSET, y, CLASSROOM_CHAIR_HALF_SIZE[2], 0.0)))
       assets.extend((get_furniture_cfg("desk"), get_furniture_cfg("chair")))
   x_min, x_max = CLASSROOM_X_BOUNDS
   y_min, y_max = CLASSROOM_Y_BOUNDS
   cx, cy = (x_min + x_max) / 2, (y_min + y_max) / 2
   hx, hy = (x_max - x_min) / 2, (y_max - y_min) / 2
+  wall_half = CLASSROOM_WALL_HALF_THICKNESS
   for half, pose in (
-    ((hx, 0.08, 1.5), (cx, y_min, 1.5, 0.0)),
-    ((hx, 0.08, 1.5), (cx, y_max, 1.5, 0.0)),
-    ((0.08, hy, 1.5), (x_min, cy, 1.5, 0.0)),
-    ((0.08, hy, 1.5), (x_max, cy, 1.5, 0.0)),
+    ((hx, wall_half, 1.5), (cx, y_min, 1.5, 0.0)),
+    ((hx, wall_half, 1.5), (cx, y_max, 1.5, 0.0)),
+    ((wall_half, hy, 1.5), (x_min, cy, 1.5, 0.0)),
+    ((wall_half, hy, 1.5), (x_max, cy, 1.5, 0.0)),
   ):
     layout.append(pose)
     assets.append(get_static_wall_cfg(half_extents=half, rgba=(0.82, 0.85, 0.88, 1.0)))
@@ -1326,7 +1350,8 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   cfg.events["reset_walk_path"] = EventTermCfg(
     func=reset_classroom_robot, mode="reset",
     params={"route_nodes": int(os.environ.get("WALK_ROUTE_NODES", 4)),
-            "spawn_lateral_range": float(os.environ.get("WALK_SPAWN_LATERAL_RANGE", 0.5))},
+            "spawn_lateral_range": float(os.environ.get("WALK_SPAWN_LATERAL_RANGE", 0.5)),
+            "route_extension_nodes": int(os.environ.get("WALK_ROUTE_EXTENSION_NODES", 8))},
   )
   # Shorter lookahead limits corner cutting at cross-aisle intersections.
   cfg.commands["twist"].path_lookahead = float(os.environ.get("WALK_LOOKAHEAD", 0.8))
@@ -1368,13 +1393,15 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
                "walk_path_progress", "walk_path_progress_when_safe", "walk_path_adherence"):
     cfg.rewards.pop(name, None)
   cfg.rewards["classroom_path_follow"] = RewardTermCfg(
-    func=classroom_path_follow_reward, weight=1.0,
+    func=classroom_path_follow_reward, weight=0.5,
     params={
       "command_name": "twist",
-      "k_theta": follow_param("WALK_GOAL_HEADING_WEIGHT", 2.0),
-      "k_join": follow_param("WALK_JOIN_WEIGHT", 2.0),
-      "k_p": follow_param("WALK_PATH_PROGRESS_SAFE_WEIGHT", 2.0),
-      "k_b": follow_param("WALK_PATH_BACKWARD_WEIGHT", 2.0),
+      # Strengthen alignment and novel progress, retaining signed differences
+      # and a matching retreat cost so reversal cycles cannot earn extra credit.
+      "k_theta": follow_param("WALK_GOAL_HEADING_WEIGHT", 6.0),
+      "k_join": follow_param("WALK_JOIN_WEIGHT", 4.0),
+      "k_p": follow_param("WALK_PATH_PROGRESS_SAFE_WEIGHT", 6.0),
+      "k_b": follow_param("WALK_PATH_BACKWARD_WEIGHT", 6.0),
       "backward_weight": follow_param("WALK_BODY_BACKWARD_WEIGHT", 1.0),
       "backward_limit": follow_param("WALK_BODY_BACKWARD_LIMIT", 0.05),
       "lateral_weight": follow_param("WALK_LATERAL_WEIGHT", 0.5),
@@ -1389,12 +1416,15 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
       "turn_stall_weight": follow_param("WALK_TURN_STALL_WEIGHT", 1.2),
       "join_stall_weight": follow_param("WALK_JOIN_STALL_WEIGHT", 1.2),
       "recovery_stall_weight": follow_param("WALK_RECOVERY_STALL_WEIGHT", 1.2),
-      "success_bonus": follow_param("WALK_PATH_SUCCESS_BONUS", 10.0),
     },
   )
-  # This term refreshes progress before rewards and is last so failures win.
-  cfg.terminations["path_success"] = TerminationTermCfg(
-    func=classroom_path_success, params={"command_name": "twist"},
+  # Keep the current-physics-step refresh before rewards, without an endpoint.
+  cfg.terminations["navigation_update"] = TerminationTermCfg(
+    func=classroom_navigation_update, params={"command_name": "twist"},
+  )
+  cfg.rewards["classroom_safe_completion"] = RewardTermCfg(
+    func=classroom_safe_completion_reward, weight=1.0,
+    params={"bonus": follow_param("WALK_SAFE_COMPLETION_BONUS", 10.0)},
   )
   # Failure costs exceed the remaining bounded navigation-rate penalty budget;
   # intentionally falling cannot cheaply erase future navigation costs.
@@ -1418,7 +1448,7 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
               "reward_turn", "reward_join", "reward_forward", "reward_retreat",
               "reward_body_backward", "reward_lateral", "reward_deviation",
               "reward_turn_stall", "reward_join_stall", "reward_follow_stall",
-              "reward_recovery_stall", "reward_success"):
+              "reward_recovery_stall"):
     cfg.metrics[f"navigation/{key}"] = MetricsTermCfg(
       func=classroom_navigation_metric, params={"key": key})
   # Tracking becomes a nonpositive cost: perfect zero-velocity tracking is
@@ -1431,9 +1461,28 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   )
   cfg.episode_length_s = 25.0
   classroom_interval = (
-    float(os.environ.get("WALK_THROW_INTERVAL_MIN", 3.0)),
-    float(os.environ.get("WALK_THROW_INTERVAL_MAX", 7.0)),
+    float(os.environ.get("WALK_THROW_INTERVAL_MIN", 2.0)),
+    float(os.environ.get("WALK_THROW_INTERVAL_MAX", 5.0)),
   )
+  if not play:
+    throw_curriculum = {
+      "warmup_iterations": int(os.environ.get("WALK_THROW_WARMUP_ITERS", 5000)),
+      "ramp_iterations": int(os.environ.get("WALK_THROW_RAMP_ITERS", 3000)),
+      "start_interval": (4.0, 8.0),
+      "final_interval": classroom_interval,
+    }
+    cfg.curriculum["classroom_throw_interval"] = CurriculumTermCfg(
+      func=mdp.classroom_throw_interval_curriculum, params=throw_curriculum.copy())
+    # Refresh before launches even when no environment resets during this rollout.
+    events = {}
+    for name, event in cfg.events.items():
+      if name == "throw_ball_on_dwell":
+        events["classroom_throw_interval_update"] = EventTermCfg(
+          func=mdp.classroom_throw_interval_curriculum, mode="step",
+          params=throw_curriculum.copy())
+      events[name] = event
+    cfg.events = events
+    classroom_interval = throw_curriculum["start_interval"]
   # Use the same countdown for the first throw after reset and subsequent throws.
   cfg.events["reset_dodge_state"].params["throw_interval_range"] = classroom_interval
   cfg.events["throw_ball_on_dwell"].params.update(

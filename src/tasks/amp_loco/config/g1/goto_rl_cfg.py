@@ -22,17 +22,33 @@ _DODGE_MOTION_DIR = os.path.normpath(
   )
 )
 
-# WallWalk AMP discriminator dataset: the full amp_dodge set PLUS all 17 WalkandRun
-# locomotion clips (walk/jog forward/backward/sideways/arc + idle turns, symlinked
-# from amp/WalkandRun, ~45% of frames). amp_dodge alone has ZERO locomotion clips,
-# so the style prior actively fought the 1.3 m/s cruise this task requires; with
-# the walk clips in, the discriminator recognizes a walking gait as in-distribution.
-# The matching env cfg resets (RSI) from the same combined dir.
+# WallWalk AMP discriminator dataset: a PRUNED amp_dodge subset (27 of 37
+# clips: 9 diagonal sideway jumps + 1 backward jump removed 2026-10-12 for the
+# classroom task, keeping one mirrored pair per sideway angle + all reactive dodges)
+# PLUS all 17 WalkandRun locomotion clips (walk/jog forward/backward/sideways/arc +
+# idle turns, symlinked from amp/WalkandRun; walk is now ~39% of clips). amp_dodge
+# alone has ZERO locomotion clips, so the style prior actively fought the cruise
+# this task requires; with the walk clips in, the discriminator recognizes a walking
+# gait as in-distribution. The matching env cfg resets (RSI) from the same combined
+# dir. The source clips remain in amp_dodge/ for the dodge task family.
+# (The classroom task uses its own _CLASSROOM_MOTION_DIR below.)
 _WALLWALK_MOTION_DIR = os.path.normpath(
   os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     os.pardir, os.pardir, os.pardir, os.pardir, os.pardir,
     "src", "assets", "motions", "g1", "amp_dodge_walk",
+  )
+)
+
+# Classroom AMP discriminator dataset: the 27-clip pruned amp_dodge subset PLUS all
+# 17 WalkandRun locomotion clips PLUS the 20 zxg_motion slow-walk clips (64 total;
+# see zxg_motion/README.md). The matching env cfg resets (RSI) from the same dir
+# (_CLASSROOM_RESET_DIR in dodge_env_cfgs).
+_CLASSROOM_MOTION_DIR = os.path.normpath(
+  os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    os.pardir, os.pardir, os.pardir, os.pardir, os.pardir,
+    "src", "assets", "motions", "g1", "amp_classroom",
   )
 )
 
@@ -123,17 +139,24 @@ def g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
 
 
 def g1_amp_dodge_mimickit_classroom_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
-  """State-oracle classroom runner with the WallWalk locomotion AMP prior."""
+  """State-oracle classroom runner with the classroom locomotion AMP prior
+  (27 pruned dodge + 17 WalkandRun + 20 zxg_motion slow-walk clips, 64 total)."""
   cfg = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
   cfg.experiment_name = "g1_amp_dodge_mimickit_classroom"
+  cfg.amp_motion_files = _CLASSROOM_MOTION_DIR
   cfg.obs_groups = {
     "actor": ("actor", "ball_state", "path_navigation"),
     "critic": ("critic", "ball_state", "path_navigation"),
   }
-  # Match standing MimicKit dodge: dt-scaled task reward and the original
-  # AMP blend. Differential/event terms compensate dt inside the follower.
-  cfg.amp_reward_coef = 0.5
+  # Final reward = 0.5 * task_reward + 0.4 * style_score.
+  # Differential/event terms compensate dt inside the follower.
+  cfg.amp_reward_coef = 0.8
   cfg.amp_task_reward_lerp = 0.5
+  # Bound exploration noise and reduce the incentive to increase policy entropy.
+  cfg.actor.distribution_cfg.update(init_std=0.5, std_range=(0.05, 1.2))
+  cfg.algorithm.entropy_coef = 0.001
+  # Allow larger policy updates before the adaptive schedule lowers the rate.
+  cfg.algorithm.desired_kl = 0.02
   return cfg
 
 

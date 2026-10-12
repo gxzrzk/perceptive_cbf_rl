@@ -21,7 +21,7 @@ def sample_term(env, key):
 
 
 @pytest.mark.parametrize('disc_output,style_score', [(-1., 0.), (0., .75), (1., 1.)])
-def test_dt_scaled_task_sum_and_standing_style_blend(disc_output, style_score):
+def test_dt_scaled_task_sum_and_classroom_style_blend(disc_output, style_score):
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     runner = g1_amp_dodge_mimickit_classroom_ppo_runner_cfg()
     # Three separate cases: heading reward, full stillness cost, termination cost.
@@ -51,23 +51,25 @@ def test_dt_scaled_task_sum_and_standing_style_blend(disc_output, style_score):
         discriminator.amp_linear.bias.fill_(disc_output)
     state = torch.zeros(3, 2)
     blended, _ = discriminator.predict_amp_reward(state, state, task_reward)
-    assert torch.allclose(blended, torch.tensor([.02, -.02, -2.]) + .25 * style_score)
+    assert torch.allclose(blended, torch.tensor([.02, -.02, -2.]) + .4 * style_score)
 
 
-def test_registered_classroom_matches_standing_reward_scaling():
+def test_registered_classroom_reward_scaling_leaves_other_tasks_unchanged():
     import src.tasks  # noqa: F401
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
     task = 'Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat'
     for play in (False, True):
-        assert load_env_cfg(task, play=play).scale_rewards_by_dt
+        env_cfg = load_env_cfg(task, play=play)
+        assert env_cfg.scale_rewards_by_dt
+        assert env_cfg.rewards['classroom_path_follow'].weight == .5
     runner = load_rl_cfg(task)
-    assert runner.amp_reward_coef == .5 and runner.amp_task_reward_lerp == .5
+    assert runner.amp_reward_coef == .8 and runner.amp_task_reward_lerp == .5
     standing_task = 'Unitree-G1-AMP-Dodge-MimicKit-Flat'
     standing_env = load_env_cfg(standing_task)
     standing_runner = load_rl_cfg(standing_task)
     assert standing_env.scale_rewards_by_dt
-    assert runner.amp_reward_coef == standing_runner.amp_reward_coef
+    assert standing_runner.amp_reward_coef == .5
     assert runner.amp_task_reward_lerp == standing_runner.amp_task_reward_lerp
     wall = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg()
     wall_runner = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()

@@ -1,4 +1,4 @@
-"""Finite-route navigation for G1: align, join a local segment, then follow.
+"""Continuous navigation for G1: align, join a local segment, then follow.
 
 Only the classroom config enables this layer. Refresh before terminations and
 rewards; command/observation reads in the same step are idempotent. Differences
@@ -124,7 +124,6 @@ def classroom_follow_state(command):
   target_reachable = state.target_reachable.clone()
   start, end = xy, xy
   curvature = torch.zeros_like(heading)
-  success = torch.zeros_like(new)
   signed_distance = distance.clone()
   if path_active:
     ar = torch.arange(command.num_envs, device=command.device)
@@ -175,11 +174,6 @@ def classroom_follow_state(command):
     segment = end - start
     signed_distance = ((segment[:, 0] * (xy - start)[:, 1]
                         - segment[:, 1] * (xy - start)[:, 0]) / segment.norm(dim=-1).clamp_min(1e-6))
-    endpoint = env._walk_path_pts[ar, env._walk_path_n - 1]
-    success = ((segment_idx == env._walk_path_n - 2)
-               & (total - command._path_s <= cfg.arrive_radius)
-               & (distance < cfg.join_d_in)
-               & ((endpoint - xy).norm(dim=-1) < cfg.arrive_radius))
 
   # Score the executed interval against its OLD reference. Changing stages or
   # moving the lookahead only changes references for the NEXT physics step.
@@ -209,11 +203,11 @@ def classroom_follow_state(command):
   v_cmd = v_cmd.clamp(max=cfg.max_lin_vel_x)
   turn_speed_limit = cfg.max_ang_vel_z / curvature.abs().clamp_min(1e-6)
   v_cmd = torch.where(joining, v_cmd, torch.minimum(v_cmd, turn_speed_limit))
-  desired = torch.where(aligning | success | (joining & ~target_reachable), 0., v_cmd)
+  desired = torch.where(aligning | (joining & ~target_reachable), 0., v_cmd)
   command_speed = state.command_speed + (desired - state.command_speed).clamp(
     -cfg.command_acceleration * dt, cfg.command_acceleration * dt)
   command_speed = torch.where(new, desired.clamp(max=cfg.command_acceleration * dt), command_speed)
-  command_speed = torch.where(aligning | success, 0., command_speed)
+  command_speed = torch.where(aligning, 0., command_speed)
   # A safety cap also covers a reset/teleport directly into a sharp arc. In
   # ordinary motion the lookahead curvature permits the smooth ramp first.
   command_speed = torch.where(joining, command_speed,
@@ -234,7 +228,7 @@ def classroom_follow_state(command):
   novel_s = torch.minimum(novel_s, delta_s.clamp_min(0))
   frontier = torch.maximum(frontier, command._path_s)
   safe = ~command._dodge_threat
-  eligible = safe & ~new & ~success
+  eligible = safe & ~new
   active_turn = eligible & step_aligning
   active_join = eligible & ~step_aligning & step_joining
   active_follow = eligible & ~step_aligning & ~step_joining
@@ -260,7 +254,7 @@ def classroom_follow_state(command):
   # A phase switch grants no new startup grace and cannot restart this watchdog.
   # Recovery ends only with actual novel forward motion while on the path.
   recovered = active_follow & (novel_s > cfg.join_progress_rate * dt)
-  recovery_age = torch.where(new | recovered | success, 0., state.recovery_age + dt * safe)
+  recovery_age = torch.where(new | recovered, 0., state.recovery_age + dt * safe)
   recovery_stall = eligible & ready & (recovery_age >= cfg.recovery_timeout)
   values = dict(xy=xy, heading=heading, bearing=bearing, theta=theta, step_theta=step_theta,
     target_distance=target_distance, joining=joining, step_joining=step_joining,
@@ -273,7 +267,7 @@ def classroom_follow_state(command):
     speed=speed, novel_speed=novel_s / dt, s_frontier=frontier,
     filtered_velocity=filtered, age=age, cumulative=cumulative, recovery_age=recovery_age,
     turn_stall=turn_stall, join_stall=join_stall, follow_stall=follow_stall,
-    recovery_stall=recovery_stall, success=success)
+    recovery_stall=recovery_stall)
   for name, value in values.items():
     old = getattr(state, name, torch.zeros_like(value))
     mask = update[:, None] if value.ndim == 2 else update
@@ -282,16 +276,24 @@ def classroom_follow_state(command):
   return state
 
 
-def classroom_path_success(env, command_name="twist"):
-  """Register last: falls, collisions and ball hits take precedence."""
+def classroom_navigation_update(env, command_name="twist"):
+  """Refresh navigation before rewards without terminating at a route endpoint."""
   state = classroom_follow_state(env.command_manager.get_term(command_name))
-  success = state.success.clone()
-  manager = getattr(env, "termination_manager", None)
-  if manager is not None:
-    for name in manager.active_terms:
-      if name not in ("path_success", "time_out"):
-        success &= ~manager.get_term(name)
-  return success
+  return torch.zeros_like(state.theta, dtype=torch.bool)
+
+
+def classroom_safe_completion_reward(env, bonus=10.):
+  """One-shot bonus for reaching the time limit with no failure, including hits.
+
+  Every ball/scenery contact and fall ends its episode immediately. A timeout
+  with no simultaneous termination therefore represents a whole safe episode.
+  Divide by dt to compensate RewardManager's integration of this event.
+  """
+  if bonus < 0:
+    raise ValueError("Safe completion bonus must be nonnegative")
+  manager = env.termination_manager
+  completed = manager.get_term("time_out") & ~manager.terminated
+  return bonus * completed.float() / env.step_dt
 
 
 def classroom_path_follow_reward(
@@ -300,12 +302,12 @@ def classroom_path_follow_reward(
   align_lateral_scale=.2, deviation_weight=.5, deviation_std=.5,
   join_deviation_scale=.2, movement_cost_cap=4., deviation_cost_cap=4.,
   stall_weight=1.2, turn_stall_weight=1.2, join_stall_weight=1.2,
-  recovery_stall_weight=1.2, success_bonus=10.,
+  recovery_stall_weight=1.2,
 ):
   """Reward rate: manager integrates rates once; differences/events divide by dt."""
   if (min(k_theta, k_join, k_p, backward_weight, lateral_weight, deviation_weight,
-          stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight,
-          success_bonus) < 0 or k_b < k_p or deviation_std <= 0 or lateral_limit < 0
+          stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight
+          ) < 0 or k_b < k_p or deviation_std <= 0 or lateral_limit < 0
       or backward_limit < 0 or min(movement_cost_cap, deviation_cost_cap) <= 0
       or not 0 <= align_lateral_scale <= 1 or not 0 <= join_deviation_scale <= 1):
     raise ValueError("Invalid classroom reward parameters (require k_b >= k_p)")
@@ -326,8 +328,6 @@ def classroom_path_follow_reward(
   lateral *= torch.where(state.step_aligning, align_lateral_scale, 1.)
   deviation = (state.distance / deviation_std).square().clamp(max=deviation_cost_cap)
   deviation *= torch.where(state.step_joining, join_deviation_scale, 1.)
-  manager = getattr(env, "termination_manager", None)
-  success = manager.get_term("path_success") if manager is not None else state.success
   parts = {
     "turn": k_theta * state.turn_delta / torch.pi,
     "join": k_join * (positive_join - negative_join) / cfg.navigation_d_ref,
@@ -340,7 +340,6 @@ def classroom_path_follow_reward(
     "join_stall": -dt * join_stall_weight * state.join_stall.float(),
     "follow_stall": -dt * stall_weight * state.follow_stall.float(),
     "recovery_stall": -dt * recovery_stall_weight * state.recovery_stall.float(),
-    "success": success_bonus * success.float(),
   }
   state.reward_components = parts
   return sum(parts.values()) / dt
@@ -383,7 +382,7 @@ def classroom_failure_cost(env, base_cost=10., remaining_rate=4.):
   manager = env.termination_manager
   failure = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
   for name in manager.active_terms:
-    if name not in ("time_out", "ball_hit", "path_success"):
+    if name not in ("time_out", "ball_hit", "navigation_update"):
       failure |= manager.get_term(name)
   remaining = (env.max_episode_length_s - env.episode_length_buf * env.step_dt).clamp_min(0)
   return failure.float() * (base_cost + remaining_rate * remaining) / env.step_dt

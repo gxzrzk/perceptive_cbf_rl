@@ -3,26 +3,44 @@ import mujoco
 from mjlab.entity import Entity, EntityCfg
 
 # Layout shared by scene creation, safe spawns and random route generation.
-# Reduce wall-center footprint by 20%, preserving aspect ratio and furniture size.
-CLASSROOM_LAYOUT_SCALE = 0.8 ** 0.5
+# Measure aisles between furniture collision envelopes and wall INNER faces.
+CLASSROOM_AISLE_WIDTH = 2.0
+CLASSROOM_WALL_HALF_THICKNESS = 0.08
+CLASSROOM_DESK_HALF_SIZE = (0.4, 0.6, 0.38)
+CLASSROOM_CHAIR_HALF_SIZE = (0.25, 0.25, 0.45)
+CLASSROOM_CHAIR_OFFSET = 0.95
+CLASSROOM_PAIR_REAR = CLASSROOM_CHAIR_OFFSET + CLASSROOM_CHAIR_HALF_SIZE[0]
+CLASSROOM_PAIR_FRONT = CLASSROOM_DESK_HALF_SIZE[0]
+CLASSROOM_PAIR_LENGTH = CLASSROOM_PAIR_REAR + CLASSROOM_PAIR_FRONT
 CLASSROOM_ROWS = 5
-CLASSROOM_COLUMN_Y = tuple(y * CLASSROOM_LAYOUT_SCALE for y in (-5.3, -1.9, 1.9))
-CLASSROOM_ROW_START = 3.5 * CLASSROOM_LAYOUT_SCALE
-CLASSROOM_ROW_PITCH = 3.8 * CLASSROOM_LAYOUT_SCALE
-CLASSROOM_X_BOUNDS = tuple(x * CLASSROOM_LAYOUT_SCALE for x in (-1.7, 23.4))
-CLASSROOM_Y_BOUNDS = tuple(y * CLASSROOM_LAYOUT_SCALE for y in (-6.5, 3.1))
+CLASSROOM_COLUMN_PITCH = 2 * CLASSROOM_DESK_HALF_SIZE[1] + CLASSROOM_AISLE_WIDTH
+CLASSROOM_COLUMN_Y = tuple(index * CLASSROOM_COLUMN_PITCH for index in (-1.5, -0.5, 0.5))
+# Keep the front cross-aisle center at x=0 and the central internal aisle at y=0.
+CLASSROOM_ROW_START = CLASSROOM_PAIR_REAR + CLASSROOM_AISLE_WIDTH / 2
+CLASSROOM_ROW_PITCH = CLASSROOM_PAIR_LENGTH + CLASSROOM_AISLE_WIDTH
+CLASSROOM_FURNITURE_X_MIN = CLASSROOM_ROW_START - CLASSROOM_PAIR_REAR
+CLASSROOM_FURNITURE_X_MAX = (CLASSROOM_ROW_START + (CLASSROOM_ROWS - 1) * CLASSROOM_ROW_PITCH
+                           + CLASSROOM_PAIR_FRONT)
+CLASSROOM_X_BOUNDS = (
+  CLASSROOM_FURNITURE_X_MIN - CLASSROOM_AISLE_WIDTH - CLASSROOM_WALL_HALF_THICKNESS,
+  CLASSROOM_FURNITURE_X_MAX + CLASSROOM_AISLE_WIDTH + CLASSROOM_WALL_HALF_THICKNESS,
+)
+CLASSROOM_Y_BOUNDS = (
+  CLASSROOM_COLUMN_Y[0] - CLASSROOM_DESK_HALF_SIZE[1] - CLASSROOM_AISLE_WIDTH - CLASSROOM_WALL_HALF_THICKNESS,
+  CLASSROOM_COLUMN_Y[-1] + CLASSROOM_DESK_HALF_SIZE[1] + CLASSROOM_AISLE_WIDTH + CLASSROOM_WALL_HALF_THICKNESS,
+)
 CLASSROOM_SPAWN_LANES = (
   (CLASSROOM_COLUMN_Y[1] + CLASSROOM_COLUMN_Y[2]) / 2,
   (CLASSROOM_COLUMN_Y[0] + CLASSROOM_COLUMN_Y[1]) / 2,
 )
-# Unchanged pairs span x-1.2 to x+0.4, so recenter cross aisles after shrinking.
+# Center every cross aisle, including the 2 m front/back perimeter passages.
 CLASSROOM_ROUTE_STATIONS = (
-  0.0,
-  *(CLASSROOM_ROW_START + (row + 0.5) * CLASSROOM_ROW_PITCH - 0.4
+  CLASSROOM_FURNITURE_X_MIN - CLASSROOM_AISLE_WIDTH / 2,
+  *(CLASSROOM_ROW_START + row * CLASSROOM_ROW_PITCH + CLASSROOM_PAIR_FRONT + CLASSROOM_AISLE_WIDTH / 2
     for row in range(CLASSROOM_ROWS - 1)),
-  20.9 * CLASSROOM_LAYOUT_SCALE,
+  CLASSROOM_FURNITURE_X_MAX + CLASSROOM_AISLE_WIDTH / 2,
 )
-# Root-point clearance for rounded routes; the new narrowest aisle is ~1.80 m.
+# Minimum root-point clearance on rounded corners of the 2 m aisles.
 CLASSROOM_ROUTE_CLEARANCE = 0.7
 
 
@@ -55,7 +73,7 @@ def get_static_wall_cfg(half_extents, rgba):
 def get_furniture_cfg(kind):
   if kind not in ("desk", "chair"):
     raise ValueError(kind)
-  half = (0.4, 0.6, 0.38) if kind == "desk" else (0.25, 0.25, 0.45)
+  half = CLASSROOM_DESK_HALF_SIZE if kind == "desk" else CLASSROOM_CHAIR_HALF_SIZE
 
   def spec_fn():
     spec = mujoco.MjSpec()

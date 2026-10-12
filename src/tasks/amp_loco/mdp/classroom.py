@@ -3,11 +3,12 @@ import torch
 from mjlab.utils.lab_api.math import quat_apply, quat_mul
 from .walk_path import _ensure_stash
 from .path_navigation import (  # noqa: F401
-  classroom_follow_state, classroom_path_success, classroom_path_follow_reward,
+  classroom_follow_state, classroom_navigation_update, classroom_path_follow_reward,
 )
 from src.assets.objects.classroom import (
   CLASSROOM_SPAWN_LANES, CLASSROOM_ROUTE_STATIONS,
   CLASSROOM_ROW_PITCH, CLASSROOM_COLUMN_Y, CLASSROOM_ROUTE_CLEARANCE,
+  CLASSROOM_PAIR_LENGTH, CLASSROOM_DESK_HALF_SIZE,
 )
 
 
@@ -26,13 +27,16 @@ def initialize_static_classroom(env, env_ids, wall_names, layout):
   env._wall_yaw_w = poses[None, :, 3].expand(env.num_envs, -1)
 
 
-def reset_classroom_robot(env, env_ids, route_nodes=4, spawn_lateral_range=0.5):
+def reset_classroom_robot(env, env_ids, route_nodes=4, spawn_lateral_range=0.5,
+                          route_extension_nodes=8):
   """Randomize planar pose after RSI and build a route inside the clear aisles.
 
   Preserve RSI height, tilt and joints; rotate world velocities with the yaw.
   """
   if route_nodes < 3:
     raise ValueError("classroom route_nodes must be >= 3")
+  if route_extension_nodes < 2:
+    raise ValueError("classroom route_extension_nodes must be >= 2")
   if not 0 <= spawn_lateral_range <= 0.5:
     raise ValueError("spawn_lateral_range must be in [0, 0.5] for the clear G1 aisles")
   if env_ids is None:
@@ -65,22 +69,83 @@ def reset_classroom_robot(env, env_ids, route_nodes=4, spawn_lateral_range=0.5):
   robot.write_root_link_velocity_to_sim(velocity, env_ids=env_ids)
 
   # Route starts at the aisle center; the robot may start beside it and must join.
-  local, counts = round_classroom_route(generate_classroom_route(x, lane_y, lane, count=route_nodes))
-  count = local.shape[1]
-  _ensure_stash(env, max_points=count)
-  env._walk_path_pts[env_ids, :count] = local + origins[:, None, :2]
-  lengths = torch.linalg.vector_norm(local[:, 1:] - local[:, :-1], dim=-1)
-  env._walk_path_cumlen[env_ids, 0] = 0
-  env._walk_path_cumlen[env_ids, 1:count] = lengths.cumsum(-1)
-  env._walk_path_n[env_ids] = counts
+  raw = generate_classroom_route(x, lane_y, lane, count=route_nodes) + origins[:, None, :2]
+  env._classroom_route_extension_nodes = route_extension_nodes
+  _write_classroom_route(env, env_ids, raw)
   env._walk_path_epoch[env_ids] += 1
+
+
+def _write_classroom_route(env, env_ids, raw):
+  """Store graph nodes and their rounded path; preserve other environments."""
+  nodes = getattr(env, "_classroom_route_pts", None)
+  if nodes is None or nodes.shape[1] < raw.shape[1]:
+    capacity = max(raw.shape[1], 2 * nodes.shape[1] if nodes is not None else 16)
+    grown = raw.new_zeros(env.num_envs, capacity, 2)
+    if nodes is not None:
+      grown[:, :nodes.shape[1]] = nodes
+    env._classroom_route_pts = grown
+  if not hasattr(env, "_classroom_route_n"):
+    env._classroom_route_n = torch.zeros(env.num_envs, device=env.device, dtype=torch.long)
+  env._classroom_route_pts[env_ids, :raw.shape[1]] = raw
+  env._classroom_route_n[env_ids] = raw.shape[1]
+  rounded, counts = round_classroom_route(raw)
+  _ensure_stash(env, max_points=rounded.shape[1])
+  env._walk_path_pts[env_ids] = raw[:, -1:, :]
+  env._walk_path_pts[env_ids, :rounded.shape[1]] = rounded
+  cumulative = torch.cat((raw.new_zeros(len(raw), 1),
+                         (rounded[:, 1:] - rounded[:, :-1]).norm(dim=-1).cumsum(-1)), -1)
+  env._walk_path_cumlen[env_ids] = cumulative[:, -1:]
+  env._walk_path_cumlen[env_ids, :rounded.shape[1]] = cumulative
+  env._walk_path_n[env_ids] = counts
+
+
+def extend_classroom_route(env, env_ids, min_total_len):
+  """Append aisle-graph nodes ahead of the robot without resetting progress.
+
+  Round the former final junction only while it is still ahead of the tracking
+  horizon. All earlier geometry, cumulative station, and path epoch are kept.
+  Capacity grows as needed; a classroom route has no terminal destination.
+  """
+  if len(env_ids) == 0 or not hasattr(env, "_classroom_route_pts"):
+    return
+  stations = torch.tensor(CLASSROOM_ROUTE_STATIONS, device=env.device)
+  lanes = torch.tensor(CLASSROOM_SPAWN_LANES, device=env.device)
+  while True:
+    total = env._walk_path_cumlen[env_ids, env._walk_path_n[env_ids] - 1]
+    need = total < min_total_len
+    if not need.any():
+      return
+    ids = env_ids[need]
+    for count in env._classroom_route_n[ids].unique().tolist():
+      group = ids[env._classroom_route_n[ids] == count]
+      raw = env._classroom_route_pts[group, :count]
+      origin = env.scene.env_origins[group, :2]
+      previous, last = raw[:, -2] - origin, raw[:, -1] - origin
+      sx = (last[:, :1] - stations).abs().argmin(-1)
+      ly = (last[:, 1:] - lanes).abs().argmin(-1)
+      prev_s = (previous[:, :1] - stations).abs().argmin(-1)
+      prev_l = (previous[:, 1:] - lanes).abs().argmin(-1)
+      previous_node = prev_s * len(lanes) + prev_l
+      tail = []
+      for _ in range(env._classroom_route_extension_nodes):
+        next_s = torch.stack((sx - 1, sx + 1, sx, sx), -1)
+        next_l = torch.stack((ly, ly, ly - 1, ly + 1), -1)
+        legal = ((next_s >= 0) & (next_s < len(stations))
+                 & (next_l >= 0) & (next_l < len(lanes)))
+        legal &= next_s * len(lanes) + next_l != previous_node[:, None]
+        choice = torch.rand(len(group), 4, device=env.device).masked_fill(~legal, -1).argmax(-1)
+        previous_node = sx * len(lanes) + ly
+        sx = next_s.gather(1, choice[:, None]).squeeze(-1)
+        ly = next_l.gather(1, choice[:, None]).squeeze(-1)
+        tail.append(torch.stack((stations[sx], lanes[ly]), -1) + origin)
+      _write_classroom_route(env, group, torch.cat((raw, torch.stack(tail, 1)), 1))
 
 
 def generate_classroom_route(x, y, lane, count=80):
   """Random walk on the two longitudinal aisles and six cross aisles.
 
   Select only adjacent junctions, excluding immediate reversal. Each centerline
-  has about 0.90 m clearance to furniture; the initial leg stays in its lane.
+  has 1 m clearance to the furniture envelope; the initial leg stays in its lane.
   """
   n, device = len(x), x.device
   # Cross-aisle centers between the desk front and the next row's chair back.
@@ -129,8 +194,9 @@ def round_classroom_route(points, radius=0.6, arc_segments=6,
   """
   if radius <= 0 or arc_segments < 2 or points.shape[1] < 3:
     raise ValueError("Need a positive radius, >=2 arc segments and >=3 route points")
-  column_gaps = [b - a - 1.2 for a, b in zip(CLASSROOM_COLUMN_Y, CLASSROOM_COLUMN_Y[1:])]
-  half_aisle = min(CLASSROOM_ROW_PITCH - 1.6, *column_gaps) / 2
+  column_gaps = [b - a - 2 * CLASSROOM_DESK_HALF_SIZE[1]
+                 for a, b in zip(CLASSROOM_COLUMN_Y, CLASSROOM_COLUMN_Y[1:])]
+  half_aisle = min(CLASSROOM_ROW_PITCH - CLASSROOM_PAIR_LENGTH, *column_gaps) / 2
   if not 0 < clearance < half_aisle:
     raise ValueError("Clearance must be smaller than the narrowest aisle half-width")
   before, corner, after = points[:, :-2], points[:, 1:-1], points[:, 2:]

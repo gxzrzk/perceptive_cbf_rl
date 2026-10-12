@@ -18,10 +18,13 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from src.tasks.amp_loco.config.g1.dodge_env_cfgs import g1_amp_dodge_mimickit_classroom_flat_env_cfg
-from src.tasks.amp_loco.mdp.classroom import round_classroom_route
+from src.tasks.amp_loco.mdp.classroom import (
+    round_classroom_route, generate_classroom_route, _write_classroom_route,
+)
 from src.tasks.amp_loco.mdp.goal_command import DodgeGoToGoalCommand
 from src.tasks.amp_loco.mdp.path_navigation import (
     classroom_follow_state, classroom_path_follow_reward, classroom_navigation_observation,
+    classroom_safe_completion_reward,
 )
 from src.tasks.amp_loco.mdp.walk_path import walk_path_query
 
@@ -68,6 +71,8 @@ def record(command, env, params, name, rows, source='prescribed_cpu'):
     state = classroom_follow_state(command)
     observation = classroom_navigation_observation(env)
     assert torch.isfinite(total).all() and torch.isfinite(observation).all()
+    completion = (env.step_dt * classroom_safe_completion_reward(env)
+                  if hasattr(env, 'termination_manager') else torch.zeros_like(total))
     for index in range(env.num_envs):
         row = dict(source=source, scenario=name, env=index, step=env.common_step_counter,
             dt=env.step_dt, phase=2 if state.aligning[index] else int(state.joining[index]),
@@ -81,6 +86,7 @@ def record(command, env, params, name, rows, source='prescribed_cpu'):
         for key, value in state.reward_components.items():
             assert torch.isfinite(value).all()
             row['reward_' + key] = value[index].item()
+        row['reward_safe_completion'] = completion[index].item()
         rows.append(row)
 
 
@@ -151,6 +157,35 @@ def cpu_traces(rows):
         record(command, env, params, 'intersection', rows)
         assert command._path_seg_idx == 0
 
+    # Cross the original route tail, keeping the same episode and station.
+    torch.manual_seed(23)
+    command, env, params = make_command(straight)
+    env._classroom_route_extension_nodes = 3
+    raw = generate_classroom_route(torch.tensor([0.]), torch.tensor([0.]), torch.tensor([0]), count=3)
+    _write_classroom_route(env, torch.tensor([0]), raw)
+    original_length = env._walk_path_cumlen[0, env._walk_path_n[0] - 1].item()
+    env._walk_path_epoch += 1
+    command.cfg.path_wall_ahead = 0.
+    command._update_command()
+    epoch = env._walk_path_epoch.clone()
+    for i in range(math.ceil((original_length + 2.) / (.3 * env.step_dt))):
+        station = torch.tensor([(i + 1) * .3 * env.step_dt])
+        point, yaw = walk_path_query(env, torch.tensor([0]), station)
+        update_pose(command, env, point[0].tolist(), yaw.item())
+        record(command, env, params, 'continuous_extension', rows)
+        assert abs(command._path_s.item() - station.item()) < 1e-4
+        assert torch.equal(env._walk_path_epoch, epoch)
+    assert command._path_s.item() > original_length
+    assert env._classroom_route_n.item() > 3
+
+    command, env, params = make_command(straight)
+    flags = dict(timeout=torch.tensor([False]), failed=torch.tensor([False]))
+    env.termination_manager = NS(get_term=lambda _: flags['timeout'], terminated=flags['failed'])
+    for timeout, failed in ((False, False), (True, False), (True, True)):
+        flags['timeout'][:], flags['failed'][:] = timeout, failed
+        update_pose(command, env, (0., 0.), 0.)
+        record(command, env, params, 'safe_timeout', rows)
+
 
 def gpu_steps(rows, steps):
     if steps == 0:
@@ -203,6 +238,8 @@ def main():
     assert abs(summary['repeated_turn']['components']['reward_turn']) < 1e-4
     assert summary['repeated_turn']['components']['reward_recovery_stall'] < 0
     assert summary['phase_cycle']['total'] < 0
+    assert summary['continuous_extension']['components']['reward_forward'] > 0
+    assert summary['safe_timeout']['components']['reward_safe_completion'] == 10.
     args.output_dir.mkdir(parents=True, exist_ok=True)
     with (args.output_dir / 'traces.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))

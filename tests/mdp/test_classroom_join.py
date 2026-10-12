@@ -121,13 +121,48 @@ def test_com_velocity_ignores_link_rotation_and_filter_allows_gait_sway():
     assert classroom_follow_state(command).reward_components['lateral'] < 0
 
 
-def test_phase_cycling_does_not_grant_new_grace_or_positive_join_cycle():
+def configured_reward_params(configured=True):
+    if not configured:
+        return {}
+    from src.tasks.amp_loco.config.g1.dodge_env_cfgs import g1_amp_dodge_mimickit_classroom_flat_env_cfg
+    return g1_amp_dodge_mimickit_classroom_flat_env_cfg().rewards['classroom_path_follow'].params.copy()
+
+
+def test_configured_navigation_gains_increase_correct_motion():
+    params = configured_reward_params()
+    command, env = follower((120.,))
+    advance(command, env, angles=[110.])
+    reward(env, **params)
+    assert classroom_follow_state(command).reward_components['turn'].item() == pytest.approx(6 * 10 / 180)
+    advance(command, env, angles=[120.])
+    reward(env, **params)
+    assert classroom_follow_state(command).reward_components['turn'].item() == pytest.approx(-6 * 10 / 180)
+
+    command, env = off_path()
+    advance(command, env, xy=[[.08, .45]])
+    reward(env, **params)
+    assert classroom_follow_state(command).reward_components['join'].item() == pytest.approx(.4, abs=1e-6)
+    advance(command, env, xy=[[.08, .5]])
+    reward(env, **params)
+    assert classroom_follow_state(command).reward_components['join'].item() == pytest.approx(-.4, abs=1e-6)
+
     command, env = follower()
+    advance(command, env, xy=[[.012, 0.]])
+    assert reward(env, **params).item() == pytest.approx(.12)
+    advance(command, env, xy=[[0., 0.]])
+    assert reward(env, **params).item() == pytest.approx(-.12)
+
+
+@pytest.mark.parametrize('configured', [False, True])
+def test_phase_cycling_does_not_grant_new_grace_or_positive_join_cycle(configured):
+    command, env = follower()
+    params = configured_reward_params(configured)
+    params['k_theta'] = 0.
     total = 0.
     for cycle in range(30):
         for y in (.5, .19):
             advance(command, env, xy=[[0., y]], angles=[0.])
-            reward(env, k_theta=0.)
+            reward(env, **params)
             total += classroom_follow_state(command).reward_components['join'].item()
     state = classroom_follow_state(command)
     assert state.age >= 1. and state.recovery_age >= 1.
@@ -135,24 +170,28 @@ def test_phase_cycling_does_not_grant_new_grace_or_positive_join_cycle():
     assert total <= 1e-5
 
 
-def test_fast_retreat_and_repeated_advance_cannot_farm_same_arc_length():
+@pytest.mark.parametrize('configured', [False, True])
+def test_fast_retreat_and_repeated_advance_cannot_farm_same_arc_length(configured):
     command, env = follower()
+    params = configured_reward_params(configured)
     total = 0.
     for _ in range(8):
         for step in range(30):
             advance(command, env, xy=[[(step + 1) * .006, 0.]])
-            total += reward(env).item()
+            total += reward(env, **params).item()
         advance(command, env, xy=[[0., 0.]])  # faster than capped forward speed
-        total += reward(env).item()
+        total += reward(env, **params).item()
     assert total <= 1e-5
 
 
-def test_repeated_turns_and_phase_switches_eventually_pay_stall():
+@pytest.mark.parametrize('configured', [False, True])
+def test_repeated_turns_and_phase_switches_eventually_pay_stall(configured):
     command, env = follower((80.,))
+    params = configured_reward_params(configured)
     turn_sum = 0.
     for step in range(600):
         advance(command, env, angles=[24. if step % 2 == 0 else 80.])
-        reward(env)
+        reward(env, **params)
         turn_sum += classroom_follow_state(command).reward_components['turn'].item()
     state = classroom_follow_state(command)
     assert turn_sum == pytest.approx(0., abs=1e-5)
@@ -173,10 +212,13 @@ def test_projection_search_stays_on_current_visit_and_no_motion_has_no_credit():
     assert state.speed == 0 and state.reward_components['forward'] == 0
 
 
-def test_success_requires_real_endpoint_and_small_path_distance():
+def test_endpoint_proximity_keeps_navigation_active():
     command, env = follower(points=((0., 0.), (1., 0.)))
     advance(command, env, xy=[[.95, .21]])  # inside goal radius, outside d_in
-    assert not classroom_follow_state(command).success
+    state = classroom_follow_state(command)
+    assert state.aligning  # Turn toward the route instead of declaring arrival.
+    from src.tasks.amp_loco.mdp.path_navigation import classroom_navigation_update
+    assert not classroom_navigation_update(env).item()
 
 
 def test_failure_budget_is_dt_independent_and_simultaneous_ball_hit_does_not_hide_fall():
