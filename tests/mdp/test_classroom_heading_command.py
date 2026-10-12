@@ -91,7 +91,7 @@ def test_turn_then_smooth_forward_and_matching_stillness(cbf_enabled):
     vx, vy, wz = command.command.unbind(-1)
     assert torch.allclose(vx[:3], torch.zeros(3), atol=1e-6)
     assert torch.all(vx[3:7].diff() > 0)
-    assert vx[4].item() == pytest.approx(.3, abs=1e-6)  # max 0.6 m/s x scale(60deg)=0.5
+    assert vx[4].item() == pytest.approx(.3, abs=1e-6)  # 最大巡航限速 0.6 m/s 乘以上下文 60° 偏角缩放因子 0.5 = 0.3 m/s (max 0.6 m/s x scale(60deg)=0.5)
     assert torch.allclose(vx[6:8], torch.full((2,), .6))
     assert vx[8].item() == pytest.approx(vx[4].item())
     assert vx[9] == 0 and torch.all(vy == 0) and torch.all(vx >= 0)
@@ -118,7 +118,7 @@ def test_threat_releases_gate_immediately_and_safe_restores_it(filter_command):
     command._update_command()
     assert not command._dodge_threat.any()
     assert torch.all(command.command[:, :2] == 0)
-    # One environment receives a threatening ball, the other stays safe.
+    # 构造对照组：环境 0 注入迎面高速威胁球，环境 1 保持安全无威胁 (One environment receives a threatening ball, the other stays safe).
     ball = env.scene['ball'].data
     ball.root_link_pos_w[0] = torch.tensor([2., 0., .8])
     ball.root_link_lin_vel_w[0] = torch.tensor([-4., 0., 0.])

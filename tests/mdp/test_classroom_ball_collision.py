@@ -62,7 +62,7 @@ def test_collision_filters_preserve_robot_contacts_and_other_tasks():
         assert all(not can_collide(ball, ball_id, scenery, i) for i in range(scenery.ngeom))
         gid = scenery.geom('wall_collision').id
         assert all(can_collide(robot, i, scenery, gid) for i in collision_ids)
-    # Creating the classroom must not mutate shared robot collision presets.
+    # 创建教室环境配置绝不能篡改通用的机器人/球体碰撞预设掩码（防止污染其他共享该预设的任务） (Creating the classroom must not mutate shared robot collision presets).
     original = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg()
     original_robot = original.scene.entities['robot'].build().spec.compile()
     original_ball = original.scene.entities['ball'].build().spec.compile()
@@ -100,7 +100,7 @@ def test_ball_passes_scene_but_robot_contact_terminates():
         for i in range(model.ngeom):
             if i != ball_gid and i not in robot_ids:
                 assert not can_collide(model, ball_gid, model, i), model.geom(i).name
-        # CPU forward on the same compiled scene checks actual overlaps, not only masks.
+        # 在相同的已编译场景上调用 CPU 端 mj_forward 物理前向计算，验证真实接触点（contact）重叠情况，而非仅检查碰撞位掩码 (CPU forward on the same compiled scene checks actual overlaps, not only masks).
         data = mujoco.MjData(model)
         data.qpos[:] = env.sim.data.qpos[0].cpu().numpy()
         ball_adr = model.jnt_qposadr[model.body_jntadr[model.geom_bodyid[ball_gid]]]
@@ -113,8 +113,8 @@ def test_ball_passes_scene_but_robot_contact_terminates():
         mujoco.mj_forward(model, data)
         assert all(ball_gid not in data.contact[j].geom for j in range(data.ncon))
 
-        # Place the ball inside the robot pelvis in both GPU worlds. The existing
-        # ball_robot_contact sensor and termination must still recognize the hit.
+        # 将球体直接置于两套 GPU 并行世界的机器人骨盆（pelvis）内部：验证既有的
+        # ball_robot_contact 接触传感器与终止判定机制仍能准确识别碰撞击中事件 (Place the ball inside the robot pelvis in both GPU worlds. The existing ball_robot_contact sensor and termination must still recognize the hit).
         pose = torch.zeros(2, 7, device='cuda')
         pose[:, :3] = env.scene['robot'].data.root_link_pos_w
         pose[:, 3] = 1

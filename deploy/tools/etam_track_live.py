@@ -95,7 +95,7 @@ def depth_panel(pooled, out_w, out_h, label):
 
     norm = np.clip((pooled - DEPTH_NEAR) / (DEPTH_FAR - DEPTH_NEAR), 0.0, 1.0)
     u8 = (255 - norm * 255).astype(np.uint8)  # 红色=近处
-    h, w = u8.shape[:2]  # (9, 16)
+    h, w = u8.shape[:2]  # 获取池化后的深度网格分辨率 (高 H=9, 宽 W=16) (9, 16)
     scale = min(out_w / w, out_h / h)
     fit_w, fit_h = max(1, int(w * scale)), max(1, int(h * scale))
     big = cv2.resize(u8, (fit_w, fit_h), interpolation=cv2.INTER_NEAREST)

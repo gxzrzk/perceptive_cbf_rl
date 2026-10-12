@@ -91,7 +91,8 @@ KD = np.array([
 # 动作缩放系数 (ACTION_SCALE):
 # 计算公式为: 0.25 * effort_limit / stiffness。
 # 策略网络输出无量纲的 [-1, 1] 动作值，反归一化为实际物理位置指令:
-#   target_joint_pos = DEFAULT_POS + action * ACTION_SCALE
+#   目标关节物理角度 (target_joint_pos) = 默认站立姿态 (DEFAULT_POS) + 策略网络动作输出 (action) * 动作缩放系数 (ACTION_SCALE)
+#   (原英文公式: target_joint_pos = DEFAULT_POS + action * ACTION_SCALE)
 ACTION_SCALE = np.array([
     0.35066146637882434, 0.35066146637882434, 0.5475464629911068, 0.35066146637882434,
     0.43857731392336724, 0.43857731392336724, 0.35066146637882434, 0.35066146637882434,

@@ -44,8 +44,9 @@ def test_state_sizes_match_layout():
         1 步进ID + 4 姿态四元数 + 3 基座角速度 + 3 投影重力 + 29 关节角度 + 29 关节角速度
         + 3 导航速度指令 + 1 远端保持开关 + 1 运行模式 = 74 个 float32 = 296 字节。
     """
-    # 1 step_id + 4 quat + 3 ang_vel + 3 proj_grav + 29 q + 29 dq + 3 cmd
-    # + 1 depth_far_hold + 1 mode = 74 floats.
+    # 状态数据报底层二进制布局规范：1 步进ID + 4 姿态四元数 + 3 机身角速度 + 3 投影重力 + 29 关节角度 + 29 关节速度
+    # + 3 速度指令 + 1 深度置远锁定标志 + 1 控制模式标志 = 总计 74 个 float32 (296 字节)。
+    # (原英文字段对照: 1 step_id + 4 quat + 3 ang_vel + 3 proj_grav + 29 q + 29 dq + 3 cmd + 1 depth_far_hold + 1 mode = 74 floats.)
     assert udp_sync.STATE_FLOATS == 74
     assert udp_sync.STATE_BYTES == 74 * 4
 
@@ -85,7 +86,8 @@ def test_state_round_trip():
         assert o_hold is hold
         assert o_mode == 0
 
-    # Default (omitted) -> hold off, mode dodge(0).
+    # 验证省略可选参数时的默认解包行为：depth_far_hold 默认为关闭 (False)，mode 默认为躲避模式 (0)
+    # (原英文注释: Default (omitted) -> hold off (False), mode dodge (0).)
     *_, o_hold, o_mode = udp_sync.unpack_state(
         udp_sync.pack_state(step_id, quat, ang_vel, proj_grav, q, dq, cmd))
     assert o_hold is False
@@ -142,7 +144,7 @@ def test_depth_round_trip_one_cam():
     """
     rng = np.random.default_rng(2)
     seq = 7
-    stamp = 1.5  # informational; float32-representable
+    stamp = 1.5  # 模拟数据包发送端时间戳（参考信息；可被 float32 精确表示: informational, float32-representable）
     depth = rng.standard_normal(1 * udp_sync.DEPTH_FRAME_FLOATS).astype(np.float32)
     buf = udp_sync.pack_depth(seq, stamp, 1, depth)
     o_seq, o_stamp, o_ncam, o_depth = udp_sync.unpack_depth(buf)
@@ -150,7 +152,8 @@ def test_depth_round_trip_one_cam():
     assert o_ncam == 1
     np.testing.assert_allclose(o_stamp, stamp, rtol=0, atol=1e-3)
     np.testing.assert_array_equal(o_depth, depth)
-    # n_cam=1 -> 3 header floats + 144 depth = 147 floats.
+    # 单目相机通信契约：3 个报头浮点数 [seq, stamp, n_cam] + 144 维单相机深度载荷 = 147 个 float32 (588 字节)
+    # (原英文格式: n_cam=1 -> 3 header floats + 144 depth = 147 floats.)
     assert len(buf) == (3 + udp_sync.DEPTH_FRAME_FLOATS) * 4
 
 
@@ -180,10 +183,10 @@ def test_depth_n_cam_mismatch_raises():
     预期输出及验证逻辑：
         抛出 ValueError 异常，防止下位机或策略解析出越界破坏数据。
     """
-    # Guard the camera-count contract: declared n_cam must match the payload length.
-    bad = np.zeros(udp_sync.DEPTH_FRAME_FLOATS, dtype=np.float32)  # one cam's worth
+    # 防御性校验相机数量协议：数据包声明的相机数量 n_cam 必须与载荷数组长度严格匹配 (Guard camera-count contract)
+    bad = np.zeros(udp_sync.DEPTH_FRAME_FLOATS, dtype=np.float32)  # 仅分配单台相机规格的 144 维数据 (one cam worth)
     try:
-        udp_sync.pack_depth(0, 0.0, 2, bad)  # claim two cams
+        udp_sync.pack_depth(0, 0.0, 2, bad)  # 声明包含两台相机 (claim two cams)，预期触发长度不匹配异常
     except ValueError:
         return
     raise AssertionError("pack_depth must reject an n_cam/payload-length mismatch")

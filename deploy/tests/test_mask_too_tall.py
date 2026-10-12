@@ -34,14 +34,14 @@ from deploy.tools.etam_track_live import mask_too_tall
 def test_compact_ball_kept():
     """测试场景：形态紧凑的小球掩码（高度约 40 像素，占画幅 11%）应正常保留。"""
     m = np.zeros((376, 672), dtype=bool)
-    m[170:210, 320:360] = True            # ~40 px tall ball -> 0.11 of height
+    m[170:210, 320:360] = True            # 垂直高度约 40 像素的小球 -> 占画面总高度 11% (紧凑球体正常放行: ~40 px tall ball -> 0.11 of height)
     assert not mask_too_tall(m)
 
 
 def test_person_height_rejected():
     """测试场景：人体高细连通域（高度约 340 像素，占画幅 90%）被识别为过高并剔除。"""
     m = np.zeros((376, 672), dtype=bool)
-    m[20:360, 300:340] = True             # ~340 px tall -> 0.90 of height
+    m[20:360, 300:340] = True             # 垂直高度约 340 像素的人体连通域 -> 占画面总高度 90% (非球大目标剔除: ~340 px tall -> 0.90 of height)
     assert mask_too_tall(m)
 
 
@@ -59,7 +59,7 @@ def test_threshold_is_fraction_of_height():
         当阈值上限设为 0.5 时判定为过高 (True)；当阈值上限提升至 0.7 时判定为未超限 (False)。
     """
     m = np.zeros((100, 100), dtype=bool)
-    m[0:60, 0:10] = True                  # 60% tall
+    m[0:60, 0:10] = True                  # 构造占画幅高度 60% 的垂直条状掩码 (60% tall)
     assert mask_too_tall(m, max_height_frac=0.5)
     assert not mask_too_tall(m, max_height_frac=0.7)
 
@@ -80,11 +80,14 @@ def test_far_blob_too_tall_for_distance_rejected():
         标准球体（直径 <= 0.45m）在透视成像下的理论最大像素占比仅为 ~18%；
         故该物体必然是大型背景或站立的人，距离感知规则必须将其标记为过高 (mask_too_tall=True)。
     """
-    # A 30%-tall blob is UNDER the absolute 0.5 cap (so the old rule kept it), but at 2.46 m a
-    # real ball (<=0.45 m diam) can only span ~18% of the frame -> distance-aware reject.
+    # 结合真实物理测距与成像几何的自适应尺寸检验机制：
+    # 占画幅高度 30% 的连通域低于 0.5 绝对比例门槛（旧版固定阈值会误放行），但在 2.46 米测距下，
+    # 真实小球（直径 <= 0.45 米）在透视成像下的理论最大像素占比仅为 ~18% -> 距离感知规则将其精准剔除。
+    # (原英文推导: A 30%-tall blob is UNDER the absolute 0.5 cap, but at 2.46 m a real ball (<=0.45 m diam))
+    # (原英文结论: can only span ~18% of the frame -> distance-aware reject.)
     m = _mask(0.30)
-    assert not mask_too_tall(m)                 # old absolute rule: kept
-    assert mask_too_tall(m, dist=2.46)          # distance-aware: rejected
+    assert not mask_too_tall(m)                 # 旧版绝对比例规则：低于 0.5 予以保留 (old absolute rule: kept)
+    assert mask_too_tall(m, dist=2.46)          # 距离自适应规则：超出该距离下的球体几何极限，判定过高剔除 (distance-aware: rejected)
 
 
 def test_real_ball_far_kept():
@@ -94,7 +97,8 @@ def test_real_ball_far_kept():
         在 2.46m 距离处，直径 0.22m 的真实小球高度占比约为 9%，
         同时符合绝对上限与距离自适应几何上限，予以保留 (False)。
     """
-    # A real ~0.22 m ball at 2.46 m subtends ~9% of the frame -> kept under both caps.
+    # 真实小球场景：在 2.46 米距离处，直径约 0.22 米的真实球体仅占画幅高度约 9% -> 同时满足绝对阈值与距离自适应几何阈值，予以保留
+    # (原英文注释: A real ~0.22 m ball at 2.46 m subtends ~9% of the frame -> kept under both caps.)
     m = _mask(0.09)
     assert not mask_too_tall(m, dist=2.46)
 
@@ -105,7 +109,8 @@ def test_large_blob_close_kept():
     测试原理：
         相同的 30% 画面占比物体，若距离只有 0.6m，其物理投影尺寸与近处小球完全吻合，予以保留。
     """
-    # The same 30%-tall blob up close (0.6 m) is consistent with a ball -> kept.
+    # 近距离透视放大效应：同样的 30% 画幅高度连通域，若出现在近处 (0.6m)，与近距离真实球体几何尺度完全吻合 -> 正常保留放行
+    # (原英文注释: The same 30%-tall blob up close (0.6 m) is consistent with a ball -> kept.)
     assert not mask_too_tall(_mask(0.30), dist=0.6)
 
 
@@ -117,7 +122,8 @@ def test_no_distance_falls_back_to_absolute_cap():
     预期输出及验证逻辑：
         均因小于 0.5 绝对门槛而被保留 (False)，不发生除零或崩溃。
     """
-    # dist=None / non-finite -> only the absolute cap applies (back-compat).
+    # 测距无效回退机制：当 dist 为 None 或非有限数值 (NaN/Inf) 时，自动回退到仅依赖绝对比例阈值，保证向后兼容性与系统稳健性
+    # (原英文注释: dist=None / non-finite -> only the absolute cap applies (back-compat).)
     m = _mask(0.30)
     assert not mask_too_tall(m, dist=None)
     assert not mask_too_tall(m, dist=float("nan"))

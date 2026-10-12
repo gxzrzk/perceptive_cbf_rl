@@ -146,7 +146,7 @@ class PlayConfig:
   """Export loaded trained policy to ONNX under current run directory/export."""
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
 
-  # Internal flag used by demo script.
+  # 内部标志位，供 demo 演示脚本直接调用控制 (Internal flag used by demo script)
   _demo_mode: tyro.conf.Suppress[bool] = False
 
 
@@ -172,8 +172,7 @@ class _DodgePlayViewer(ViserPlayViewer):
     if not throws_balls:
       return
 
-    # Preserve a pause set before the viewer started (HIL/ZED mode pauses throws so the real
-    # camera is the only stimulus); reflect it in the checkbox rather than clobbering it.
+    # 保留在可视化器启动前设定的抛球暂停状态（在 HIL/ZED 硬件在环模式下暂停投球，使真实相机成为唯一刺激源；原英文: Preserve a pause set before the viewer started）
     initial_paused = bool(getattr(env, "_dodge_throw_paused", False))
     env._dodge_throw_paused = initial_paused
     env._dodge_throw_once = False
@@ -192,12 +191,12 @@ class _DodgePlayViewer(ViserPlayViewer):
     def _on_pause(_ev) -> None:
       env._dodge_throw_paused = pause_cb.value
 
-    # Overhead = HIGH throw (the high_throw branch): arrives at torso/HEAD height -> duck / lean.
+    # Overhead = 投掷高球 (high_throw 分支)：球到达躯干/头部高度 -> 诱导策略下蹲/俯身下潜闪避 (duck / lean)
     def _on_throw_overhead(_ev) -> None:
       env._dodge_throw_force_high = True
       env._dodge_throw_once = True
 
-    # Underbody = LOW throw (the descending branch): hits the LOWER body / legs -> sidestep / step over.
+    # Underbody = 投掷低球 (descending 分支)：球瞄准下半身/腿部高度 -> 诱导策略侧跨步闪避 (sidestep / step over)
     def _on_throw_underbody(_ev) -> None:
       env._dodge_throw_force_high = False
       env._dodge_throw_once = True
@@ -223,7 +222,9 @@ def run_play(task_id: str, cfg: PlayConfig):
     return {}
 
   def inline_external_onnx_data(onnx_path: Path) -> None:
-    """Merge external tensor data back into a single ONNX file if needed."""
+    """若存在外部权重数据文件 (.data)，将其重新合并内嵌回单个自包含的 ONNX 模型文件中。
+    (Merge external tensor data back into a single ONNX file if needed.)
+    """
     data_path = Path(str(onnx_path) + ".data")
     if not data_path.exists():
       return
@@ -240,7 +241,9 @@ def run_play(task_id: str, cfg: PlayConfig):
       print(f"[WARN]: Failed to inline ONNX external data for {onnx_path}: {exc}")
 
   class _OnnxPolicyWrapper(torch.nn.Module):
-    """Expose act_inference as forward and optionally include obs normalizer."""
+    """将强化学习策略网络封装为标准 PyTorch Module，将 act_inference 暴露为 forward，并可选挂载观测归一化层。
+    (Expose act_inference as forward and optionally include obs normalizer.)
+    """
 
     def __init__(self, actor_critic: torch.nn.Module, obs_normalizer: Any = None):
       super().__init__()
@@ -255,7 +258,7 @@ def run_play(task_id: str, cfg: PlayConfig):
   def export_runner_policy_to_onnx(runner: Any, output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Prefer runner-provided exporters to keep behavior consistent with training.
+    # 优先使用 Runner 自带的导出接口，确保模型图导出逻辑与算法训练配置完全一致 (Prefer runner-provided exporters)
     if hasattr(runner, "export_policy_to_onnx"):
       runner.export_policy_to_onnx(str(output_path.parent), output_path.name)
       inline_external_onnx_data(output_path)
@@ -265,7 +268,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       inline_external_onnx_data(output_path)
       return
 
-    # Fallback exporter for runners without explicit ONNX export helper.
+    # 针对未显式提供 ONNX 导出方法的 Runner 采用通用后备导出逻辑 (Fallback exporter for runners without explicit ONNX export helper)
     policy = runner.alg.policy
     obs_normalizer = None
     if getattr(runner, "empirical_normalization", False) and hasattr(
@@ -309,18 +312,18 @@ def run_play(task_id: str, cfg: PlayConfig):
   DUMMY_MODE = cfg.agent in {"zero", "random"}
   TRAINED_MODE = not DUMMY_MODE
 
-  # Disable terminations if requested (useful for viewing motions).
+  # 若命令行请求禁用终止条件（在纯前向观察动作库或调试特定步态行为时非常实用）(Disable terminations if requested)
   if cfg.no_terminations:
     env_cfg.terminations = {}
     print("[INFO]: Terminations disabled")
 
-  # Check if this is a tracking task by checking for motion command.
+  # 通过检查环境指令集合中是否存在 "motion" 命令来判定当前是否属于全身跟踪任务 (Check if this is a tracking task)
   is_tracking_task = "motion" in env_cfg.commands and isinstance(
     env_cfg.commands["motion"], MotionCommandCfg
   )
 
   if is_tracking_task and cfg._demo_mode:
-    # Demo mode: use uniform sampling to see more diversity with num_envs > 1.
+    # 演示模式：当并发环境数量 num_envs > 1 时启用均匀随机采样，以便同时展现更多姿态多样性 (Demo mode: use uniform sampling)
     motion_cmd = env_cfg.commands["motion"]
     assert isinstance(motion_cmd, MotionCommandCfg)
     motion_cmd.sampling_mode = "uniform"
@@ -329,7 +332,7 @@ def run_play(task_id: str, cfg: PlayConfig):
     motion_cmd = env_cfg.commands["motion"]
     assert isinstance(motion_cmd, MotionCommandCfg)
 
-    # Check for local motion file first (works for both dummy and trained modes).
+    # 优先检查本地是否存在指定的参考动作文件（无论使用 dummy 策略还是训练策略均生效）(Check for local motion file first)
     if cfg.motion_file is not None and Path(cfg.motion_file).exists():
       print(f"[INFO]: Using local motion file: {cfg.motion_file}")
       motion_cmd.motion_file = cfg.motion_file
@@ -357,7 +360,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       resume_path, was_cached = get_wandb_checkpoint_path(
         log_root_path, Path(cfg.wandb_run_path)
       )
-      # Extract run_id and checkpoint name from path for display.
+      # 从文件路径中提取 run_id 与 checkpoint 检查点文件名用于界面打印展示 (Extract run_id and checkpoint name)
       run_id = resume_path.parent.name
       checkpoint_name = resume_path.name
       cached_str = "cached" if was_cached else "downloaded"
@@ -367,24 +370,26 @@ def run_play(task_id: str, cfg: PlayConfig):
     log_dir = resume_path.parent
 
   if cfg.depth_frame_offsets is not None:
-    # DepthImageObs reads env.cfg.depth_frame_offsets at instantiation; set it before the env is
-    # built so the actor input dim matches the checkpoint trained with these offsets.
+    # DepthImageObs 观测项在类初始化时即会读取 env.cfg.depth_frame_offsets；
+    # 因此必须在构建环境之前完成配置，确保 Actor 网络的输入特征维度与对应时间步偏移训练出的 Checkpoint 严格对齐匹配。
+    # [英文对照: DepthImageObs reads env.cfg.depth_frame_offsets at instantiation; set before build to match actor dim]
     env_cfg.depth_frame_offsets = cfg.depth_frame_offsets
   if cfg.reset_stand:
-    # Swap the dodge RSI motion-reset for a nominal default-stand reset (HIL/demo play).
+    # 将闪避任务中的 RSI 动态动作重置替换为机器人标称站立默认姿态重置（供 HIL 硬件在环或 Demo 演示使用，确保启动平稳）
+    # [英文对照: Swap the dodge RSI motion-reset for a nominal default-stand reset; default asset_cfg, drop unused motion_dir]
     if "reset_from_motion" in env_cfg.events:
       from src.tasks.amp_loco.mdp.events import reset_to_default_stand
 
       stand_event = env_cfg.events["reset_from_motion"]
       stand_event.func = reset_to_default_stand
-      stand_event.params = {}  # default asset_cfg; drop motion_dir (unused by the stand reset)
+      stand_event.params = {}  # 采用默认 asset_cfg；移除未使用的 motion_dir 参数
       print("[play] reset_stand: episodes reset to the nominal default standing pose")
     else:
       print("[play] reset_stand requested but no 'reset_from_motion' event; ignoring")
-  # Apply the training depth augmentation to the POLICY obs in SIM play so play matches what the
-  # policy trained on (--depth-aug, on by default; --depth-aug-preview implies it and also adds the
-  # comparison panel further below). SKIPPED on the ZED path: the real camera already carries real
-  # noise, so augmenting it would double up. Guarded to the single-depth task (head_depth_single).
+  # 在仿真回放评估中，将训练期的深度图数据增强 (Depth Augmentation) 应用于策略输入的观测中，
+  # 使得评估时的策略输入分布与训练阶段严格一致 (--depth-aug 默认开启；--depth-aug-preview 隐式开启并添加对比面板)。
+  # 注意：在真实 ZED 相机硬件在环 (HIL) 路径下跳过该合成噪声增强，因为真实传感器自身已带有物理噪声，叠加会导致噪声翻倍。
+  # 仅限于单深度任务 (head_depth_single)。
   _want_depth_aug = (cfg.depth_aug or cfg.depth_aug_preview) and not cfg.zed_camera
   _is_single_depth = (
     "depth" in env_cfg.observations
@@ -405,9 +410,8 @@ def run_play(task_id: str, cfg: PlayConfig):
   elif cfg.depth_aug_preview and not _is_single_depth:
     print("[play] --depth-aug-preview ignored: not the single-depth task (head_depth_single)")
   if cfg.zed_camera and cfg.zed_sim_ball:
-    # Superimposing the sim ball needs the sim head camera to render SEGMENTATION (so we can mask the
-    # ball geom). Add it to the obs sensor's data_types before the env is built (the sim still renders
-    # this camera in ZED mode; we just read its segmentation to extract the ball).
+    # 在实拍画面上叠加仿真小球需要仿真头部相机渲染语义分割图 (SEGMENTATION) 以精确提取小球网格掩码。
+    # 在构建环境之前将 "segmentation" 添加入观测传感器的 data_types (ZED 模式下仿真器仍渲染该相机，我们提取小球后叠加进实拍流)。
     for s in env_cfg.scene.sensors or ():
       if getattr(s, "name", None) == "head_depth_single" and "segmentation" not in s.data_types:
         s.data_types = tuple(s.data_types) + ("segmentation",)
@@ -426,27 +430,22 @@ def run_play(task_id: str, cfg: PlayConfig):
     )
   env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
 
-  # Play-only: make the viser depth panel show a useful, fixed window. The raw mjwarp depth
-  # is true distance (spans to the ~horizon) and the viewer only divides by its slider, so
-  # distant ground/sky dominate and the panel looks blank. We wrap each depth CameraSensor's
-  # _compute_data to clamp to [DEPTH_NEAR, DEPTH_FAR] (no-hit/sky -> far) and normalize to
-  # [0,1], so the panel renders a proper near->far gradient at the default slider. The ball
-  # (near) shows dark against the lighter far background.
+  # 仅在回放可视化时生效：使 Viser 深度图显示面板呈现有用且对比度适宜的固定深度视窗。
+  # MuJoCo Warp (mjwarp) 原始深度图输出为真实物理距离（范围可延伸至无穷远地平线），而 Viser 查看器默认仅将其除以滑块缩放值，
+  # 导致远景地面/天空主导数值范围，深度面板显示为苍白一片。我们将每个深度 CameraSensor 的 _compute_data 进行包装：
+  # 截断裁剪至 [DEPTH_NEAR, DEPTH_FAR]（未命中/天空 -> 映射为远端 far），并根据任务类型决定是否归一化到 [0, 1]，
+  # 从而在默认滑块设置下渲染出层次清晰的近黑远白对比度梯度。近处的小球呈现深黑色，凸显于较浅色的远端背景前。
   #
-  # This mutates the SHARED sensor, and `DepthImageObs` reads the same `sensor.data.depth`, so the
-  # transform we apply MUST leave the policy obs unchanged. Two cases:
-  #
-  #  - NO depth obs group (base-dodge play preview): the checkpoint never reads this sensor, so we
-  #    fully clamp+NORMALIZE to [0,1] for a nice panel gradient at the default slider.
-  #
-  #  - Depth TASK (a `depth` obs group exists): we apply ONLY the no-hit->far + clamp step (NOT the
-  #    normalize). That is exactly the first half of `DepthImageObs._one`, which is idempotent --
-  #    feeding it already-cleaned metres yields the identical normalized obs -- so the policy input
-  #    is byte-for-byte unchanged, while the panel now shows what the policy sees: empty/sky -> far
-  #    (white), near/ball -> dark, instead of raw metres where sim no-hit (0 m) renders misleadingly
-  #    black. (We must NOT normalize here: feeding [0,1] back through `_one` would map the near/ball
-  #    values < near -> far and invert the image -- the bug the previous code avoided by leaving it
-  #    raw.) Set the panel's Depth Scale to ~5 (= far) to read it as the literal [0,1] policy input.
+  # 关键机制：由于此操作修改的是共享传感器实例，而策略网络的 DepthImageObs 同样读取该 sensor.data.depth，
+  # 因此所施加的数据变换必须保证策略观测值绝对不变 (MUST leave the policy obs unchanged)。分为两种情形：
+  #  - 无深度观测组（纯本体感觉 base-dodge 闪避任务的可视化预览）：Checkpoint 从不读取该传感器，因此可以全量
+  #    裁剪并归一化到 [0, 1]，使默认滑块下的面板获得最佳灰度梯度。
+  #  - 深度感知任务（存在 'depth' 观测组）：仅应用“未命中/天空->far + [near, far] 范围截断”两步（严禁执行归一化）。
+  #    这一操作与 DepthImageObs._one 的前一步完全重合，具备幂等性 (idempotent) —— 传入已清洗的物理米制深度将
+  #    产生完全相同的归一化观测，确保策略输入在字节级别完全不变；同时面板呈现策略所见的视界：
+  #    天空/空旷区域 -> far (白色)，近处/小球 -> dark (深色)，消除了原始米制数据中未命中 (0m) 显示为全黑的严重视觉误导。
+  #    （严禁在此处除以 far 进行归一化：若传入 [0, 1] 再次经由 _one 计算，会将小于 near 的小球距离映射为 far，导致图像黑白反转）。
+  #    在面板中将 Depth Scale 滑块调至 ~5 (= far) 即可直接以 [0, 1] 形式直观对应策略输入的真实灰度。
   from mjlab.sensor import CameraSensor as _CameraSensor
   from mjlab.sensor.camera_sensor import CameraSensorData as _CamData
 
@@ -462,11 +461,12 @@ def run_play(task_id: str, cfg: PlayConfig):
       data = _orig()
       if data.depth is not None:
         d = data.depth
-        # No-hit (sky, depth ~0) -> far; clamp to [near, far]. This half is idempotent under
-        # DepthImageObs._one, so the depth-task obs is unchanged.
+        # 未命中（天空，深度接近 0）映射为远端 far；数值截断在 [near, far] 范围内。
+        # 该前半部分截断操作在 DepthImageObs._one 处理下是完全幂等的，确保深度任务策略观测输入绝对无损。
+        # [英文对照说明: No-hit/sky -> far; clamp to [near, far]. This half is idempotent under DepthImageObs._one]
         d = torch.where(d < _DEPTH_NEAR, torch.full_like(d, _DEPTH_FAR), d)
         d = d.clamp(_DEPTH_NEAR, _DEPTH_FAR)
-        if _normalize:  # only when no obs term will re-process this sensor
+        if _normalize:  # 仅当没有策略观测项后续处理该传感器数据时（纯本体感觉任务预览），才在此处归一化到 [0, 1]
           d = (d - _DEPTH_NEAR) / (_DEPTH_FAR - _DEPTH_NEAR)
         data = _CamData(rgb=data.rgb, depth=d, segmentation=data.segmentation)
       return data
@@ -475,12 +475,11 @@ def run_play(task_id: str, cfg: PlayConfig):
     _mode = "clamp+normalize" if not _has_depth_obs else "clamp-only (policy view, obs unchanged)"
     print(f"[play] depth panel '{_sns.cfg.name}': {_mode} to [{_DEPTH_NEAR}, {_DEPTH_FAR}] m")
 
-  # Add a display-only panel showing the AUGMENTED depth the policy consumes (the obs term stashes its
-  # augmented metric frame on the env via _depth_aug_display). The bare sensor is never given a sim
-  # context; its _compute_data returns the stash, clamped for the panel. Sits next to the clean
-  # 'head_depth_single' panel so you can compare clean vs augmented live. Shown whenever the augmentation
-  # is actually active -- i.e. default sim play (--depth-aug) as well as --depth-aug-preview, but not on
-  # the ZED path (no synthetic aug there) or a non-single task.
+  # 添加一个仅用于可视化对比的独立面板，实时展示策略网络实际接收到的经增强处理后的深度图 (AUGMENTED depth)
+  # （观测项将增强后的米制深度图暂存在环境实例上的 _depth_aug_display 中）。
+  # 该裸传感器无需接入 MuJoCo 仿真上下文；其 _compute_data 直接返回暂存的增强帧并截断供面板渲染。
+  # 紧邻原生 'head_depth_single' 面板放置，可直观实时对比原始无损深度与增强噪声深度。
+  # 只要启用了数据增强即会展示（默认仿真 play 及 --depth-aug-preview），但在真实 ZED 路径或非单相机任务中不创建。
   if _want_depth_aug and _is_single_depth:
     from mjlab.sensor.camera_sensor import CameraSensorCfg as _CameraSensorCfg
 
@@ -506,7 +505,7 @@ def run_play(task_id: str, cfg: PlayConfig):
     def _aug_display_compute(_e=_aug_env, _name="head_depth_single", _h=_ah, _w=_aw):
       store = getattr(_e, "_depth_aug_display", None)
       frame = None if store is None else store.get(_name)
-      if frame is None:  # before the first obs is computed -> show clean clamped depth
+      if frame is None:  # 在首个观测计算产生之前，先展示截断处理后的干净原始深度帧 (before first obs is computed)
         frame = _e.scene.sensors[_name].data.depth
       d = frame.clamp(_DEPTH_NEAR, _DEPTH_FAR)
       return _CamData(rgb=None, depth=d, segmentation=None)
@@ -515,10 +514,10 @@ def run_play(task_id: str, cfg: PlayConfig):
     env.scene.sensors["head_depth_single_aug"] = _aug_sensor
     print("[play] panel 'head_depth_single_aug' shows the AUGMENTED depth the policy consumes")
 
-  # Hardware-in-the-loop: replace the simulated head depth camera with a live ZED Mini. The sim
-  # keeps running the robot (proprioception) and is what we watch dodge; only the depth sensor's
-  # `_compute_data` is overridden to return live ZED depth (raw metres, [N,H,W,1]) so `DepthImageObs`
-  # does its usual clamp/normalize/stack unchanged. Single-camera dodge-depth task only.
+  # 硬件在环测试 (Hardware-in-the-loop, HIL)：将仿真的头部深度相机替换为外接的真实物理 ZED Mini 双目深度相机。
+  # 仿真器继续驱动机器人本体感觉与物理动力学（通过屏幕观察其闪避动作）；仅将深度相机的 _compute_data 替换为
+  # 返回实时采集的真实物理 ZED 深度图（原始米制单位，维度 [N,H,W,1]），使得 DepthImageObs 能够无缝执行既有的截断/归一化/时序堆叠。
+  # 仅适用于单深度相机避障任务 (Single-camera dodge-depth task only)。
   zed_source = None
   if cfg.zed_camera:
     from src.deploy.zed_depth_source import ZedDepthSource
@@ -558,9 +557,9 @@ def run_play(task_id: str, cfg: PlayConfig):
     print(f"[play] head ZED open (serial={zed_source.serial_number})")
     _n_env = env.num_envs
 
-    # Superimpose the sim ball: capture the sim head-camera render (the display-wrapped _compute_data,
-    # which returns clamped sim depth + segmentation) BEFORE we override it, and resolve the ball geom
-    # id. _zed_compute then min-pools the ball-only sim depth into the live ZED frame.
+    # 叠加仿真小球机制 (Superimpose the sim ball)：在覆写相机方法前，先捕获仿真环境渲染的头部相机画面
+    # （即经过显示包装的 _compute_data，其返回截断深度与语义分割），并解析小球碰撞体的 geom_id。
+    # 随后 _zed_compute 通过最小池化 (min-pooling) 算法，将纯小球的仿真深度无缝叠加融入实拍 ZED 深度图帧中。
     import mujoco as _mj
 
     _sim_compute = zed_sensor._compute_data
@@ -570,7 +569,7 @@ def run_play(task_id: str, cfg: PlayConfig):
     if _composite_ball:
       try:
         _ball_geom_id = int(env.sim.mj_model.geom("ball/ball_collision").id)
-      except Exception as _e:  # noqa: BLE001 - resolution failure shouldn't crash play
+      except Exception as _e:  # noqa: BLE001 (小球几何体解析异常忽略，避免回放流程崩溃)
         print(f"[play] zed-sim-ball: could not resolve ball geom ({_e}); superimpose disabled")
         _composite_ball = False
 
@@ -578,30 +577,30 @@ def run_play(task_id: str, cfg: PlayConfig):
       _src=zed_source, _n=_n_env, _h=_zh, _w=_zw,
       _sim=_sim_compute, _comp=_composite_ball, _bid=_ball_geom_id, _gtype=_mj_geom,
     ):
-      frame = _src.latest_frame()  # [H, W] metres (real pooled depth, or all-far in 'far' mode)
+      frame = _src.latest_frame()  # 获取实拍或全远端深度的帧数据，单位：米 (real pooled depth, or all-far in 'far' mode)
       depth = frame.view(1, _h, _w, 1).expand(_n, _h, _w, 1).contiguous()
       if _comp:
-        sim = _sim()  # sim head-camera render: clamped depth [N,H,W,1] + segmentation [N,H,W,2]
+        sim = _sim()  # 仿真头部相机渲染结果：包含截断深度 [N,H,W,1] 和几何体语义分割 [N,H,W,2] (sim head-camera render)
         seg, sim_d = sim.segmentation, sim.depth
         if seg is not None and sim_d is not None:
           ball = ((seg[..., 1] == _gtype) & (seg[..., 0] == _bid)).unsqueeze(-1)  # [N,H,W,1]
-          # Ball wins where it is in front (min-pool); real ZED depth everywhere else.
+          # 最小池化融合：在仿真小球像素区域，若小球在实景前方（深度更小）则保留小球深度，其余区域完全保留真实 ZED 深度。
+          # [英文对照说明: Ball wins where it is in front via min-pool; real ZED depth everywhere else]
           depth = torch.where(ball, torch.minimum(depth, sim_d), depth)
       return _CamData(rgb=None, depth=depth, segmentation=None)
 
     zed_sensor._compute_data = _zed_compute
 
-    # Second, display-only panel showing the FULL-RES ZED RGB + depth BEFORE min-pooling, so we can
-    # see the raw camera feed alongside the 16x9 the policy actually consumes. It's a bare
-    # CameraSensor (never rendered, never given a sim context -- its `_compute_data` returns the
-    # live raw frame) added to scene.sensors so the viser viewer auto-creates panels for it;
-    # scene.update() then invalidates its cache each step so the panels stay live. camera_idx is
-    # copied from the obs sensor so the frustum/aspect are correct; a distinct camera_name avoids a
-    # frustum-name clash.
+    # 增加第二个仅供观察的显示面板：展示未经池化融合的原始分辨率真实 ZED RGB 彩色流与深度流，
+    # 便于开发者将实拍原始画面与策略实际接收的 16x9 降采样深度图进行并排同屏比对。
+    # 这是一个裸 CameraSensor（无需物理仿真渲染上下文，其 _compute_data 直接返回实测原始图像），
+    # 挂载到 scene.sensors 之后 Viser 查看器会自动为其构建专属显示面板；
+    # scene.update() 在每个仿真步都会清除其缓存从而保证画面持续实时刷新。
+    # camera_idx 继承自观测传感器以保证视锥体与宽高比正确；独立的 camera_name 避免视锥体命名冲突。
     from mjlab.sensor.camera_sensor import CameraSensorCfg as _CameraSensorCfg
 
-    # Reusable full-res RGB+depth display panel for a ZED source. viser auto-creates one RGB and one
-    # depth panel per sensor, so naming the sensor 'head'/'down' yields the labeled feeds.
+    # 可复用的全分辨率真实 ZED RGB+深度画面监视面板创建辅助函数 (Reusable full-res RGB+depth display panel)
+    # Viser 默认会为每个注册传感器自动生成一个 RGB 面板和一个深度面板，因此将传感器命名为 'head' 即可获得直观对应的监控流。
     def _add_zed_feed(name, src, _idx=zed_sensor.camera_idx, _n=_n_env):
       _h, _w = src.raw_height, src.raw_width
       _s = _CameraSensor(
@@ -619,10 +618,10 @@ def run_play(task_id: str, cfg: PlayConfig):
       _s._compute_data = _compute
       env.scene.sensors[name] = _s
 
-    _add_zed_feed("head", zed_source)  # real head ZED: 'head' RGB + 'head' depth panels
+    _add_zed_feed("head", zed_source)  # 接入真实头部 ZED Mini：在 Viser 中创建 'head' RGB 与 'head' 深度显示面板
 
-    # HIL: the real camera is the only legitimate stimulus -- pause sim ball throws (the viser
-    # "Pause ball throws" checkbox drives the same flag, so it can be re-enabled mid-session).
+    # 硬件在环测试规范 (HIL)：真实物理相机应为唯一合法的输入刺激源 —— 默认暂停仿真投球逻辑
+    # （该状态由 Viser 界面中的 "Pause ball throws" 复选框双向绑定，可在评估过程中随时手动重新启用）
     env._dodge_throw_paused = True
     _ball_msg = (
       "sim ball superimposed (min-pooled into ZED depth); throws start paused -- launch via the "
@@ -635,7 +634,7 @@ def run_play(task_id: str, cfg: PlayConfig):
 
   if TRAINED_MODE and cfg.video:
     print("[INFO] Recording videos during play")
-    assert log_dir is not None  # log_dir is set in TRAINED_MODE block
+    assert log_dir is not None  # 确保日志输出目录已在 TRAINED_MODE 分支中正确初始化 (log_dir is set in TRAINED_MODE block)
     env = VideoRecorder(
       env,
       video_folder=log_dir / "videos" / "play",
@@ -682,7 +681,8 @@ def run_play(task_id: str, cfg: PlayConfig):
   if DUMMY_MODE and cfg.export_onnx:
     print("[WARN]: ONNX export is only available for trained agents.")
 
-  # Handle "auto" viewer selection.
+  # 处理 "auto" 可视化查看器模式自动选择逻辑（若检测到图形环境变量则使用原生 GLFW 窗口，无屏环境下回退为 Viser 网页查看器）
+  # [英文对照说明: Handle "auto" viewer selection]
   if cfg.viewer == "auto":
     has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
     resolved_viewer = "native" if has_display else "viser"
@@ -704,9 +704,10 @@ def run_play(task_id: str, cfg: PlayConfig):
 
 
 def main():
-  # Parse first argument to choose the task.
-  # Import tasks to populate the registry.
-  import mjlab.tasks  # noqa: F401
+  """主函数入口：两阶段命令行解析 (任务 ID 选取 -> 覆盖参数绑定 -> 启动策略评估回放)"""
+  # 第一阶段：解析命令行首个参数以确定 Task ID (Parse first argument to choose the task)
+  # 导入任务模块以触发任务注册表自动注册 (Import tasks to populate the registry)
+  import mjlab.tasks  # noqa: F401 (导入以触发注册机制，忽略 F401 未直接调用告警)
   import src.tasks
 
   all_tasks = list_tasks()
@@ -717,7 +718,7 @@ def main():
     config=mjlab.TYRO_FLAGS,
   )
 
-  # Parse the rest of the arguments + allow overriding env_cfg and agent_cfg.
+  # 第二阶段：解析剩余命令行参数，并允许灵活覆盖 env_cfg 与 agent_cfg (Parse the rest of the arguments)
   agent_cfg = load_rl_cfg(chosen_task)
 
   args = tyro.cli(

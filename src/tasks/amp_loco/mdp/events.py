@@ -394,7 +394,7 @@ def solve_ballistic_velocity(
     dz = target[..., 2] - start[..., 2]                     # 竖直落差
     k = gravity * d * d / (2.0 * speed * speed)
     disc = (d * d - 4.0 * k * (dz + k)).clamp(min=0.0)
-    u = (d - torch.sqrt(disc)) / (2.0 * k)                  # tan(theta)
+    u = (d - torch.sqrt(disc)) / (2.0 * k)                  # 抛射仰角正切值 u = tan(theta)
     theta = torch.atan(u)
     vh = speed * torch.cos(theta)                           # 水平初速度大小
     vz = speed * torch.sin(theta)                           # 竖直初速度大小 (带符号)

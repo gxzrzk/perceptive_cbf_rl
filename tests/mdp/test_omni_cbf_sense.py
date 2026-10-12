@@ -81,18 +81,18 @@ def _place_omni_ball_and_run_cbf(env):
     robot = env.scene["robot"]
     ball = env.scene["ball"]
 
-    rp = robot.data.root_link_pos_w  # (N, 3)
+    rp = robot.data.root_link_pos_w  # 机器人基座世界坐标，形状为 (N, 3) (robot root position in world frame)
 
     bearing = torch.rand(n, generator=g, device=dev) * (2 * math.pi) - math.pi
-    dist = torch.rand(n, generator=g, device=dev) * 2.0 + 8.0    # U(8, 10)
+    dist = torch.rand(n, generator=g, device=dev) * 2.0 + 8.0  # 均匀分布采样发射距离 U(8, 10) 米
     start = torch.empty(n, 3, device=dev)
     start[:, 0] = rp[:, 0] + dist * torch.cos(bearing)
     start[:, 1] = rp[:, 1] + dist * torch.sin(bearing)
-    start[:, 2] = torch.rand(n, generator=g, device=dev) * 0.8 + 1.5  # U(1.5, 2.3)
+    start[:, 2] = torch.rand(n, generator=g, device=dev) * 0.8 + 1.5  # 均匀分布采样发射点起始高度 U(1.5, 2.3) 米
 
-    speed = torch.rand(n, generator=g, device=dev) * 5.0 + 20.0   # U(20, 25)
+    speed = torch.rand(n, generator=g, device=dev) * 5.0 + 20.0  # 均匀分布采样发射标量速率 U(20, 25) m/s
     target = rp.clone()
-    target[:, 2] = torch.rand(n, generator=g, device=dev) * 1.0 + 0.3  # U(0.3, 1.3)
+    target[:, 2] = torch.rand(n, generator=g, device=dev) * 1.0 + 0.3  # 均匀分布采样命中目标高度 U(0.3, 1.3) 米
 
     vel = solve_ballistic_velocity(start, target, speed, gravity=G)
 
@@ -130,7 +130,7 @@ def test_sense_radius_12_fires_at_omni_launch():
     env = _build_state_cbf_env(num_envs=64)
     term = env.action_manager.get_term("joint_pos")
 
-    # Confirm the env picked up sense_radius=12 (OMNI_THROW=1 default, no override).
+    # 确认环境正确加载了 sense_radius=12.0（OMNI_THROW=1 默认值，无覆盖时） (Confirm the env picked up sense_radius=12).
     assert abs(term.cfg.sense_radius - 12.0) < 1e-9, (
         f"Expected sense_radius=12.0 under OMNI_THROW=1, got {term.cfg.sense_radius}"
     )
@@ -138,10 +138,9 @@ def test_sense_radius_12_fires_at_omni_launch():
     threat = _place_omni_ball_and_run_cbf(env)
     frac = threat.float().mean().item()
 
-    # At 8-10 m launch distance and sense_radius=12, dist < 12 for all envs -> all threatened
-    # (modulo a tiny fraction where nu<=0, e.g. ball still moving away at first forward pass;
-    # in practice solve_ballistic_velocity always produces a closing trajectory -> near 100%).
-    # Require >=80% to give a safe margin against edge cases.
+    # 在 8-10m 发射距离与 sense_radius=12 条件下，所有环境的距离均严格小于 12m -> 均判定为受威胁
+    # （除了极个别相对法向速度 nu<=0 的边缘情况，例如首次前向时球体相对法向速度尚未完全收敛；
+    # 实际上弹道求解始终产生逼近轨迹 -> 接近 100% 触发）。此处要求 >=80% 以留出稳健的安全边界 (At 8-10 m launch distance and sense_radius=12, require >=80% threatened).
     assert frac >= 0.80, (
         f"Expected >=80% of envs threatened at launch with sense_radius=12, got {frac:.1%}. "
         f"This means the 12 m sense_radius is NOT engaging at the 8-10 m omni launch range."
@@ -167,8 +166,8 @@ def test_sense_radius_4_does_not_fire_at_omni_launch():
     threat = _place_omni_ball_and_run_cbf(env)
     frac = threat.float().mean().item()
 
-    # Ball is 8-10 m from every body point; sense_radius=4 -> dist > sense_radius for all envs.
-    # Allow <5% for any numerical edge case.
+    # 球体距离机器人各刚体点 8-10m；当 sense_radius=4 时，对于所有环境均满足 dist > sense_radius（位于感知区外）。
+    # 允许 <=5% 的微量数值边缘误差，验证旧版小感知半径在此全向距离下不会误激活 (Ball is 8-10 m, sense_radius=4 -> dist > sense_radius, allow <=5%).
     assert frac <= 0.05, (
         f"Expected <5% of envs threatened at launch with sense_radius=4 (ball at 8-10m), "
         f"got {frac:.1%}.  The sense_radius=4 gate should not engage at the omni launch range."

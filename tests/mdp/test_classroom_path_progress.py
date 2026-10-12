@@ -84,14 +84,14 @@ def test_uniform_forward_rewards_and_idle_or_retreat_costs(term):
         5. 沿路径倒退时，扣减倒退惩罚。
     """
     command, env = progress_command()
-    # Spawn has s=0 even though its world coordinates are nonzero.
+    # 出生点桩号基准初始化：机器人在出生点时累计进度弧长 s=0，即使其世界系绝对坐标非零 (Spawn has s=0 even though its world coordinates are nonzero).
     move(command, (10., -3.))
     assert command._path_s.item() == 0.
     assert term.func(env, **term.params).item() == pytest.approx(-.6)
     for step in range(1, 5):
         move(command, (10. + step * .012, -3.))
         assert term.func(env, **term.params).item() == pytest.approx(.6, abs=1e-4)
-    # No progress, even while moving laterally, pays the fixed idle cost.
+    # 无前向进展时（即便发生横向平移），仍需支付固定的停滞怠速惩罚代价 (No progress, even while moving laterally, pays the fixed idle cost).
     move(command, (10.048, -2.5))
     assert term.func(env, **term.params).item() == pytest.approx(-.6)
     move(command, (10.042, -2.5))
@@ -153,7 +153,7 @@ def test_turn_exemption_and_threat_gate(term):
         assert term.func(env, **term.params).item() == pytest.approx(-.6 * scale)
     command._walk_forward_scale.zero_()
     move(command, (9.994, -3.))
-    assert term.func(env, **term.params).item() < 0  # Turning does not waive retreat.
+    assert term.func(env, **term.params).item() < 0  # 原地转弯不能免除后退惩罚：沿路径后退必然受罚 (Turning does not waive retreat: moving backward along path is always penalized).
     command._dodge_threat[:] = True
     for xy in ((10.006, -3.), (10.006, -3.), (10., -3.)):
         move(command, xy)
@@ -233,7 +233,7 @@ def test_rounded_corner_progress_decreases_continuously_when_retraced(term):
         torch.tensor([[[0., 0.], [5., 0.], [5., 4.], [5., 20.]]])
     )
     command, env = progress_command(points[0, :counts[0]].tolist())
-    # Walk over the short arc segments, then retrace them through the corner.
+    # 沿圆弧密集分段完整走过弯道，随后原路倒退折返穿过弯道，全流程检验连续性 (Walk over the short arc segments, then retrace them through the corner).
     stations = list(torch.linspace(0., 8., 81)) + list(torch.linspace(7.9, 0., 80))
     last_s = 0.
     for station in stations:

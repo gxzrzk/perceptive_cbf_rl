@@ -41,14 +41,14 @@ def test_non_masked_pixels_become_far():
         3. 输出类型为 float32；
         4. 输入的原始 depth 数组未被原地更改。
     """
-    depth = np.full((4, 6), 1.5, dtype=np.float32)  # everything near
+    depth = np.full((4, 6), 1.5, dtype=np.float32)  # 构造全图均为近距离 1.5m 的测试深度图 (everything near)
     mask = np.zeros((4, 6), dtype=bool)
-    mask[1:3, 2:4] = True                            # a small "ball" region
+    mask[1:3, 2:4] = True                            # 在中心区域标记局部的真实球体前景连通域 (a small "ball" region)
     out = mask_depth_to_far(depth, mask, far=5.0)
-    assert np.all(out[mask] == 1.5)                  # ball depth kept
-    assert np.all(out[~mask] == 5.0)                 # everything else forced far
+    assert np.all(out[mask] == 1.5)                  # 验证掩码内真实球体近处深度被精确完整保留 (ball depth kept)
+    assert np.all(out[~mask] == 5.0)                 # 验证非掩码背景像素被强制覆写为远平面 5.0m (everything else forced far)
     assert out.dtype == np.float32
-    assert depth[0, 0] == 1.5                         # input not mutated
+    assert depth[0, 0] == 1.5                         # 验证函数未就地破坏修改原始输入数组 (input not mutated)
 
 
 def test_empty_mask_is_all_far():
@@ -59,7 +59,8 @@ def test_empty_mask_is_all_far():
     预期输出及验证逻辑：
         输出深度图全部等于 5.0m，使神经网络策略判定前方空旷无障碍，防止误触发摔倒或侧扑。
     """
-    # Track lost / not started -> empty mask -> everything far (policy sees no near object).
+    # 视觉跟踪丢失或初始未检出 -> 产生全 False 空掩码 -> 全图安全覆写为全远平面 (far=5.0m)，策略感知无障碍保持平稳站立
+    # (原英文注释: Track lost / not started -> empty mask -> everything far (policy sees no near object).)
     depth = np.random.uniform(0.3, 1.0, (8, 8)).astype(np.float32)
     out = mask_depth_to_far(depth, np.zeros((8, 8), dtype=bool), far=5.0)
     assert np.all(out == 5.0)
@@ -91,13 +92,14 @@ def test_masked_then_pooled_keeps_ball_drops_background():
         2. 再执行 percentile_pool_depth 降采样到 (9, 16)；
         3. 左上角网格正确保留球体 1.0m 读数，其余区域全部为 5.0m，验证背景噪点被彻底过滤。
     """
-    # Ball pixels near (1.0 m) in one corner; rest is junk-near (0.3 m) that masking removes.
+    # 模拟真实球体像素在角落表现为近距 (1.0m)；背景充斥地面近距噪点 (0.3m)，经掩码过滤后背景噪点被彻底清除
+    # (原英文注释: Ball pixels near (1.0 m) in one corner; rest is junk-near (0.3 m) that masking removes.)
     depth = np.full((18, 32), 0.3, dtype=np.float32)
     mask = np.zeros((18, 32), dtype=bool)
     mask[0:2, 0:2] = True
     depth[0:2, 0:2] = 1.0
     masked = mask_depth_to_far(depth, mask, far=5.0)
-    pooled = percentile_pool_depth(masked, 9, 16, percentile=3.0, fill_invalid=5.0)  # [9,16]
+    pooled = percentile_pool_depth(masked, 9, 16, percentile=3.0, fill_invalid=5.0)  # 3% 软最小值池化降采样至 [9, 16] 网格
     assert pooled.shape == (9, 16)
-    assert pooled[0, 0] == 1.0           # the ball cell reads near
-    assert np.all(pooled[1:, :] == 5.0)  # everywhere the ball isn't reads far (background gone)
+    assert pooled[0, 0] == 1.0           # 验证包含球体的网格单元正确读出近处深度 1.0m (the ball cell reads near)
+    assert np.all(pooled[1:, :] == 5.0)  # 验证无球区域全部为远端 5.0m，背景干扰完全清除 (everywhere the ball isn't reads far (background gone))

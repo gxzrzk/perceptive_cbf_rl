@@ -69,12 +69,12 @@ def robot_body_pos_b(
     asset: Entity = env.scene[anchor_cfg.name]
     
     # 提取基准锚点刚体（通常为骨盆/躯干）的世界位置与四元数
-    anchor_pos_w = asset.data.body_link_pos_w[:, anchor_cfg.body_ids[0]]   # (num_envs, 3)
-    anchor_quat_w = asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]]  # (num_envs, 4)
+    anchor_pos_w = asset.data.body_link_pos_w[:, anchor_cfg.body_ids[0]]   # 形状: (num_envs, 3)，锚点刚体世界系 3D 位置 (x, y, z)
+    anchor_quat_w = asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]]  # 形状: (num_envs, 4)，锚点刚体世界系旋转四元数 (w, x, y, z)
     
     # 提取目标刚体集合的世界位置与四元数
-    body_pos_w = asset.data.body_link_pos_w[:, body_cfg.body_ids]     # (num_envs, num_bodies, 3)
-    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]   # (num_envs, num_bodies, 4)
+    body_pos_w = asset.data.body_link_pos_w[:, body_cfg.body_ids]     # 形状: (num_envs, num_bodies, 3)，各跟踪刚体世界系 3D 位置
+    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]   # 形状: (num_envs, num_bodies, 4)，各跟踪刚体世界系旋转四元数
 
     num_bodies = body_pos_w.shape[1]
     # 执行坐标系刚体逆变换，将世界坐标转入锚点局部坐标系
@@ -99,11 +99,11 @@ def robot_body_ori_b(
     """
     asset: Entity = env.scene[anchor_cfg.name]
     
-    anchor_pos_w = asset.data.body_link_pos_w[:, anchor_cfg.body_ids[0]]   # (num_envs, 3)
-    anchor_quat_w = asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]]  # (num_envs, 4)
+    anchor_pos_w = asset.data.body_link_pos_w[:, anchor_cfg.body_ids[0]]   # 形状: (num_envs, 3)，锚点刚体世界系位置 (x, y, z)
+    anchor_quat_w = asset.data.body_link_quat_w[:, anchor_cfg.body_ids[0]]  # 形状: (num_envs, 4)，锚点刚体世界系四元数 (w, x, y, z)
     
-    body_pos_w = asset.data.body_link_pos_w[:, body_cfg.body_ids]     # (num_envs, num_bodies, 3)
-    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]   # (num_envs, num_bodies, 4)
+    body_pos_w = asset.data.body_link_pos_w[:, body_cfg.body_ids]     # 形状: (num_envs, num_bodies, 3)，各身体刚体世界系位置
+    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]   # 形状: (num_envs, num_bodies, 4)，各身体刚体世界系四元数
 
     num_bodies = body_pos_w.shape[1]
     # 计算相对旋转四元数
@@ -130,8 +130,8 @@ def robot_body_lin_vel_b(
     """
     asset: Entity = env.scene[anchor_cfg.name]
     
-    body_lin_vel_w = asset.data.body_link_lin_vel_w[:, body_cfg.body_ids]   # (num_envs, num_bodies, 3)
-    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]       # (num_envs, num_bodies, 4)
+    body_lin_vel_w = asset.data.body_link_lin_vel_w[:, body_cfg.body_ids]   # 形状: (num_envs, num_bodies, 3)，各刚体世界系线速度 (vx, vy, vz)
+    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]       # 形状: (num_envs, num_bodies, 4)，各刚体世界系姿态四元数
 
     num_bodies = body_lin_vel_w.shape[1]
 
@@ -156,8 +156,8 @@ def robot_body_ang_vel_b(
     """
     asset: Entity = env.scene[anchor_cfg.name]
     
-    body_ang_vel_w = asset.data.body_link_ang_vel_w[:, body_cfg.body_ids]   # (num_envs, num_bodies, 3)
-    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]       # (num_envs, num_bodies, 4)
+    body_ang_vel_w = asset.data.body_link_ang_vel_w[:, body_cfg.body_ids]   # 形状: (num_envs, num_bodies, 3)，各刚体世界系角速度 (wx, wy, wz)
+    body_quat_w = asset.data.body_link_quat_w[:, body_cfg.body_ids]       # 形状: (num_envs, num_bodies, 4)，各刚体世界系姿态四元数
 
     num_bodies = body_ang_vel_w.shape[1]
 

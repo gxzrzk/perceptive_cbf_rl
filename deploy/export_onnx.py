@@ -55,8 +55,8 @@ def main():
         print(f"错误: 检查点文件不存在: {args.checkpoint}")
         sys.exit(1)
 
-    # 导入任务配置，自动将 G1 躲避任务注册进 mjlab 任务注册表中
-    import src.tasks.amp_loco.config.g1 as _g1  # noqa: F401
+    # 导入任务配置，自动将 G1 躲避任务注册进 mjlab 任务注册表中 (触发任务注册 register tasks)
+    import src.tasks.amp_loco.config.g1 as _g1  # noqa: F401 # 模块导入副作用：执行任务装饰器注册
     from mjlab.envs import ManagerBasedRlEnv
     from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls

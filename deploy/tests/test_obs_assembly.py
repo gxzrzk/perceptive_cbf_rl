@@ -53,9 +53,10 @@ def test_depth_metres_to_obs():
         4. 中间值 2.55m 映射为 (2.55 - 0.1) / (5.0 - 0.1) = 0.5。
     """
     near, far = 0.1, 5.0
-    frame = np.array([0.05, 0.1, 5.0, 2.55], dtype=np.float32)  # below-near, near, far, mid
+    frame = np.array([0.05, 0.1, 5.0, 2.55], dtype=np.float32)  # 构造典型测试点：盲区近距、最近边界、最远边界、正中距离 (below-near, near, far, mid)
     out = P.depth_metres_to_obs(frame, near, far)
-    # below-near -> far -> 1; near -> 0; far -> 1; mid 2.55 -> (2.55-0.1)/4.9 = 0.5
+    # 归一化映射计算验证：盲区 (0.05m) 映射为远端 1.0；0.1m 映射为 0.0；5.0m 映射为 1.0；2.55m 映射为 (2.55-0.1)/(5.0-0.1) = 0.5
+    # (原英文公式: below-near -> far -> 1.0; near -> 0.0; far -> 1.0; mid 2.55 -> (2.55-0.1)/4.9 = 0.5)
     np.testing.assert_allclose(out, [1.0, 0.0, 1.0, 0.5], atol=1e-6)
 
 
@@ -100,27 +101,29 @@ def test_proprio_term_major_layout():
     预期输出及验证逻辑：
         向量各切片必须严格按照 [旧帧, 新帧] 连续排布，与仿真环境 mjlab 的默认格式完全对齐。
     """
-    # history_length=2, distinct per-term sentinel values so the layout is checkable.
+    # 历史长度设定为 2 (history_length=2)，为各物理项指定独特的哨兵常数值以严格校验内存时序布局
+    # (原英文注释: history_length=2, distinct per-term sentinel values so the layout is checkable.)
     h = P.ProprioHistory(history_length=2)
-    # frame 0
+    # 推入第 0 帧历史观测数据（较旧历史帧: frame 0, oldest）
     h.append(
         base_ang_vel=np.full(3, 10.0), proj_grav=np.full(3, 20.0), command=np.full(3, 30.0),
         joint_pos_rel=np.full(29, 40.0), joint_vel_rel=np.full(29, 50.0), last_action=np.full(29, 60.0),
     )
-    # frame 1 (newest)
+    # 推入第 1 帧历史观测数据（当前最新帧: frame 1, newest）
     h.append(
         base_ang_vel=np.full(3, 11.0), proj_grav=np.full(3, 21.0), command=np.full(3, 31.0),
         joint_pos_rel=np.full(29, 41.0), joint_vel_rel=np.full(29, 51.0), last_action=np.full(29, 61.0),
     )
     v = h.vector()
-    # term-major: each term is [oldest(frame0) .. newest(frame1)] concatenated, in term order.
+    # 项主序排布契约 (term-major): 各物理项内部按由旧到新 [oldest(frame0) .. newest(frame1)] 连续拼接，严格对应训练端 actor_terms 顺序
+    # (原英文注释: term-major: each term is [oldest(frame0) .. newest(frame1)] concatenated, in term order.)
     expected = np.concatenate([
-        np.full(3, 10.0), np.full(3, 11.0),    # base_ang_vel  oldest, newest
-        np.full(3, 20.0), np.full(3, 21.0),    # projected_gravity
-        np.full(3, 30.0), np.full(3, 31.0),    # command
-        np.full(29, 40.0), np.full(29, 41.0),  # joint_pos
-        np.full(29, 50.0), np.full(29, 51.0),  # joint_vel
-        np.full(29, 60.0), np.full(29, 61.0),  # actions
+        np.full(3, 10.0), np.full(3, 11.0),    # 机身角速度 base_ang_vel: 最旧帧 (oldest), 最新帧 (newest)
+        np.full(3, 20.0), np.full(3, 21.0),    # 投影重力向量 projected_gravity: 最旧帧, 最新帧
+        np.full(3, 30.0), np.full(3, 31.0),    # 速度指令 command: 最旧帧, 最新帧
+        np.full(29, 40.0), np.full(29, 41.0),  # 29 关节相对角度 joint_pos: 最旧帧, 最新帧
+        np.full(29, 50.0), np.full(29, 51.0),  # 29 关节角速度 joint_vel: 最旧帧, 最新帧
+        np.full(29, 60.0), np.full(29, 61.0),  # 上拍控制动作 actions: 最旧帧, 最新帧
     ])
     np.testing.assert_array_equal(v, expected)
 
@@ -154,7 +157,7 @@ def test_depth_ring_first_frame_fills_all_offsets():
     ring = P.DepthRing(frame_offsets=(0, 1, 3))
     f0 = np.full(144, 0.7, dtype=np.float32)
     out = ring.push(f0)
-    # only one frame seen -> every offset reads it.
+    # 单帧初启安全回退机制：当仅收到首帧图像时，所有时间偏移槽位均安全填充该首帧数据 (only one frame seen -> every offset reads it)
     assert out.shape == (3 * 144,)
     np.testing.assert_array_equal(out, np.tile(f0, 3))
 
@@ -173,7 +176,8 @@ def test_depth_ring_newest_first_ordering():
     out = None
     for f in frames:
         out = ring.push(f)
-    # after pushing 0..5, newest=5. offsets (0,1,3) -> frames 5, 4, 2.
+    # 由新到旧 (newest->oldest) 时序切片验证：连续推入 0..5 帧后最新帧为 5，偏移量 (0, 1, 3) 分别对应提取第 5、4、2 帧
+    # (原英文注释: after pushing 0..5, newest=5. offsets (0,1,3) -> frames 5, 4, 2.)
     expected = np.concatenate([np.full(144, 5.0), np.full(144, 4.0), np.full(144, 2.0)])
     np.testing.assert_array_equal(out, expected)
 
@@ -190,8 +194,8 @@ def test_depth_ring_partial_history_clamps_to_oldest():
     a = np.full(144, 1.0, dtype=np.float32)
     b = np.full(144, 2.0, dtype=np.float32)
     ring.push(a)
-    out = ring.push(b)  # only two frames pushed; offset 3/8/18 not available yet
-    # newest (offset 0) = b; deeper offsets fall back to the oldest fill (a).
+    out = ring.push(b)  # 仅推入两帧数据；深层偏移量 3/8/18 尚未积累足够步数 (only two frames pushed; offset 3/8/18 not available yet)
+    # 最新槽位 (offset 0) 为最新帧 b；深层槽位自动安全回退填充最早帧 a，防止越界或未初始化脏数据 (newest offset 0 = b; deeper offsets fall back to oldest fill a)
     expected = np.concatenate([np.full(144, 2.0), np.full(144, 1.0), np.full(144, 1.0), np.full(144, 1.0)])
     np.testing.assert_array_equal(out, expected)
 
@@ -209,7 +213,7 @@ def test_depth_ring_reset_reinits_to_next_frame():
     ring.push(np.full(144, 2.0, dtype=np.float32))
     ring.reset()
     out = ring.push(np.full(144, 9.0, dtype=np.float32))
-    # post-reset the new frame fills every offset (no bleed from the old episode).
+    # 复位重置隔离性验证：reset 后推入的新帧填满所有历史偏移量槽位，彻底消除旧回合历史的污染渗透 (post-reset new frame fills every offset; no bleed from old episode)
     np.testing.assert_array_equal(out, np.tile(np.full(144, 9.0), 2))
 
 
@@ -223,7 +227,7 @@ def test_assemble_obs_concatenates_proprio_then_depth():
         前 384 维完全等于 proprio，后 576 维完全等于 depth。
     """
     proprio = np.arange(384, dtype=np.float32)
-    depth = np.arange(384, 384 + 576, dtype=np.float32)  # 4 offsets * 144
+    depth = np.arange(384, 384 + 576, dtype=np.float32)  # 模拟堆叠深度图特征: 4 个历史时刻偏移 * 144 维/帧 = 576 维 (4 offsets * 144)
     obs = P.assemble_obs(proprio, depth)
     assert obs.shape == (1, 960)
     np.testing.assert_array_equal(obs[0, :384], proprio)
@@ -246,9 +250,9 @@ def test_freshness_gate_holds_last_frame_when_stale():
     gate = P.DepthGate(n_cam=1)
     f = np.full(144, 0.3, dtype=np.float32)
     gate.update(f, t=0.0)
-    # fresh just after arrival
+    # 到达即时验证：刚接收到新数据报时，时间间隔在超时阈值内，判定为新鲜 (fresh just after arrival)
     assert not gate.is_stale(now=0.05, stale_s=0.1)
-    # stale after the window; the held frame is still returned (no stall).
+    # 超时保持机制：超过设定窗口后判定为陈旧 (stale)；但仍稳定返回锁存的上一有效帧，保证控制主循环不阻塞崩溃 (held frame still returned, no stall)
     assert gate.is_stale(now=0.25, stale_s=0.1)
     np.testing.assert_array_equal(gate.frame(), f)
 
@@ -261,8 +265,8 @@ def test_freshness_gate_stale_before_first_frame():
         保证机器人在视觉模块启动就绪前保持平稳站立，不会误触发剧烈躲避动作。
     """
     gate = P.DepthGate(n_cam=1)
-    # no datagram yet -> stale, and frame() returns a far (empty) image so the
-    # robot just stands rather than crashing.
+    # 首帧未达保底机制：尚未收到任何 UDP 数据报时判定为陈旧，且 frame() 安全回退返回全 1.0 全远平面空旷图，
+    # 确保机器人在视觉节点启动阶段平稳站立，避免误动作失控摔倒 (no datagram yet -> stale; returns far empty image so robot stands)
     assert gate.is_stale(now=1.0, stale_s=0.1)
     np.testing.assert_array_equal(gate.frame(), np.ones(144, dtype=np.float32))
 

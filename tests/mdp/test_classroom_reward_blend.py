@@ -53,7 +53,7 @@ def test_dt_scaled_task_sum_and_standing_style_blend(disc_output, style_score):
     """
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     runner = g1_amp_dodge_mimickit_classroom_ppo_runner_cfg()
-    # Three separate cases: heading reward, full stillness cost, termination cost.
+    # 构造 3 个独立测试用例环境：分别激活航向对齐奖励、完全停滞代价、终止惩罚 (Three separate cases: heading reward, full stillness cost, termination cost).
     env = NS(num_envs=3, device='cpu', samples={
         'heading': torch.tensor([1., 0., 0.]),
         'stillness': torch.tensor([0., 1., 0.]),
@@ -90,7 +90,7 @@ def test_registered_classroom_matches_standing_reward_scaling():
         1. scale_rewards_by_dt 在所有任务中均为 True；
         2. amp_reward_coef == 0.5 且 amp_task_reward_lerp == 0.5，确保风格与任务目标平衡一致。
     """
-    import src.tasks  # noqa: F401
+    import src.tasks  # noqa: F401 -- 触发任务注册（通过副作用导入注册所有任务配置环境） (triggers task registration via side-effect import)
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
     task = 'Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat'

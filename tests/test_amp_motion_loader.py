@@ -91,7 +91,7 @@ def test_every_default_batch_covers_all_clips_on_repeated_updates(device):
             if previous is not None:
                 assert not torch.equal(state, previous)
             previous = state
-            # Same clip, next chronological frame, including two-frame clips.
+            # 同一片段的下一自然帧验证（包含仅有两帧的最短动作片段）：确保 clip_id 保持一致，帧索引恰好严格加 1 (Same clip, next chronological frame, including two-frame clips).
             assert torch.equal(next_state[:, 0], state[:, 0])
             assert torch.equal(next_state[:, 1], state[:, 1] + 1)
             assert (state[:, 1] < loader._motion_lengths[ids] - 1).all()
@@ -99,7 +99,7 @@ def test_every_default_batch_covers_all_clips_on_repeated_updates(device):
             assert (state[:, 18:24] == 33.).all()
             assert (state[:, 24:] == 44.).all()
         assert batches == 20
-    # Extra slots are not permanently assigned to the same clip subset.
+    # 验证余数插槽动态轮转：除不尽时的多余采样名额不会永久分配给同一子集片段，批次间具有随机轮换特性 (Extra slots are not permanently assigned to the same clip subset).
     assert not torch.equal(extras[0], extras[1])
 
 

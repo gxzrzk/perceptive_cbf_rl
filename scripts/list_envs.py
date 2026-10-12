@@ -15,7 +15,7 @@ import tyro
 from prettytable import PrettyTable
 
 import mjlab
-import mjlab.tasks  # noqa: F401
+import mjlab.tasks  # noqa: F401  # 导入基础任务模块以触发任务注册（未直接调用因此忽略 F401 告警）
 import src.tasks
 from mjlab.tasks.registry import list_tasks
 
@@ -34,7 +34,8 @@ def list_environments(keyword: str | None = None):
   idx = 0
   for task_id in all_tasks:
     try:
-      # Optionally filter by keyword.
+      # 可选按关键字过滤任务 (Optionally filter by keyword)：
+      # 将任务名称与用户输入的关键字均转换为小写比对，支持模糊匹配子串
       if keyword and keyword.lower() not in task_id.lower():
         continue
 
@@ -53,6 +54,7 @@ def list_environments(keyword: str | None = None):
 
 
 def main():
+  """命令行主入口，通过 tyro 解析 CLI 参数并调用 list_environments 函数"""
   return tyro.cli(list_environments, config=mjlab.TYRO_FLAGS)
 
 

@@ -40,15 +40,28 @@ from mjlab.sim.sim import Simulation, SimulationCfg
 from mjlab.tasks.tracking.config.g1.env_cfgs import unitree_g1_flat_tracking_env_cfg
 
 # 复用 leap viz 模块中的渲染器（文本水印绘制、视频帧编码、离屏/窗口主循环）
-from visualize_leap_motions import _run_offscreen, _run_window  # noqa: E402
+from visualize_leap_motions import _run_offscreen, _run_window  # noqa: E402 (延迟导入忽略告警)
 
 
 def _load_clip_csv(path: Path, device: str, src_fps: float, target_fps: float) -> dict[str, Any]:
-    """Load a 36-col AMP CSV, subsample to target_fps, into the leap-viz clip dict.
+    """加载 36 列 AMP CSV 动作捕捉数据，降采样至目标帧率 target_fps，并封装为 leap-viz 兼容的字典结构。
+    (Load a 36-col AMP CSV, subsample to target_fps, into the leap-viz clip dict.)
 
-    CSV quaternion is XYZW; the sim root state wants WXYZ. Velocities aren't in the CSV
-    (and don't affect the rendered pose -- it's pure forward-kinematics from qpos), so they
-    are zero-filled.
+    物理与数据布局说明 (Physics and Data Layout Details):
+    - 四元数顺序转换: CSV 中存储的四元数格式为 [qx, qy, qz, qw] (XYZW 顺序)，而 MuJoCo 仿真器的根节点姿态
+      要求 [qw, qx, qy, qz] (WXYZ 顺序)，此处自动通过列切片拼接完成重组转换。
+    - 速度零填充: CSV 文件仅记录了刚体空间位姿与关节角度 (qpos)，未包含线速度与角速度 (qvel)。但在前向运动学
+      (Forward Kinematics, FK) 姿态回放中，MuJoCo 的关节网格渲染仅完全取决于位置坐标 qpos，速度不影响网格静态姿态，
+      因此采用全零张量 (zero-filled) 进行填充以满足数据结构对齐要求。
+
+    参数:
+      path: CSV 文件路径。
+      device: PyTorch 张量设备 (例如 'cuda:0' 或 'cpu')。
+      src_fps: 原始采集帧率 (例如 SEED 动作库为 120.0 fps)。
+      target_fps: 目标重采样帧率 (例如视频常用 30.0 fps)。
+
+    返回:
+      包含动作名称、帧率、帧数、根节点位姿及各关节角度张量的字典。
     """
     a = np.loadtxt(path, delimiter=",")
     if a.ndim == 1:
@@ -58,8 +71,10 @@ def _load_clip_csv(path: Path, device: str, src_fps: float, target_fps: float) -
     T = a.shape[0]
     q_xyzw = a[:, 3:7]
     q_wxyz = np.concatenate([q_xyzw[:, 3:4], q_xyzw[:, 0:3]], axis=1)
-    t = lambda x: torch.tensor(x, dtype=torch.float32, device=device)  # noqa: E731
-    z = lambda *s: torch.zeros(s, dtype=torch.float32, device=device)  # noqa: E731
+    # 快捷张量构造函数：将 numpy 数组转换为指定设备上的 float32 Tensor
+    t = lambda x: torch.tensor(x, dtype=torch.float32, device=device)  # noqa: E731 (允许使用 lambda 简写构造函数)
+    # 快捷零张量构造函数：构造全 0 的 float32 Tensor 填充速度项
+    z = lambda *s: torch.zeros(s, dtype=torch.float32, device=device)  # noqa: E731 (允许使用 lambda 简写构造函数)
     return {
         "name": path.stem,
         "fps": src_fps / stride,
@@ -82,15 +97,17 @@ def main(
     render_backend: str = "offscreen",
     device: str = "cuda:0",
 ) -> None:
-    """Replay every *.csv under motion_dir on the G1, labeled with the clip name.
+    """在 Unitree G1 机器人上逐一回放 motion_dir 目录下的全部 *.csv 动作，并在画面中叠加动作片段名称水印标签。
+    (Replay every *.csv under motion_dir on the G1, labeled with the clip name.)
 
-    Args:
-      motion_dir: dir of 36-col AMP CSVs (sorted by name; alternates land adjacent).
-      video_output: output mp4 (offscreen backend).
-      src_fps: source CSV rate (seed-derived clips are 120 fps).
-      target_fps: subsample to this for a standard, viewable video.
-      realtime_scale: 1.0 = real time; 0.5 = half speed.
-      render_backend: "offscreen" (mp4) or "window" (live viewer).
+    参数说明:
+      motion_dir: 包含 36 列 AMP CSV 动作片段的目录路径（默认按文件名排序，变体动作相邻排列）。
+      video_output: 离屏渲染导出的 MP4 视频输出路径 (用于 offscreen 后端)。
+      src_fps: 原始 CSV 文件的采样率 (例如 SEED 动作库数据采集频率为 120.0 fps)。
+      target_fps: 降采样重采样的目标帧率，用于导出标准流畅可播放的视频（默认 30.0 fps）。
+      realtime_scale: 回放时间缩放系数 (1.0 代表原速实时回放；0.5 代表 2 倍慢动作回放)。
+      render_backend: 渲染引擎后端，可选 'offscreen' (离屏编码为 MP4 视频) 或 'window' (弹出窗口实时交互查看)。
+      device: 仿真与张量运行设备 (例如 'cuda:0' 或 'cpu')。
     """
     paths = sorted(Path(motion_dir).glob("*.csv"))
     if not paths:

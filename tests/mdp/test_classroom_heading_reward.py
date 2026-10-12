@@ -124,7 +124,7 @@ def test_current_bearing_controls_turn_direction_not_cached_command(term):
     command, env = make_command([60.])
     command._update_command()
     assert command.command[0, 2] > 0.
-    # Change the current bearing without refreshing the cached command.
+    # 在不刷新指令缓存的情况下，直接修改当前目标相对方位角（验证即时物理感知计算而非受制于过期缓存） (Change the current bearing without refreshing the cached command).
     command.goal_pos_w[0] = torch.tensor([-1., -1.])
     env.scene["robot"].data.root_link_ang_vel_w[0, 2] = -.5
     assert term.func(env, **term.params).item() == pytest.approx(1.)
@@ -146,7 +146,7 @@ def test_pi_wrap_chooses_short_turn_direction(term):
         math.cos(math.radians(-179.)), math.sin(math.radians(-179.))
     ])
     env.scene["robot"].data.root_link_ang_vel_w[0, 2] = .5
-    # Heading +179deg and bearing -179deg differ by +2deg, not -358deg.
+    # 航向角 +179° 与目标方位角 -179° 跨越 ±π 边界时最短角差为 +2°，而非错误判定为 -358° (Heading +179deg and bearing -179deg differ by +2deg, not -358deg).
     assert term.func(env, **term.params).item() == pytest.approx(
         math.cos(math.radians(2.)) ** 4, abs=1e-6
     )

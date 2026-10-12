@@ -24,7 +24,8 @@ from pathlib import Path
 import mujoco
 
 from src import SRC_PATH
-# from mjlab.actuator import BuiltinPositionActuatorCfg
+# 备用导入：内置位置执行器配置（当前采用基于实机特性建模的宇树专用非线性执行器 UnitreeActuator）：
+# from mjlab.actuator import BuiltinPositionActuatorCfg  # 内置位置执行器类定义
 from src.assets.robots.unitree_g1.unitree_actuators import *
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.actuator import (
@@ -155,7 +156,7 @@ ACTUATOR_5010_16 = ElectricActuator(
 # PD 控制增益推导 (二阶振荡系统参数: 刚度 Kp 与 阻尼 Kd)
 # ==============================================================================
 # 目标固有频率 omega_n: 10 Hz -> 2 * pi * 10 rad/s
-NATURAL_FREQ = 10 * 2.0 * 3.1415926535  # 10Hz
+NATURAL_FREQ = 10 * 2.0 * 3.1415926535  # 设定二阶振荡系统的目标固有振动频率为 10Hz (omega_n = 2 * pi * f)
 # 阻尼比 zeta: 设为 2.0 (过阻尼状态 overdamped)，确保受扰动后平稳单调回归，抑制双足奔跑/跳跃时的冲击振荡
 DAMPING_RATIO = 2.0
 

@@ -35,10 +35,10 @@ def test_gimbal_plus_cbf_keeps_29_action_dim_and_excludes_camera():
         "CAMERA_GIMBAL": "1", "CAMERA_PROPRIO": "1", "CBF_JOINT": "1",
         "CAMERA_TILT_DEG": "20", "BALLONLY_AUG": "0",
     })
-    import src.tasks  # noqa: F401 -- triggers task registration (side-effect import)
+    import src.tasks  # noqa: F401 -- 触发任务注册（通过副作用导入注册所有任务配置环境） (triggers task registration via side-effect import)
     from mjlab.envs import ManagerBasedRlEnv
-    # Call the builder directly: the gimbal/CBF env vars are read at CALL time, whereas the
-    # registered cfg is frozen at first import (whose env vars this test cannot control).
+    # 直接调用构建器函数：云台与 CBF 相关的环境变量在调用函数时（CALL time）动态解析，
+    # 而注册表中的 cfg 在首次模块导入时便已固化（测试无法直接控制其环境变量） (Call the builder directly: the gimbal/CBF env vars are read at CALL time, whereas the registered cfg is frozen at first import).
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
         g1_amp_dodge_depth_single_ballonly_flat_env_cfg,
     )
@@ -46,8 +46,8 @@ def test_gimbal_plus_cbf_keeps_29_action_dim_and_excludes_camera():
     cfg.scene.num_envs = 4
     env = ManagerBasedRlEnv(cfg=cfg, device="cuda")
     term = env.action_manager.get_term("joint_pos")
-    # gimbal joint excluded -> 29 body DOF actuated by the CBF term (not 30).
+    # 云台关节独立驱动被排除：CBF 动作项仅作用于 G1 机器人的 29 个全身运动学自由度，而非包含相机的 30 维 (gimbal joint excluded -> 29 body DOF actuated by the CBF term, not 30).
     assert env.action_manager.total_action_dim == 29
-    # CBF filter bodies must not include the gimbal camera body.
+    # CBF 屏障保护刚体集合过滤：CBF 碰撞屏障保护的刚体列表中绝不能包含云台相机刚体 camera_pitch_link (CBF filter bodies must not include the gimbal camera body).
     body_names = [env.scene["robot"].body_names[i] for i in term._body_local.tolist()]
     assert "camera_pitch_link" not in body_names

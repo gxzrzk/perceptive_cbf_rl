@@ -45,21 +45,29 @@ import numpy as np
 import tyro
 from scipy.spatial.transform import Rotation as R
 
-# SEED g1 csv layout (after the header row).
-_FRAME_COL = 0
-_TRANS_COLS = slice(1, 4)  # cm
-_ROT_COLS = slice(4, 7)  # Euler xyz degrees
-_DOF_COLS = slice(7, 36)  # 29 joint angles, degrees
-_N_EXPECTED_COLS = 36
+# SEED G1 CSV 数据列布局（去除首行表头后）(SEED g1 csv layout after the header row):
+_FRAME_COL = 0             # 帧序号列 (Frame number)
+_TRANS_COLS = slice(1, 4)  # 根节点世界坐标平移 (root_translateX/Y/Z)，单位：厘米 (cm)
+_ROT_COLS = slice(4, 7)    # 根节点姿态外旋欧拉角 (root_rotateX/Y/Z)，'xyz' 顺序，单位：度 (degrees)
+_DOF_COLS = slice(7, 36)   # 29 个关节自由度角度 (joint angles)，单位：度 (degrees)
+_N_EXPECTED_COLS = 36      # 预期总列数：1 帧号 + 3 平移 + 3 旋转 + 29 关节 = 36 列
 
 
 def convert_array(seed: np.ndarray) -> np.ndarray:
-  """Convert one SEED g1 motion array (T, 36) to AMP format (T, 36)."""
+  """将单个 SEED G1 运动数据数组 (T, 36) 转换为 AMP 标准格式 (T, 36)。
+  (Convert one SEED g1 motion array (T, 36) to AMP format (T, 36).)
+
+  转换细节 (Conversion Details):
+  - 坐标单位换算: 平移列除以 100.0，从厘米 (cm) 转换为国际标准单位米 (m)。
+  - 姿态表达转换: 通过 SciPy 将 'xyz' 外旋欧拉角转换为四元数 [qx, qy, qz, qw] (xyzw 格式)。
+  - 角度单位换算: 将 29 个关节角度从角度 (degrees) 转换为弧度 (radians)。
+  - 格式拼接: 拼接为 [3维平移(m), 4维四元数(xyzw), 29维关节角(rad)] 的标准 36 列 float64 矩阵。
+  """
   if seed.ndim != 2 or seed.shape[1] != _N_EXPECTED_COLS:
     raise ValueError(
       f"Expected SEED array of shape (T, {_N_EXPECTED_COLS}), got {seed.shape}"
     )
-  pos_m = seed[:, _TRANS_COLS] / 100.0  # cm -> m
+  pos_m = seed[:, _TRANS_COLS] / 100.0  # 厘米转换为米 (cm -> m)
   quat_xyzw = R.from_euler("xyz", seed[:, _ROT_COLS], degrees=True).as_quat()
   dof_rad = np.deg2rad(seed[:, _DOF_COLS])
   return np.concatenate([pos_m, quat_xyzw, dof_rad], axis=1).astype(np.float64)
@@ -70,15 +78,22 @@ def convert_file(
   output_dir: Path,
   frame_range: tuple[int, int] | None = None,
 ) -> Path:
+  """转换单个 SEED G1 CSV 文件并保存为标准 36 列 AMP CSV 格式。
+  
+  参数:
+    input_file: 源 SEED CSV 文件的路径。
+    output_dir: 输出目录路径。
+    frame_range: 可选的裁剪帧区间元组 (start, end)，基于 1-indexed 包含两端的闭区间。
+  """
   seed = np.genfromtxt(str(input_file), delimiter=",", skip_header=1)
   total = seed.shape[0]
   if frame_range is not None:
-    start, end = frame_range  # 1-indexed, inclusive, over data frames
+    start, end = frame_range  # 基于 1 的双闭区间索引 [start, end] (1-indexed, inclusive, over data frames)
     seed = seed[start - 1 : end]
   amp = convert_array(seed)
   output_dir.mkdir(parents=True, exist_ok=True)
   out_path = output_dir / input_file.name
-  # 6 decimals matches the repo's existing amp csv precision.
+  # 保存为浮点数保留 6 位小数，与代码库中既有的 AMP CSV 精度规范一致 (6 decimals matches the repo's existing amp csv precision)
   np.savetxt(str(out_path), amp, delimiter=",", fmt="%.6f")
   range_note = f" (kept {frame_range[0]}:{frame_range[1]} of {total})" if frame_range else ""
   print(f"  {input_file.name}: {seed.shape[0]} frames{range_note} -> {out_path}")
@@ -90,18 +105,19 @@ def main(
   input_file: str | None = None,
   manifest: str | None = None,
 ) -> None:
-  """Convert SEED g1 CSV(s) to AMP CSV format.
+  """将 SEED G1 格式的动作 CSV 转换为 AMP 格式的 CSV。
+  (Convert SEED g1 CSV(s) to AMP CSV format.)
 
-  Args:
-    output_dir: Directory to write converted AMP csvs into.
-    input_file: Path to a single SEED g1 csv.
-    manifest: Path to a text file listing SEED g1 csv paths (one per line).
+  参数说明 (Args):
+    output_dir: 转换后 AMP CSV 文件的输出目录路径 (Directory to write converted AMP csvs into)。
+    input_file: 单个待转换的 SEED G1 CSV 文件路径 (Path to a single SEED g1 csv)。
+    manifest: 文本清单文件路径，内部列出若干 SEED G1 CSV 文件路径（每行一个）(Path to a text file listing SEED g1 csv paths)。
   """
   if input_file is None and manifest is None:
     raise ValueError("Provide either --input-file or --manifest.")
 
   out_dir = Path(output_dir)
-  # Each entry: (path, optional (start, end) frame range, 1-indexed inclusive).
+  # 每个待处理条目记录为：(文件路径, 可选的 (start, end) 帧范围，1-indexed 包含边界) [原英文: Each entry: path, optional frame range]
   entries: list[tuple[Path, tuple[int, int] | None]] = []
   if input_file is not None:
     entries.append((Path(input_file), None))
@@ -110,8 +126,8 @@ def main(
       line = line.strip()
       if not line or line.startswith("#"):
         continue
-      # Optional trailing "start:end" frame range, whitespace-separated from the path.
-      # e.g. "/path/clip.csv  1:246" keeps only frames 1..246 (drops a stumbly tail).
+      # 行尾可选带有由空格分隔的 "start:end" 帧裁剪区间。
+      # 例如 "/path/clip.csv  1:246" 仅保留第 1 至 246 帧（可剔除采集末尾站立不稳/摔倒的尾部数据，对应原英文 stumbly tail 截断）。
       parts = line.split()
       path = Path(parts[0])
       frame_range: tuple[int, int] | None = None

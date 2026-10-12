@@ -84,7 +84,7 @@ def test_static_layout_survives_contacts_steps_and_partial_reset():
         assert torch.allclose(env.sim.data.geom_xpos[:, geom_ids], expected, atol=1e-5)
         assert (model.body_weldid[body_ids.cpu().numpy()] == 0).all()
         assert (model.body_mocapid[body_ids.cpu().numpy()] == -1).all()
-        # All 34 obstacle free joints (204 velocity DOFs) have been removed.
+        # 所有 34 个教室障碍物的自由浮动关节（对应 204 个速度自由度 DOF）已全部移除固化为静态刚体，总速度维度精确等于机器人与球体之和 (All 34 obstacle free joints, 204 velocity DOFs, have been removed).
         robot_model = cfg.scene.entities['robot'].build().spec.compile()
         ball_model = cfg.scene.entities['ball'].build().spec.compile()
         assert model.nv == robot_model.nv + ball_model.nv

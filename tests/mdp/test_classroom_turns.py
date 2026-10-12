@@ -115,12 +115,12 @@ def test_arc_geometry_and_progress():
     """
     points, counts = round_classroom_route(torch.tensor([[[0., 0.], [5., 0.], [5., 4.]]]))
     route = points[0, :counts[0]]
-    # The seven sampled points lie on the tangent circle centered at (4.4, .6).
+    # 圆弧内插点验证：所生成的 7 个插值点精确落在以 (4.4, 0.6) 为圆心、半径为 0.6m 的切向圆弧上 (The seven sampled points lie on the tangent circle centered at (4.4, .6)).
     assert torch.allclose((route[1:-1] - torch.tensor([4.4, .6])).norm(dim=-1), torch.full((7,), .6), atol=1e-5)
     segments = route[1:] - route[:-1]
     headings = torch.atan2(segments[:, 1], segments[:, 0])
     assert (headings.diff().abs() <= torch.pi / 12 + 1e-5).all()
-    # Add a straight tail so the test exercises following, not route extension.
+    # 在拐弯后追加一段直线尾段 [5., 10.]，使得测试专注于检验转弯路径跟踪，而非提前触发到达终点时的动态路线延展逻辑 (Add a straight tail so the test exercises following, not route extension).
     command = make_command(route.tolist() + [[5., 10.]], (0., 0.))
     last_progress = 0.
     for i in range(len(route) - 1):

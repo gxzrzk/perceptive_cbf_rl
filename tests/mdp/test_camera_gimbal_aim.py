@@ -46,11 +46,11 @@ def _build_gimbal_env():
         "CBF_JOINT": "0",
         "DAGGER_TEACHER_OBS": "0",
     })
-    # 导入 src.tasks 以触发子模块注册（副作用导入）
-    import src.tasks  # noqa: F401
+    # 导入 src.tasks 以触发任务模块注册（副作用导入）
+    import src.tasks  # noqa: F401 -- 触发任务注册
 
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
-        g1_amp_dodge_mimickit_classroom_flat_env_cfg,  # noqa: F401
+        g1_amp_dodge_mimickit_classroom_flat_env_cfg,  # noqa: F401 -- 导入教室躲避任务配置备用
         g1_amp_dodge_depth_single_ballonly_flat_env_cfg,
     )
     from mjlab.envs import ManagerBasedRlEnv
@@ -73,7 +73,7 @@ def _place_ball_airborne(env, robot, ball, x_offset=2.0, z_world=1.8, vx=-3.0):
     N = env.num_envs
     dev = env.device
 
-    robot_base_pos = robot.data.root_link_pos_w.clone()  # (N, 3)
+    robot_base_pos = robot.data.root_link_pos_w.clone()  # 机器人基座世界坐标，形状为 (N, 3) (robot root position in world frame)
     quat_identity = torch.zeros(N, 4, device=dev)
     quat_identity[:, 0] = 1.0  # w=1, x=y=z=0 单位四元数
 
@@ -103,7 +103,7 @@ def _place_ball_grounded(env, ball, ball_geom_id, x_offset=1.0):
 
     robot = env.scene["robot"]
     robot_base_pos = robot.data.root_link_pos_w.clone()
-    ball_r = env.sim.model.geom_size[:, ball_geom_id, 0]  # (N,)
+    ball_r = env.sim.model.geom_size[:, ball_geom_id, 0]  # 球体几何半径标量，形状为 (N,) (ball geometry radius scalar)
 
     quat_identity = torch.zeros(N, 4, device=dev)
     quat_identity[:, 0] = 1.0
@@ -232,7 +232,7 @@ def test_aim_event_sets_same_target():
 
     # 读回关节目标并进行断言比对
     jid = env._gimbal_ids[0]
-    actual_target = robot.data.joint_pos_target[:, jid].squeeze(-1)   # (N,)
+    actual_target = robot.data.joint_pos_target[:, jid].squeeze(-1)   # 实际下发的关节目标位置张量，形状为 (N,) (actual joint position target)
 
     assert torch.allclose(actual_target, expected_target, atol=1e-5), (
         f"aim_camera_at_ball joint target mismatch.\n"

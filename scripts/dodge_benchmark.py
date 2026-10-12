@@ -57,17 +57,21 @@ from dataclasses import asdict
 
 import torch
 
-# Base proprio dim the loco walk actor (Unitree-G1-AMP-Flat) expects: 29-joint G1, history 4,
-# term-major [ang_vel(3) grav(3) cmd(3) joint_pos(29) joint_vel(29) actions(29)] * 4 = 384.
+# 基础运动行走策略网络 (Unitree-G1-AMP-Flat) 所期望的本体感觉维度：29 关节 G1，历史步长 4，
+# 按 term-major 展开 [角速度(3) 重力向量(3) 速度指令(3) 关节位置(29) 关节速度(29) 上步动作(29)] * 4 = 384 维。
+# [英文对照: Base proprio dim the loco walk actor expects: 29-joint G1, history 4, total 384]
 PROPRIO_BASE = 384
 
 
 def _actor_cmd_slice(env):
-    """(offset, width) of the 'command' (velocity) term within the actor obs vector.
+    """计算 actor 观测向量中 'command' (速度控制指令) 项的 (起始偏移 offset, 特征宽度 width)。
+    (offset, width of the 'command' term within the actor obs vector.)
 
-    The command term sits before joint_pos/joint_vel in the term-major layout, so this
-    offset is identical in the full actor obs AND the gimbal-sliced one (the gimbal slice
-    only drops camera_pitch from the later joint terms). Width == 3 * history_length."""
+    排布与切片细节:
+    在 term-major 排布结构中，command 项位于 joint_pos / joint_vel 之前，
+    因此无论是完整的 actor 观测向量，还是经过云台关节剔除后的切片观测向量，command 项的起始偏移量均完全相同。
+    其特征宽度恒为 3 * 历史帧步长 (history_length)。
+    """
     om = env.observation_manager
     names = list(om._group_obs_term_names["actor"])
     dims = [int(d[0]) for d in om._group_obs_term_dim["actor"]]
@@ -81,64 +85,55 @@ def _actor_cmd_slice(env):
 
 def _home_recover_cmd(env, vel_deadband=0.5, omega_floor=1.0, pos_tol=0.35, yaw_tol=0.15,
                       turn_first_thresh=4.0, speed_tol=0.3, ang_speed_tol=1.0, height_tol=0.1):
-    """Body-frame velocity command (N,3) = [vx, vy, wz] + a per-env ``settled`` mask, driving
-    each robot back to its home STATION -- both position (env origin) and facing (spawn
-    heading) -- in a ROTATE-THEN-TRANSLATE fashion.
+    """计算机体坐标系下的速度控制指令 (N,3) = [vx, vy, wz] 以及各环境机器人的稳定就位掩码 settled，
+    以“先对齐朝向后直线行进 (ROTATE-THEN-TRANSLATE)”控制逻辑引导机器人自主走回发球工位（初始原点与初始朝向）。
+    (Body-frame velocity command [vx, vy, wz] + settled mask driving robot back home.)
 
-    Used in the walk-recover phase so the robot returns to its throwing station between throws
-    (deploy-faithful) instead of standing wherever / facing whichever way the last dodge left
-    it. Reuses the env twist command's P-gains/limits. The caller early-exits the recovery
-    (throws the next ball) once ``settled`` -- within ``pos_tol`` m and ``yaw_tol`` rad of home.
-
-      * Turn-while-walking: yaw error is taken to the HOME heading (yaw of the
-        ``default_root_state`` pose the robot resets to) and commanded alongside the
-        translation. This loco policy turns poorly IN PLACE (zero linear velocity) but turns
-        well while walking, so by default translation is NOT suppressed (turn_first_thresh is
-        set above pi). The knob remains: with a finite ``turn_first_thresh`` the robot rotates
-        in place while |yaw_err| exceeds it -- but for this policy that starves it (it neither
-        translates nor effectively rotates from a far, spun, post-dodge pose), so it is off.
-      * Rotation floor: the policy under-tracks slow turns, so when a turn is needed the yaw
-        command is floored to ``omega_floor`` rad/s (a strong, trackable turn) up to the cfg
-        cap, rather than a weak proportional creep.
-      * Linear deadband: translation below ``vel_deadband`` m/s is zeroed (no creep on a
-        command the policy can't follow); the P-command shrinks with distance, so this stops
-        the robot once roughly home."""
+    控制机制与动力学背景说明:
+    - 用于 walk-recover 部署闭环：在每次避障抛球间隙，基础步态网络接管控制，使机器人自动走回并对齐测试原点，
+      避免机器人在上一次避障留下的边缘或偏航状态下被动开始下一轮，忠实还原真机部署运行流程。
+    - 边走边转逻辑: 本步态策略在原地自转 (纯旋转零线速) 时表现欠佳，但在行进移动过程中具有优秀的航向修正能力，
+      因此默认允许平移与旋转同时进行；当航向误差需要修正时，施加保底角速度 omega_floor 保证快速对齐。
+    - 速度死区与 P 控制: 距离原点较远时按比例控制器生成目标速度；当指令速度低于死区阈值 vel_deadband 时截断归零，
+      避免在极小残余误差下引发高频原地踏步抖动。
+    - 稳定站立就位判定: 必须同时满足空间位置误差 < pos_tol、航向偏差 < yaw_tol，且机器人处于低动量平稳直立状态
+      （线速度、角速度接近零，机体达到标称站立高度，排除迈步中或跪倒失稳状态）。
+    """
     from mjlab.utils.lab_api.math import quat_apply_inverse, yaw_quat, wrap_to_pi
     robot = env.scene["robot"]
-    tc = env.cfg.commands["twist"]  # GoToGoalCommandCfg -- reuse its gains/limits
+    tc = env.cfg.commands["twist"]  # 复用环境中的 twist 跟踪指令配置（GoToGoalCommandCfg 的增益与限幅参数）
     base_xy = robot.data.root_link_pos_w[:, :2]
     home_xy = env.scene.env_origins[:, :2]
     err_w = home_xy - base_xy
     dist = err_w.norm(dim=-1)
     err_w3 = torch.cat([err_w, torch.zeros_like(err_w[:, :1])], dim=-1)
     err_b = quat_apply_inverse(yaw_quat(robot.data.root_link_quat_w), err_w3)[:, :2]
-    # Home heading = yaw of the default (spawn) root quaternion the robot resets to.
+    # 原点标称朝向 = 机器人重置时的默认根节点四元数的偏航角 yaw (Home heading = yaw of spawn root quat)
     hq = robot.data.default_root_state[:, 3:7]  # (w, x, y, z)
     w, x, y, z = hq.unbind(-1)
     home_heading = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
     yaw_err = wrap_to_pi(home_heading - robot.data.heading_w)
     need_turn = yaw_err.abs() > yaw_tol
 
-    # Rotation: strong turn (>= omega_floor rad/s) toward home heading while mis-facing.
+    # 转向控制：当朝向偏差超出容差时，向标称朝向施加强力旋转 (>= omega_floor rad/s) (Rotation P-control)
     omega_cap = max(tc.max_ang_vel_z, omega_floor)
     wz_mag = (tc.kp_yaw * yaw_err.abs()).clamp(min=omega_floor, max=omega_cap)
     wz = torch.where(need_turn, torch.sign(yaw_err) * wz_mag, torch.zeros_like(yaw_err))
 
-    # Translation toward origin (P-control, clamped, linear deadband). Rotate-then-translate:
-    # no translation while still turning to face home.
+    # 平移控制：朝向原点行进（P 比例控制，限幅截断，线性死区过滤）(Translation toward origin)
+    # 先转后移策略：当偏航角偏差剧烈时压制前向线速度，优先转动纠正朝向
     v = tc.kp * err_b
     v[:, 0] = v[:, 0].clamp(-tc.max_lin_vel_x, tc.max_lin_vel_x)
     v[:, 1] = v[:, 1].clamp(-tc.max_lin_vel_y, tc.max_lin_vel_y)
     v[v.norm(dim=-1) < vel_deadband] = 0.0
-    v[yaw_err.abs() > turn_first_thresh] = 0.0  # rotate-first only when grossly mis-facing
+    v[yaw_err.abs() > turn_first_thresh] = 0.0  # 仅当严重偏离航向时才完全静止原地先转向 (rotate-first only when grossly mis-facing)
 
     cmd = torch.zeros(env.num_envs, 3, device=err_w.device)
     cmd[:, :2] = v
     cmd[:, 2] = wz
-    # Settled into a STABLE STAND at home: at the origin (position), facing home (heading), AND
-    # genuinely standing again -- low linear & angular speed, upright at standing height (not
-    # mid-stride, not crouched/toppling from the last dodge). The caller throws the next ball
-    # only once this holds, so the robot is never pelted mid-recovery / off-balance.
+    # 稳定站立就位判定 (STABLE STAND at home)：到达原点坐标，对齐标称朝向，且处于真实的低动量直立站姿
+    # （线速度与角速度均接近零，机体高度达到站立标称高度，非奔跑迈步中或上一次避障残留的跪地失稳状态）。
+    # 评测主循环仅在环境完全就位后才触发下一轮投球，确保机器人绝不会在恢复平衡途中或失衡踉跄时被动挨打。
     base_speed = robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1)
     ang_speed = robot.data.root_link_ang_vel_w.norm(dim=-1)
     stand_h = robot.data.default_root_state[:, 2]
@@ -164,56 +159,52 @@ def region_of(name: str) -> str:
 _STATE_TASK = "Unitree-G1-AMP-Dodge-MimicKit-Flat"
 _VISION_TASK = "Unitree-G1-AMP-Dodge-Depth-Single-BallOnly-Flat"
 
-# key -> (task id, experiment name). Experiment names match the train_runs/<key>.sh scripts
-# (each exports EXP_NAME=<key>), so newest_ckpt(exp) auto-discovers a fresh training run.
-# gimbal_* keys run the same BallOnly task with the oracle-aimed camera-pitch gimbal; the
-# benchmark sets CAMERA_GIMBAL=1 CAMERA_PROPRIO=1 for them automatically (see _set_gimbal_env).
+# 评测策略矩阵字典：key -> (任务注册 ID task_id, 实验目录名 experiment_name)。
+# 实验目录名与 train_runs/<key>.sh 中的 EXP_NAME 严格对齐，通过 newest_ckpt(exp) 自动发现对应训练结果。
+# gimbal_* 系列键值运行相同的 BallOnly 任务但搭载由真值动态瞄准的相机俯仰云台，
+# 基准测试脚本在环境构建前自动设置环境变量 CAMERA_GIMBAL=1 与 CAMERA_PROPRIO=1 (见 _set_gimbal_env)。
 TASKS = {
-    # State oracle (ground-truth ball obs), safety-mode trio (eval'd bare):
+    # 状态真值基准组 (State oracle: ground-truth ball obs)，包含三种安全屏障模式 (none / link / joint):
     "state_none":   (_STATE_TASK, "state_none"),
     "state_link":   (_STATE_TASK, "state_link"),
     "state_joint":  (_STATE_TASK, "state_joint"),
-    # Fixed head camera, ball-only masked depth:
+    # 头部固定相机深度视觉组 (Fixed head camera, ball-only masked depth):
     "vision_none":  (_VISION_TASK, "vision_none"),
     "vision_link":  (_VISION_TASK, "vision_link"),
     "vision_joint": (_VISION_TASK, "vision_joint"),
-    # Oracle-aimed gimbal camera:
+    # 带有真值主动瞄准的俯仰云台相机组 (Oracle-aimed gimbal camera):
     "gimbal_none":  (_VISION_TASK, "gimbal_none"),
     "gimbal_link":  (_VISION_TASK, "gimbal_link"),
     "gimbal_joint": (_VISION_TASK, "gimbal_joint"),
-    # Omni-throw oracle calibration (trained with OMNI_THROW=1; MUST be eval'd WITH --omni --
-    # by default these keys run only when --omni is passed, and the front-throw keys are skipped).
+    # 全向 360° 高速抛球校准组 (Omni-throw oracle calibration, 训练带 OMNI_THROW=1；必须搭配 --omni 进行评测):
     "state_link_omni":  (_STATE_TASK, "state_link_omni"),
     "state_joint_omni": (_STATE_TASK, "state_joint_omni"),
 }
 
 
 def _set_gimbal_env(key: str) -> None:
-    """Set/clear the gimbal env-var gates for this key (read at env-BUILD time)."""
+    """为指定任务键值设置或清除云台环境变量门控（在构建环境时读取生效）。
+    (Set/clear the gimbal env-var gates for this key read at env-BUILD time.)
+    """
     if key.startswith("gimbal"):
         os.environ["CAMERA_GIMBAL"] = "1"
         os.environ["CAMERA_PROPRIO"] = "1"
     else:
         os.environ.pop("CAMERA_GIMBAL", None)
         os.environ.pop("CAMERA_PROPRIO", None)
-# throw params (mirror dodge_env_cfgs.py throw_ball_on_dwell registration)
+# 投掷动力学参数配置（严格镜像 dodge_env_cfgs.py 中 throw_ball_on_dwell 的注册参数）：
 DIST = (2.0, 3.0); ANGLE_DEG = 25.0; FLIGHT = (0.58, 0.63)
-H_DESC = (1.5, 2.3)                 # descending (DOWN) launch height
-H_LOW = (0.4, 0.9)                  # low-arc (UP) launch height
-# UP arrival height (0.9, 1.3) -- matches training (dodge_env_cfgs.py adopted it 2026-06-09 after
-# this benchmark's frozen-statue sweep): z_tgt > ~1.4 m sails clean over the head (head top ~1.3 +
-# ball radius ~0.1), and with the 0.1 m lateral aim noise the 1.3-1.5 band is mostly a free miss --
-# the old (1.0, 1.5) wasted ~26% of UP throws on unhittable balls. (0.9, 1.3) keeps every throw a
-# real threat (statue hit rate ~97%) while staying chest/head height (duck territory). NOTE:
-# checkpoints trained BEFORE the change saw (1.0, 1.5) throws -- still a fair eval (a subset of
-# their training range). --up-z overrides.
+H_DESC = (1.5, 2.3)                 # 下沉平射低球 (DOWN) 的初始出射高度区间 (descending launch height)
+H_LOW = (0.4, 0.9)                  # 仰角高弧线球 (UP) 的初始起抛高度区间 (low-arc launch height)
+# UP 仰角高球到达目标高度区间 (0.9, 1.3) —— 与训练环境完全对齐 (dodge_env_cfgs.py 采纳的规范)：
+# 当目标高度 z_tgt > 1.4m 时小球会直接从机器人头顶越过（头部顶端约 1.3m + 球半径 0.1m），叠加 0.1m 瞄准噪声后，
+# 旧版的 (1.0, 1.5) 区间会有约 26% 的抛球属于天生打不中的废球。(0.9, 1.3) 确保每次抛球都构成致命威胁（雕像中弹率约 97%），
+# 且落在胸口/头部高度（必须执行下潜 duck 动作闪避）。--up-z 命令行参数可进行灵活覆盖。
 H_TGT = (0.9, 1.3)
 AIM_NOISE = 0.1; G = 9.81
-# Omnidirectional fast-throw eval (mirrors the OMNI_THROW=1 training env): 360deg world bearing,
-# OMNI_DIST away, fixed launch speed OMNI_SPEED, solved (direct arc) to hit the body. up_mask maps to
-# a high/low target-z band so the UP(duck)/DOWN(low) success breakdown stays meaningful.
-# SPEED: matches the released MimicKit config (12-15 m/s, 8-10 m) -- paper text says 20-25 m/s
-# (harder written spec); override via --omni-speed or OMNI_SPEED_MIN/MAX env vars if needed.
+# OMNI_* 全向高速抛球评测规范（镜像 OMNI_THROW=1 训练环境）：360° 世界坐标系方位角，距离 OMNI_DIST (8~10m)，
+# 固定初速度 OMNI_SPEED (12~15m/s)，直接解析求解弹道命中机器人机体。
+# 速度参数与 MimicKit 开源代码规范对齐 (12~15 m/s)；论文正文写作 20~25 m/s；可通过 --omni-speed 命令行进行覆盖。
 OMNI_DIST = (8.0, 10.0); OMNI_SPEED = (12.0, 15.0)
 OMNI_TZ_HIGH = (0.9, 1.3); OMNI_TZ_LOW = (0.3, 0.7)
 
@@ -229,7 +220,7 @@ def newest_ckpt(exp: str) -> str | None:
     return best
 
 
-def yaw_quat(q):  # (...,4) wxyz -> yaw-only quat
+def yaw_quat(q):  # 将维度为 (..., 4) 的 wxyz 完整四元数提取为仅含航向角偏航的 yaw-only 四元数 (wxyz -> yaw-only quat)
     w, x, y, z = q.unbind(-1)
     yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
     hz = yaw * 0.5
@@ -237,16 +228,23 @@ def yaw_quat(q):  # (...,4) wxyz -> yaw-only quat
     return out
 
 
-def quat_apply(q, v):
+def quat_apply(q, v):  # 使用四元数 q 对三维向量 v 进行空间旋转变换 (Rotate vector v by quaternion q using Rodrigues formula)
     w, x, y, z = q.unbind(-1)
     t = 2 * torch.cross(torch.stack([x, y, z], -1), v, dim=-1)
     return v + w.unsqueeze(-1) * t + torch.cross(torch.stack([x, y, z], -1), t, dim=-1)
 
 
 def inject_throw(env, up_mask, seed, h_tgt=None, omni=False):
-    """Replicate throw_ball_on_dwell's launch math for ALL envs; up_mask[i]=True -> duckable arc.
-    omni=True -> the omnidirectional fast throw (360deg bearing, OMNI_DIST away, OMNI_SPEED launch
-    speed solved to hit the body); up_mask picks the high (duck) vs low target-z band."""
+    """为所有环境并行生成并注入受控抛球物理状态；up_mask[i]=True 对应可下潜闪避的高弧线球 (duckable arc)。
+    (Replicate throw_ball_on_dwell's launch math for ALL envs; up_mask picks high duck vs low arc.)
+
+    参数与动力学求解原理:
+    - 统一随机种子: 使用指定的 seed 初始化发生器，确保不同策略评估时所承受的测试球序列物理参数完全相同。
+    - omni=True: 激活 360° 全向高速投球模式（围绕机器人机体 360 度随机选取发射方位角，发射距离 OMNI_DIST，
+      初速度 OMNI_SPEED，通过 solve_ballistic_velocity 逆向求解弹道使球击中机体目标高程）。
+    - omni=False (正面投球): 在机器人正面 +/-25 度扇区内发射，飞行时间 FLIGHT (0.58~0.63s)；
+      up_mask[i]=True 时从低位 (0.4~0.9m) 仰角高抛至胸颈高度 (0.9~1.3m)；False 时从高位 (1.5~2.3m) 平射下落穿过腿部。
+    """
     h_tgt = h_tgt or H_TGT
     g = torch.Generator(device=env.device).manual_seed(seed)
     robot, ball = env.scene["robot"], env.scene["ball"]
@@ -256,12 +254,12 @@ def inject_throw(env, up_mask, seed, h_tgt=None, omni=False):
     U = lambda a, b: torch.rand(n, generator=g, device=dev) * (b - a) + a
     if omni:
         from src.tasks.amp_loco.mdp.events import solve_ballistic_velocity
-        bearing = U(-math.pi, math.pi)                       # world-frame 360deg
+        bearing = U(-math.pi, math.pi)                       # 在世界坐标系下 360 度随机选取发射方位角 (world-frame 360deg)
         dist = U(*OMNI_DIST)
         start = torch.empty(n, 3, device=dev)
         start[:, 0] = rp[:, 0] + dist * torch.cos(bearing)
         start[:, 1] = rp[:, 1] + dist * torch.sin(bearing)
-        start[:, 2] = U(*H_DESC)                             # release height
+        start[:, 2] = U(*H_DESC)                             # 随机出球高度 (release height)
         speed = U(*OMNI_SPEED)
         target = torch.empty(n, 3, device=dev)
         target[:, 0:2] = rp[:, 0:2] + AIM_NOISE * torch.randn(n, 2, generator=g, device=dev)
@@ -297,7 +295,7 @@ def inject_throw(env, up_mask, seed, h_tgt=None, omni=False):
 
 
 def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
-    import src.tasks  # noqa
+    import src.tasks  # noqa: F401 (导入自定义任务模块以触发注册表装载)
     from src.tasks.amp_loco.config.g1 import dodge_env_cfgs as dec
     from src.tasks.amp_loco.mdp.events import reset_to_default_stand
     from mjlab.envs import ManagerBasedRlEnv
@@ -311,32 +309,30 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
     }
     offs = tuple(int(x) for x in args.frame_offsets.split(","))
     ballonly = task == _VISION_TASK
-    # gimbal_* keys need the gimbal env-var gates set BEFORE the cfg builder runs.
+    # gimbal_* 云台系列任务需要在调用配置构造器之前设定环境变量门控
     _set_gimbal_env(key)
-    # BallOnly's training DR is gated by BALLONLY_AUG inside its builder (the masked-depth profile,
-    # not the full-frame aug). Turn it on BEFORE building so eval matches training. The joint-CBF
-    # filter is train-only, so force CBF_JOINT off -> eval the bare actor exactly as at deploy.
+    # BallOnly 深度视觉任务的训练期域随机化由 BALLONLY_AUG 门控（针对分割后的深度图注入噪声与轮廓形变）。
+    # 在构建环境之前启用该环境变量，确保评测观测分布与模型训练时完全一致。
+    # 关节 CBF 滤波器仅用于训练期的探索约束，在评测期默认关闭以评估纯裸 Actor 网络（与真机物理部署场景一致）。
     if ballonly and args.depth_aug:
         os.environ["BALLONLY_AUG"] = "1"
-    # Filter is train-only -> default OFF at eval (bare actor = deploy scenario). Set
-    # BENCH_CBF_FILTER=1 to keep the joint-CBF filter ACTIVE at eval -- the paper's "+filter"
-    # cells (needs privileged ball state, not deployable).
+    # CBF 滤波器在评估时默认关闭（测试裸策略部署表现）；若显式设置 BENCH_CBF_FILTER=1，
+    # 则在评估期保持关节空间 CBF 滤波器处于激活状态（对应论文中的 "+filter" 单元格，需要特权真值小球状态）。
     os.environ["CBF_JOINT"] = "1" if os.environ.get("BENCH_CBF_FILTER") == "1" else "0"
     cfg = builders[task](play=True, depth_frame_offsets=offs)
     cfg.scene.num_envs = args.n
-    # zero-velocity command for ALL envs (stand & dodge in place)
+    # 为所有并行环境设置全量原地驻留避障速度指令 (zero-velocity command, stand & dodge in place)
     cfg.commands["twist"].rel_inplace_throw_envs = 1.0
     cfg.commands["twist"].rel_standing_envs = 0.0
-    # clean standing reset (not dynamic RSI) so the only variable is the throw
+    # 统一使用标准默认平稳站立姿态重置（而非 RSI 动态位姿重置），消除初始状态扰动差异
     if "reset_from_motion" in cfg.events:
         cfg.events["reset_from_motion"].func = reset_to_default_stand
         cfg.events["reset_from_motion"].params = {}
-    # remove the auto dwell-throw (we inject our own controlled throw)
+    # 移除环境内部自动的驻留投球事件（由评测套件通过 inject_throw 自行注入完全受控的测试球序列）
     cfg.events.pop("throw_ball_on_dwell", None)
-    # KEEP terminations: we read the env's EXACT per-term firings (incl. the sustained
-    # collapsed_crouch) and latch the first event per env. Auto-reset on termination is fine --
-    # post-latch envs are ignored (the ball is consumed; no re-throw). time_out (1000 steps) can't
-    # fire in our ~100-step trial, so within the window only hit/fall terminations occur.
+    # 严格保留环境的真实终止条件 (terminations)：我们捕获环境底层精确的单项触发（包括持续跪地的 collapsed_crouch），
+    # 并对每个环境的首次事件进行锁存记录。终止后的自动重置是安全的 —— 已锁存的环境在后续步骤中不再参与统计。
+    # 环境的 1000 步超时判定在约 100 步的评测窗口内绝不会触发，因此窗口期内仅会记录真实的被击中 (hit) 或摔倒 (fall)。
 
     agent_cfg = load_rl_cfg(task)
     env = ManagerBasedRlEnv(cfg=cfg, device=dev)
@@ -348,12 +344,12 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
     body_names = list(robot.body_names)
     n = args.n
     up_mask = torch.zeros(n, dtype=torch.bool, device=dev)
-    up_mask[: n // 2] = True  # first half UP (duckable), second half DOWN (low)
-    reg_up, reg_dn = Counter(), Counter()  # hit-location tally (region) by throw type
-    link_ct = Counter()                    # hit-location tally by specific link name
-    ballz = []                             # ball height at each hit
+    up_mask[: n // 2] = True  # 前半部分环境分配为高抛球 UP（需低头下潜），后半部分为低抛球 DOWN（需侧移跨步）
+    reg_up, reg_dn = Counter(), Counter()  # 按抛球类型统计被击中的身体部位分布 (region tally)
+    link_ct = Counter()                    # 按具体连杆名称统计被击中次数 (link tally)
+    ballz = []                             # 记录每次发生碰撞时小球的高度 (ball height at hit)
 
-    # categorize the env's real termination terms
+    # 提取环境中实际激活的物理终止判定项 (categorize the env's real termination terms)
     tm = env.termination_manager
     active = list(tm.active_terms)
     HIT_TERMS = [t for t in active if t == "ball_hit"]
@@ -364,12 +360,12 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
     cmd_norm = float(env.command_manager.get_term("twist").command[:, :2].norm(dim=-1).mean())
     hit = torch.zeros(n, dtype=torch.bool, device=dev)
     fell = torch.zeros(n, dtype=torch.bool, device=dev)
-    trial_done = torch.zeros(n, dtype=torch.bool, device=dev)  # latch: ignore an env after its 1st event
+    trial_done = torch.zeros(n, dtype=torch.bool, device=dev)  # 单轮事件锁存掩码：当环境发生首次 hit 或 fall 终止事件后对其锁存并忽略后续状态
 
     def latch_step(up_now, pb, pbody):
-        # read the env's exact per-term firings from THIS step (first event/env). pb/pbody are the
-        # ball / body-link positions captured BEFORE this step -- i.e. at contact, before the env
-        # auto-resets the hit env and re-parks the ball (reading post-step gives the parked ball).
+        # 读取本仿真步中触发的具体终止项（记录每个环境的首次事件）。pb 与 pbody 为在步进前快照记录的小球与连杆世界坐标，
+        # 确保记录的是接触发生瞬间的准确空间构型，避免读取步进后环境自动 reset 导致的球体复位漂移。
+        # [英文对照: read env's exact per-term firings from THIS step; pb/pbody captured BEFORE step]
         live = ~trial_done
         hb = torch.zeros(n, dtype=torch.bool, device=dev)
         fb = torch.zeros(n, dtype=torch.bool, device=dev)
@@ -379,7 +375,7 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
             fb |= tm.get_term(t).bool()
         new_hit = hb & live
         if bool(new_hit.any()):
-            d = (pbody - pb.unsqueeze(1)).norm(dim=-1)  # (n,L) ball-to-link distance at contact
+            d = (pbody - pb.unsqueeze(1)).norm(dim=-1)  # 接触瞬间小球到机器人各连杆的距离矩阵 (n,L) (ball-to-link distance at contact)
             nearest = d.argmin(dim=1)
             for i in new_hit.nonzero(as_tuple=False).flatten().tolist():
                 ln = body_names[int(nearest[i])]
@@ -390,13 +386,13 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         fell.logical_or_(fb & live)
         trial_done.logical_or_(hb | fb)
 
-    def snap():  # ball + body-link positions BEFORE a step (for at-contact attribution)
+    def snap():  # 在步进前快照小球与机器人连杆的世界坐标（用于接触瞬间的物理归因分析）
         return (env.scene["ball"].data.root_link_pos_w.clone(),
                 robot.data.body_link_pos_w.clone())
 
-    # DEPTH_HOLD_STEPS=N: hold the depth obs group constant for N policy steps before refreshing it,
-    # modelling the real onboard perception rate (ZED + EfficientTAM ~10 Hz) feeding the 50 Hz policy
-    # -> N=5 ~= 10 fps. Default 1 = fresh depth every step (unchanged). Gates the policy call below.
+    # DEPTH_HOLD_STEPS=N: 将深度观测图保持恒定 N 个策略步后再刷新，
+    # 建模真实机载感知硬件更新率（ZED 相机 + EfficientTAM 语义分割推理约 10Hz，而底层控制策略运行在 50Hz，
+    # 即 N=5 步刷新一次深度图，更忠实模拟机载延迟）。默认 1 表示每步均刷新。
     _hold_n = int(os.environ.get("DEPTH_HOLD_STEPS", "1"))
     if _hold_n > 1:
         _dkeys = [k for k in obs.keys() if "depth" in str(k).lower()]
@@ -404,7 +400,7 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         _raw_policy = policy
         _hold = {"t": 0, "buf": None}
 
-        def policy(o):  # noqa: F811 -- hold depth for _hold_n steps (proprio still fresh @50Hz)
+        def policy(o):  # noqa: F811 (重定义 policy 包装函数以实施深度观测保持；本体感觉仍以 50Hz 实时更新)
             if _hold["t"] % _hold_n == 0:
                 _hold["buf"] = {k: o[k].clone() for k in _dkeys}
             else:
@@ -414,17 +410,15 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
             return _raw_policy(o)
         print(f"  [depth-hold] holding {_dkeys} for {_hold_n} policy steps (~{50 // _hold_n} fps perception)")
 
-    # SAFETY_PROBE=1: record, per THREAT step, the metrics the CBF is meant to protect but the
-    # ball-hit success rate ignores -- closest-limb clearance to the ball (the CBF h) and motion
-    # "violence" (joint speed + action rate). Threat = the privileged command._dodge_threat flag
-    # (perception-agnostic, works for every variant). The camera DOF is excluded from both violence
-    # metrics so gimbal vs non-gimbal bodies compare fairly. Diagnostic only; no effect on the rollout.
+    # SAFETY_PROBE=1: 探针模式，在每个威胁时间步 (THREAT step) 记录 CBF 屏障旨在优化但命中率指标忽略的细粒度物理量：
+    # 最近肢体与小球的表面间隙 clearance（即 CBF 安全裕度 h）以及机体动作剧烈程度 (关节角速度与动作变化率)。
+    # 排除云台俯仰自由度以保证不同机体构型公平对比。仅用于诊断分析，不改变仿真推演逻辑。
     if os.environ.get("SAFETY_PROBE", "0") == "1":
         _cmd = env.command_manager.get_term("twist")
         _ball_s = env.scene["ball"]
         _bgid = env.sim.mj_model.geom(next(k for k, v in env.scene.entities.items()
-                                           if v is _ball_s) + "/ball_collision").id
-        # body-joint mask (exclude camera_pitch) for joint_vel + action rate
+                                            if v is _ball_s) + "/ball_collision").id
+        # 机体关节索引掩码（剔除 camera_pitch 云台关节）以公平统计关节角速度与动作剧烈度
         _jn = list(robot.joint_names)
         _bjids = torch.tensor([i for i, n in enumerate(_jn) if n != "camera_pitch_joint"],
                               device=dev, dtype=torch.long)
@@ -435,17 +429,17 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         _S = {"clear": [], "jvel": [], "arate": []}
         _sp_policy = policy
 
-        def policy(o):  # noqa: F811 -- record safety/violence on threat steps (state pre-step)
+        def policy(o):  # noqa: F811 (重定义 policy 包装函数以在威胁步记录安全裕度与动作剧烈度)
             a = _sp_policy(o)
             th = _cmd._dodge_threat.bool()
             if bool(th.any()):
                 bp = _ball_s.data.root_link_pos_w
                 lp = robot.data.body_link_pos_w
-                d = (lp - bp.unsqueeze(1)).norm(dim=-1)  # (N,L) centre dist
+                d = (lp - bp.unsqueeze(1)).norm(dim=-1)  # (N,L) 小球中心与全身连杆几何中心的距离矩阵
                 r_ball = env.sim.model.geom_size[:, _bgid, 0]
-                clear = d.min(dim=1).values - r_ball      # (N,) closest-limb surface clearance
-                jvel = robot.data.joint_vel[:, _bjids].norm(dim=-1)          # (N,) body joint speed
-                arate = (a - env.action_manager.action)[:, _baids].norm(dim=-1)  # (N,) body action rate
+                clear = d.min(dim=1).values - r_ball      # (N,) 小球到最近连杆表面的最小安全间隙 (表面间隙)
+                jvel = robot.data.joint_vel[:, _bjids].norm(dim=-1)          # (N,) 机器人全身本体关节角速度范数
+                arate = (a - env.action_manager.action)[:, _baids].norm(dim=-1)  # (N,) 策略动作一阶变化率
                 _S["clear"].append(clear[th].detach().cpu())
                 _S["jvel"].append(jvel[th].detach().cpu())
                 _S["arate"].append(arate[th].detach().cpu())
@@ -453,12 +447,9 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         env._safety_stats = _S
         print("  [safety-probe] recording clearance / joint-vel / action-rate on threat steps")
 
-    # REACTION_PROBE=1: record the FULL per-step time series (threat flag, body joint speed,
-    # closest-limb ball distance) so we can measure, per throw, (a) reaction LATENCY = time from
-    # threat onset to first evasive motion (body jvel crossing a threshold), and (b) LEAD = time
-    # between that reaction and the ball's closest approach. Threat = privileged command._dodge_threat
-    # (same physical anchor for every variant), so the latency of a depth policy INCLUDES its
-    # perception delay -- a fixed camera should react later than a gimbal/oracle. Diagnostic only.
+    # REACTION_PROBE=1: 记录全时序轨迹（威胁标志、关节转速、小球最近距离），
+    # 以测量策略的反应潜伏期 (Reaction Latency: 从威胁触发到产生规避动作的时差) 和反应提前量 (Lead: 躲避开始到球体最近点的时间差)。
+    # 威胁状态来自特权 command._dodge_threat（所有机型统一物理基准），因此深度视觉策略测得的潜伏期真实包含了视觉感知处理流水线的延迟。
     if os.environ.get("REACTION_PROBE", "0") == "1":
         _cmdr = env.command_manager.get_term("twist")
         _ballr = env.scene["ball"]
@@ -468,12 +459,12 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         _R = {"threat": [], "jvel": [], "dist": []}
         _rp_policy = policy
 
-        def policy(o):  # noqa: F811 -- record full time series for reaction-time analysis
+        def policy(o):  # noqa: F811 (重定义 policy 包装函数以记录完整反应时间序列分析数据)
             a = _rp_policy(o)
             bp = _ballr.data.root_link_pos_w
             lp = robot.data.body_link_pos_w
-            dist = (lp - bp.unsqueeze(1)).norm(dim=-1).min(dim=1).values  # (N,) closest-limb dist
-            jvel = robot.data.joint_vel[:, _bjr].norm(dim=-1)             # (N,) body joint speed
+            dist = (lp - bp.unsqueeze(1)).norm(dim=-1).min(dim=1).values  # (N,) 小球中心到全身各连杆的最近距离 (closest-limb dist)
+            jvel = robot.data.joint_vel[:, _bjr].norm(dim=-1)             # (N,) 机器人全身本体关节转速范数 (body joint speed)
             _R["threat"].append(_cmdr._dodge_threat.bool().detach().cpu())
             _R["jvel"].append(jvel.detach().cpu())
             _R["dist"].append(dist.detach().cpu())
@@ -482,40 +473,42 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         env._react_dt = float(env.step_dt)
         print("  [reaction-probe] recording threat / jvel / ball-distance time series")
 
-    # Settle for ~settle_seconds (default 3 s) so the robot has fully stabilized from its reset pose
-    # before the first throw; convert seconds -> steps via step_dt.
+    # 在首个测试球发射前，让机器人原地静止稳定约 settle_seconds (默认 3 秒)，消除初始位姿重置带来的瞬态晃动；
+    # 将时间秒数除以仿真步长 env.step_dt 换算为仿真步数 n_settle。
+    # [英文对照说明: Settle for ~settle_seconds so robot has fully stabilized from reset pose before first throw]
     n_settle = round(args.settle_seconds / env.step_dt)
 
     def _settled_speed():
         return float(robot.data.root_link_lin_vel_w[:, :2].norm(dim=-1).mean())
 
     if walk_recover:
-        # ---- WALK-RECOVER: deploy-faithful -- walk loco policy recovers between throws; dodge
-        # policy handles each throw.  Mirrors real deployment (walk<->dodge switch).
-        # Walk actor = Unitree-G1-AMP-Flat (384->29 proprio-only MLP), shares the dodge actor obs
-        # group + ACTION_SCALE (no gain swap, same actuator config in this branch).
+        # ---- WALK-RECOVER: 真实还原物理部署闭环 (Deploy-faithful walk<->dodge switch) ----
+        # 基础步态行走网络在抛球间歇负责走回发球站位并重新站稳；避障躲球网络负责处理来袭抛球。
+        # 行走策略 = Unitree-G1-AMP-Flat (384 维本体感觉 -> 29 关节控制 MLP)，
+        # 共享避障任务的 actor 观测组与 ACTION_SCALE（无增益切换，在当前分支下执行机构配置完全一致）。
         from src.tasks.amp_loco.rl.frozen_actor import load_frozen_actor
         from tensordict import TensorDict as TD
         import rsl_rl.utils.utils as _rsl_utils
 
-        # The loco checkpoint was saved with an older rsl_rl that had rsl_rl.utils.utils.Normalizer.
-        # Inject a stub so torch.load can unpickle the checkpoint; load_frozen_actor then loads
-        # only actor_state_dict (after MjlabOnPolicyRunner-style migration below).
+        # 旧版本 rsl_rl 保存的检查点依赖 rsl_rl.utils.utils.Normalizer 类。
+        # 在此注入占位桩类 (Stub) 确保 torch.load 能够无误反序列化加载旧检查点；随后 load_frozen_actor 仅提取权重字典。
+        # [英文对照说明: Inject stub so torch.load can unpickle older rsl_rl checkpoints]
         if not hasattr(_rsl_utils, "Normalizer"):
             class _LegacyNormalizerStub:
                 def __init__(self, *a, **kw): pass
                 def __setstate__(self, d): self.__dict__.update(d)
             _rsl_utils.Normalizer = _LegacyNormalizerStub
 
-        # Patch load_frozen_actor's torch.load call: the loco ckpt has 'model_state_dict'
-        # (legacy format) rather than 'actor_state_dict'.  Wrap torch.load to apply the same
-        # migration that MjlabOnPolicyRunner.load() does before passing the dict downstream.
+        # 修补 load_frozen_actor 内部调用的 torch.load：旧版步态检查点采用 'model_state_dict' (旧格式) 而非 'actor_state_dict'。
+        # 包装 torch.load 实现自动键名重构映射（严格对齐 MjlabOnPolicyRunner.load 的迁移逻辑），
+        # 将旧版单独存储的 obs_norm_state_dict 自动转录为 obs_normalizer.*，确保 MLPModel 顺利完成权重加载。
+        # [英文对照说明: Patch load_frozen_actor's torch.load: migrate legacy model_state_dict -> actor_state_dict]
         _orig_torch_load = torch.load
 
         def _patched_load(path, *a, **kw):
             ck = _orig_torch_load(path, *a, **kw)
             if "model_state_dict" in ck and "actor_state_dict" not in ck:
-                # Legacy format migration (mirrors MjlabOnPolicyRunner.load).
+                # 旧格式检查点状态字典键名迁移 (Legacy format migration)
                 msd = ck.pop("model_state_dict")
                 asd = {}
                 for k, v in msd.items():
@@ -529,8 +522,8 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                     asd["distribution.std_param"] = asd.pop("std")
                 if "log_std" in asd:
                     asd["distribution.log_std_param"] = asd.pop("log_std")
-                # Old checkpoints store the obs normalizer separately as obs_norm_state_dict;
-                # wire it in as obs_normalizer.* so MLPModel.load_state_dict finds it.
+                # 旧检查点将观测归一化统计量独立保存在 obs_norm_state_dict 中；
+                # 在此将其重命名为 obs_normalizer.* 使得 MLPModel.load_state_dict 能够直接识别匹配
                 obs_norm = ck.get("obs_norm_state_dict", {})
                 for k, v in obs_norm.items():
                     asd[f"obs_normalizer.{k}"] = v
@@ -548,29 +541,27 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         n_dwell = round(args.prethrow_settle / env.step_dt)
         tot = {"up": 0, "dn": 0}; hc = {"up": 0, "dn": 0}; fc = {"up": 0, "dn": 0}
         with torch.inference_mode():
-            # Initial settle with dodge policy so depth ring + obs normaliser warm up.
+            # 使用避障策略执行初始站立稳定，使视觉深度环形缓存 (depth ring) 与观测归一化层预热稳定
             for _ in range(n_settle):
                 obs, _, _, _ = envw.step(policy(obs))
             print(f"  settled {n_settle} steps (~{args.settle_seconds:.1f}s) with dodge policy; "
                   f"base speed {_settled_speed():.3f} m/s")
 
-            # ---- GIMBAL support: when the env runs CAMERA_PROPRIO=1 (gimbal), its "actor" obs
-            # carries camera_pitch_joint in the joint_pos + joint_vel proprio terms, so the actor
-            # group is 392 instead of the base 384.  The base walk actor expects 384.  Build a
-            # column-keep index that drops camera_pitch from joint_pos AND joint_vel (in EVERY
-            # history copy), leaving 384.  The DODGE actor keeps the full 392 (unchanged).
+            # ---- GIMBAL 云台支持与本体感觉特征切片 ----
+            # 当环境启用 CAMERA_PROPRIO=1 (云台) 时，其 "actor" 观测项在 joint_pos 与 joint_vel 中均包含了 camera_pitch_joint 自由度，
+            # 使得 actor 观测组总维度达到 392 维，而基础步态行走网络期望的输入维度为标准的 384 维。
+            # 构建列保留索引掩码 walk_keep，从历史步长 H 的每一个时间步中精准剔除 camera_pitch 对应的关节位置与速度分量，
+            # 将输入截断对齐为 384 维送入行走网络；而避障网络继续接收完整的 392 维全量观测（不受任何影响）。
             #
-            # IMPORTANT -- the mjlab "actor" group layout is TERM-MAJOR, not frame-major: each
-            # term's full history is flattened contiguously (term.buffer.reshape(N,-1) gives
-            # [t0,t1,...,tH-1] per term), THEN terms are concatenated:
-            #   [ang_vel(3*H), grav(3*H), cmd(3*H), joint_pos(J*H), joint_vel(J*H), actions(29*H)]
-            # So within joint_pos / joint_vel the order is (history, joint): drop joint index
-            # cam_idx from each of the H history rows.  (Verified live: J=30, cam_idx=29, dims
-            # ang_vel/grav/cmd=12, joint_pos/joint_vel=120, actions=116, total=392.)
+            # 核心细节 -- MjLab "actor" 观测组采用 TERM-MAJOR (特征优先) 排布，而非按帧展平：
+            # 每个特征项的历史序列紧密连续平铺 (term.buffer.reshape(N, -1) 生成 [t0, t1, ..., tH-1])，随后在项级别完成拼接：
+            #   特征项排列: [ang_vel(3*H), grav(3*H), cmd(3*H), joint_pos(J*H), joint_vel(J*H), actions(29*H)]
+            # 因此在 joint_pos / joint_vel 内部的数据排布维度为 (history, joint)：必须在 H 个历史帧副本中分别剔除索引 cam_idx。
+            # （实测数值校验：J=30, cam_idx=29, 各项平铺维度依次为 12, 12, 12, 120, 120, 116，总计 392 维）。
             _actor_dim = int(obs["actor"].shape[-1])
             _robot = env.scene["robot"]
             _has_gimbal_joint = "camera_pitch_joint" in list(_robot.joint_names)
-            walk_keep = None  # None => pass proprio through unchanged (non-gimbal 384 path)
+            walk_keep = None  # walk_keep 为 None 时表示非云台任务，直接透传标准的 384 维本体感觉 (non-gimbal 384 path)
             if _has_gimbal_joint and _actor_dim != PROPRIO_BASE:
                 cam_idx = list(_robot.joint_names).index("camera_pitch_joint")
                 om = env.observation_manager
@@ -580,10 +571,9 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                 keep_idx = []
                 off = 0
                 for tname, fdim in zip(term_names, term_flat_dims):
-                    base = fdim // H  # per-history-copy width of this term
-                    # Drop camera_pitch (idx cam_idx=last) from joint_pos/joint_vel in every
-                    # history copy. The oracle-gimbal env keeps 29 actions (camera excluded from
-                    # the action term), so the actions history needs no slicing.
+                    base = fdim // H  # 本特征项在单帧历史副本中的维度 (per-history-copy width)
+                    # 在每一个历史帧副本中，剔除 joint_pos 与 joint_vel 中的 camera_pitch 关节 (末位索引 cam_idx)。
+                    # 云台环境中的动作空间保持为 29 维 (相机由真值闭环驱动，不包含在动作输出中)，因此动作历史项无需切片。
                     if tname in ("joint_pos", "joint_vel"):
                         for h in range(H):
                             for k in range(base):
@@ -601,18 +591,20 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                       f"joint_pos+joint_vel x{H} history copies)")
 
             def _walk_obs(o):
-                """Build the 384-D proprio TensorDict the walk actor consumes from the env obs.
-                Always returns a fresh tensor (clone / index_select copy) so the recovery loop
-                can overwrite the command slice without mutating the env's live obs."""
+                """从环境观测构建行走网络所需的 384 维本体感觉 TensorDict。
+                (Build the 384-D proprio TensorDict the walk actor consumes from the env obs.)
+
+                始终返回全新独立的克隆张量 (clone / index_select copy)，
+                确保走回恢复循环在覆写速度指令切片时绝不污染环境底层的实时观测。
+                """
                 a = o["actor"]
                 a = a.index_select(-1, walk_keep) if walk_keep is not None else a.clone()
                 return TD({"actor": a}, batch_size=o.batch_size)
 
-            cmd_off, cmd_w = _actor_cmd_slice(env)  # command slice (offset, width=3*H)
+            cmd_off, cmd_w = _actor_cmd_slice(env)  # command 速度指令切片范围 (起始偏移 offset, 总宽度 width = 3 * H)
 
-            # Load walk actor AFTER settle so obs TensorDict is fully populated (needed to
-            # resolve obs_groups and build the actor's obs normaliser).  Feed it the SLICED obs so
-            # the actor (and its obs normaliser) is built for the base 384 proprio.
+            # 在初始站立稳定之后再加载行走 Actor，确保观测 TensorDict 已完全构建填充（用于解析 obs_groups 并构建观测归一化层）。
+            # 传入经过切片的 384 维观测，确保行走策略网络及其观测归一化层按标准的 384 维正确初始化。
             walk_actor, walk_groups = load_frozen_actor(
                 teacher_task="Unitree-G1-AMP-Flat",
                 checkpoint=_walk_ckpt,
@@ -621,30 +613,28 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                 device=dev,
                 obs_set="actor",
             )
-            torch.load = _orig_torch_load  # restore immediately after loading the walk actor
+            torch.load = _orig_torch_load  # 行走模型加载完毕后立即恢复原生 torch.load，消除全局猴子补丁副作用
             print(f"  walk-recover mode: n_recover={n_recover} steps (~{args.recover_seconds:.1f}s), "
                   f"n_dodge={args.window} steps per throw; walk_groups={walk_groups}")
             for r in range(args.rounds):
-                # -- Recovery phase: walk policy returns to the home station (position + spawn
-                # heading), no throw (no inject_throw), don't tally. Overwrite the walk obs
-                # command slice with the rotate-then-translate back-to-home command each step;
-                # early-exit once ALL envs are settled (within tolerance of home) -- throw then. --
+                # -- 恢复阶段 (Recovery phase): 行走策略驱动机器人走回发球站位（原点坐标与初始朝向），此阶段不投球且不计入评测。
+                # 在每一步中将行走观测中的 command 切片覆写为“先转后移”对准原点的导航指令；
+                # 当所有并行环境全部稳定就位 (settled) 时提前退出恢复循环并立即触发投球。 --
                 for _ in range(n_recover):
                     cmd, settled = _home_recover_cmd(env)
                     if bool(settled.all()):
                         break
                     wo = _walk_obs(obs)
                     wo["actor"][:, cmd_off:cmd_off + cmd_w] = cmd.repeat(1, cmd_w // 3)
-                    obs, _, _, _ = envw.step(walk_actor(wo))  # deterministic mean
-                # Pre-throw settle: hold a ZERO velocity command for n_dwell steps so residual
-                # motion damps out and the robot is fully standing still before the throw.
+                    obs, _, _, _ = envw.step(walk_actor(wo))  # 采用确定性均值动作执行恢复行走 (deterministic mean)
+                # 投球前静止稳定 (Pre-throw settle): 施加零速度指令保持 n_dwell 步，消除行走残余动量，确保机器人在完全站定后再接受抛球。
                 for _ in range(n_dwell):
                     wo = _walk_obs(obs)
                     wo["actor"][:, cmd_off:cmd_off + cmd_w] = 0.0
                     obs, _, _, _ = envw.step(walk_actor(wo))
-                # Clear latches after recovery (any fall during recovery doesn't count).
+                # 恢复阶段结束清零锁存器（走回过程中的任何失足均不计入避障成绩）(Clear latches after recovery)
                 hit.zero_(); fell.zero_(); trial_done.zero_()
-                # -- Dodge phase: inject throw, switch to dodge policy, tally. --
+                # -- 避障阶段 (Dodge phase): 注入受控抛球测试，切换为避障策略执行闪避并实时统计碰撞与跌倒 --
                 up = (r % 2 == 0)
                 up_now = torch.full((n,), up, dtype=torch.bool, device=dev)
                 inject_throw(env, up_now, seed=args.seed + r, h_tgt=args.up_z, omni=getattr(args, 'omni', False))
@@ -659,18 +649,17 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                 if r == 0:
                     print(f"  round 0: recover={n_recover} steps, dodge={dodge_steps} steps "
                           f"(up={up}); hits={int(hit.sum())}/{n} fell={int(fell.sum())}/{n}")
-        def rate(d):  # per-throw fraction
+        def rate(d):  # 计算单次抛球维度的百分比比率 (per-throw fraction)
             return d["up"] / max(tot["up"], 1), d["dn"] / max(tot["dn"], 1), (d["up"] + d["dn"]) / max(tot["up"] + tot["dn"], 1)
         hu, hd, ha = rate(hc); fu, fd, fa = rate(fc)
         su, sd_, sa = 1 - hu - fu, 1 - hd - fd, 1 - ha - fa
         mode = (f"walk-recover ({args.rounds} rounds x {n} envs = {args.rounds*n} throws; "
                 f"recover={n_recover}steps/{args.recover_seconds:.1f}s, dodge={args.window}steps)")
     elif not args.continuous:
-        # ---- CONTROLLED: one throw per env from a clean stand; 50 UP / 50 DOWN ----
-        # TRAJ_DUMP=path.npz: record the full per-env trajectory of the single controlled
-        # throw (root pose, joint positions, ball state per policy step, ~0.5 s pre-throw
-        # lead-in, per-env outcomes + first-hit step) so showcase throws can be re-rendered
-        # and re-styled offline without re-running any policy.
+        # ---- CONTROLLED 受控基准测试模式: 每个环境单次抛球，从平稳初始站姿出发；50 次 UP / 50 次 DOWN ----
+        # TRAJ_DUMP=path.npz: 环境变量，用于完整记录单次受控抛球测试中全部环境的逐时间步时空轨迹
+        # （根节点位姿、关节位置、小球状态、前置 0.5 秒预热导引帧、各环境测试结果与首次碰撞时间步），
+        # 便于离线重放可视化或绘制高精度轨迹示意图，无需重新运行策略。
         _dump = os.environ.get("TRAJ_DUMP")
         _tr = None
         if _dump:
@@ -691,14 +680,14 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                 if _dkey is not None:
                     _tr["depth_obs"].append(
                         obs[_dkey].cpu().numpy().astype("float16").copy())
-        _lead = 25  # settle steps recorded before the throw (~0.5 s lead-in)
+        _lead = 25  # 抛球前记录的预热稳定时间步数（约 0.5 秒前置导引帧）(settle steps recorded before throw, ~0.5s lead-in)
         with torch.inference_mode():
-            for _si in range(n_settle):        # stabilize + fill depth ring (pre-throw, no latch)
+            for _si in range(n_settle):        # 初始站立稳定并填充深度观测环形缓存（抛球前阶段，不进行事件锁存）
                 obs, _, _, _ = envw.step(policy(obs))
                 if _tr is not None and _si >= n_settle - _lead:
                     _rec()
             print(f"  settled {n_settle} steps (~{args.settle_seconds:.1f}s); base speed {_settled_speed():.3f} m/s")
-            hit.zero_(); fell.zero_(); trial_done.zero_()   # settle terminations don't count
+            hit.zero_(); fell.zero_(); trial_done.zero_()   # 预热稳定阶段的终止事件不计入评测成绩，在此清零锁存器
             _throw_step = len(_tr["root_pos"]) if _tr is not None else 0
             inject_throw(env, up_mask, seed=args.seed, h_tgt=args.up_z, omni=getattr(args, 'omni', False))
             for _wi in range(args.window):
@@ -729,29 +718,28 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
         su, sd_, sa = split(success); hu, hd, ha = split(hit); fu, fd, fa = split(fell)
         mode = "controlled (1 throw/env, stand-reset)"
     else:
-        # ---- CONTINUOUS: back-to-back throws, NO stand-reset between (only termination auto-reset);
-        # rounds alternate UP/DOWN. Each round latches the first event/env, then tallies. ----
+        # ---- CONTINUOUS 连续流转基准测试模式: 背靠背连续多轮抛球，轮次之间不重置站立姿态（仅触发终止条件时由环境内部自动 reset）；
+        # 每轮次交替投掷 UP/DOWN。每轮次记录锁存每个环境的首次事件并计入总成绩。 ----
         tot = {"up": 0, "dn": 0}; hc = {"up": 0, "dn": 0}; fc = {"up": 0, "dn": 0}
         with torch.inference_mode():
-            for _ in range(n_settle):          # initial settle only (no settle between rounds)
+            for _ in range(n_settle):          # 仅在全部测试开始前执行一次初始站立稳定（轮次之间无重置与额外稳定时间）
                 obs, _, _, _ = envw.step(policy(obs))
             print(f"  settled {n_settle} steps (~{args.settle_seconds:.1f}s); base speed {_settled_speed():.3f} m/s")
-            # Cadence: rethrow only after the previous ball has RESOLVED (landed on the floor or
-            # passed the robot -- i.e. no longer airborne+closing) for every env, then a fixed
-            # post-resolve settle so the robot gets realistic recovery instead of a fixed metronome.
-            # CONT_POST_LAND_SETTLE (s, default 0.5) = the pause after resolve; CONT_MAX_FLY_STEPS
-            # caps the wait (default 150 ≈ 3 s) so a stuck ball can't hang the loop. Set
-            # CONT_FIXED_CADENCE=1 to restore the old fixed throw_every metronome.
+            # 节奏控制 (Cadence): 仅当前一个测试球在所有环境中均已结束结算 (RESOLVED，即落地或已越过机器人飞离、不再处于空中接近状态)
+            # 时才触发下一球发射；随后给予固定时长的着陆后恢复时间 (post-resolve settle)，给予机器人真实的动态平衡恢复窗口而非机械节拍器。
+            # CONT_POST_LAND_SETTLE (秒，默认 0.5s) = 球体失效后的暂停恢复时间；
+            # CONT_MAX_FLY_STEPS 设定最大飞行等待步数 (默认 150 步 ≈ 3 秒)，防止卡住的小球导致主循环永久挂起。
+            # 设置 CONT_FIXED_CADENCE=1 可切回旧版的固定 throw_every 步长节拍器模式。
             _fixed = os.environ.get("CONT_FIXED_CADENCE", "0") == "1"
             _post_land = round(float(os.environ.get("CONT_POST_LAND_SETTLE", "0.5")) / env.step_dt)
             _max_fly = int(os.environ.get("CONT_MAX_FLY_STEPS", "150"))
-            _min_fly = 8  # let physics apply the launch velocity before testing "resolved"
+            _min_fly = 8  # 最小飞行步数：让物理引擎在检查 "resolved" 之前先完全施加发射初速度 (min fly steps)
             ball_e = env.scene["ball"]; robot_e = env.scene["robot"]
             for r in range(args.rounds):
                 up = (r % 2 == 0)
                 up_now = torch.full((n,), up, dtype=torch.bool, device=dev)
                 inject_throw(env, up_now, seed=args.seed + r, h_tgt=args.up_z, omni=getattr(args, 'omni', False))
-                hit.zero_(); fell.zero_(); trial_done.zero_()   # per-round latch
+                hit.zero_(); fell.zero_(); trial_done.zero_()   # 每轮开始前清空当前轮次的事件锁存器 (per-round latch)
                 if _fixed:
                     for _ in range(args.throw_every):
                         pb, pbody = snap()
@@ -759,25 +747,25 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                         latch_step(up_now, pb, pbody)
                 else:
                     resolved = torch.zeros(n, dtype=torch.bool, device=dev)
-                    for t in range(_max_fly):    # phase A: fly until every ball resolves
+                    for t in range(_max_fly):    # 阶段 A: 小球飞行阶段，持续步进直到所有环境的小球均已落地或越过机器人 (fly until every ball resolves)
                         pb, pbody = snap()
                         obs, _, _, _ = envw.step(policy(obs))
                         latch_step(up_now, pb, pbody)
                         bp = ball_e.data.root_link_pos_w; bv = ball_e.data.root_link_lin_vel_w
                         rp = robot_e.data.root_link_pos_w
                         closing = ((rp - bp) * bv).sum(-1) > 0.0
-                        active = (bp[:, 2] > 0.15) & closing   # airborne AND still approaching
+                        active = (bp[:, 2] > 0.15) & closing   # 判定小球处于空中并且仍在朝向机器人接近 (airborne AND still approaching)
                         if t >= _min_fly:
                             resolved |= ~active
                         if bool(resolved.all()):
                             break
-                    for _ in range(_post_land):   # phase B: post-resolve recovery settle
+                    for _ in range(_post_land):   # 阶段 B: 球体失效后的动态平衡恢复稳定阶段 (phase B: post-resolve recovery settle)
                         pb, pbody = snap()
                         obs, _, _, _ = envw.step(policy(obs))
                         latch_step(up_now, pb, pbody)
                 kk = "up" if up else "dn"
                 tot[kk] += n; hc[kk] += int(hit.sum()); fc[kk] += int(fell.sum())
-        def rate(d):  # per-throw fraction
+        def rate(d):  # 计算单次抛球维度的百分比比率 (per-throw fraction)
             return d["up"] / max(tot["up"], 1), d["dn"] / max(tot["dn"], 1), (d["up"] + d["dn"]) / max(tot["up"] + tot["dn"], 1)
         hu, hd, ha = rate(hc); fu, fd, fa = rate(fc)
         su, sd_, sa = 1 - hu - fu, 1 - hd - fd, 1 - ha - fa
@@ -790,7 +778,7 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
     print(f"  {'success':10s} {su*100:9.0f}% {sd_*100:9.0f}% {sa*100:7.0f}%")
     print(f"  {'  hit':10s} {hu*100:9.0f}% {hd*100:9.0f}% {ha*100:7.0f}%")
     print(f"  {'  fell':10s} {fu*100:9.0f}% {fd*100:9.0f}% {fa*100:7.0f}%")
-    # hit-location breakdown (region the ball was nearest to when ball_hit fired)
+    # 被击中身体部位统计分析 (hit-location breakdown: 触发 ball_hit 时小球距离最近的身体区域)
     reg_all = reg_up + reg_dn
     order = ["legs", "torso", "arms", "head", "other"]
     tot_h = sum(reg_all.values())
@@ -817,18 +805,18 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
                        os.path.join(_dd, f"react_{key}.pt"))
             print(f"  [reaction] dumped series to {_dd}/react_{key}.pt")
         T_, N_ = _th.shape
-        _JT = 2.0  # body-jvel threshold (rad/s): clearly-evasive vs settled-idle motion
+        _JT = 2.0  # 机体关节转速阈值 (rad/s)：用于区分明显的规避机动与静止微小晃动 (clearly-evasive vs idle)
         lat, lead = [], []
         for i in range(N_):
             thr = _th[:, i]
             if not bool(thr.any()):
                 continue
-            t0 = int(thr.float().argmax())               # first threat step
+            t0 = int(thr.float().argmax())               # 首次判定威胁的时间步 (first threat step)
             react = (_jv[t0:, i] > _JT).nonzero(as_tuple=False)
             if react.numel() == 0:
                 continue
-            tr = t0 + int(react[0])                       # first evasive-motion step
-            tc = t0 + int(_ds[t0:, i].argmin())           # closest-approach step
+            tr = t0 + int(react[0])                       # 策略产生规避动作的首次时间步 (first evasive-motion step)
+            tc = t0 + int(_ds[t0:, i].argmin())           # 小球距离机体最近的时间步 (closest-approach step)
             lat.append((tr - t0) * _dt)
             lead.append((tc - tr) * _dt)
         if lat:
@@ -854,11 +842,12 @@ def run_task(key, task, exp, ckpt, args, dev, walk_recover=False):
 
 
 def run_statue(args, dev):
-    """Frozen-statue CONTROL: the robot is kinematically pinned in its default stand every step
-    (cannot dodge, cannot fall), and the same seeded throws are launched at it. Its hit rate is the
-    fraction of throws that are geometrically ON-TARGET -- the free-miss floor every policy's
-    success rides on. Run on the state (no-camera) env: throws are policy-independent."""
-    import src.tasks  # noqa
+    """“原地静止雕像”对照基线评测 (Frozen-statue CONTROL):
+    机器人在每一步都被运动学固定在默认直立站姿（不能做任何躲避动作，也绝不会倒地），向其投掷完全相同的测试球序列。
+    该模式下的被命中率反映了测试球序列在几何上真正“命中靶心”的天然比例 —— 亦即任何策略天然享有的“免费未命中底线 (free-miss floor)”。
+    在状态环境（无相机）下运行：抛球物理轨迹与策略无关。
+    """
+    import src.tasks  # noqa: F401 (导入以触发自定义任务注册)
     from src.tasks.amp_loco.config.g1 import dodge_env_cfgs as dec
     from src.tasks.amp_loco.mdp.events import reset_to_default_stand
     from mjlab.envs import ManagerBasedRlEnv
@@ -924,30 +913,27 @@ def run_statue(args, dev):
 
 
 def render_task(key, task, exp, ckpt, args, dev):
-    """Render a walk-recover video for one policy (num_envs=1, render_mode='rgb_array').
+    """为指定策略录制并渲染 walk-recover (走回恢复 + 躲球) 高清评估视频 (单环境，render_mode='rgb_array')。
+    (Render a walk-recover video for one policy: num_envs=1, render_mode='rgb_array'.)
 
-    Produces a third-person MP4 that tracks the robot through 100 consecutive
-    walk-recover -> dodge throws (50 UP + 50 DOWN shuffled by seeded RNG).
+    核心逻辑与可视化规格:
+    - 第三人称跟拍视角: 输出追踪机器人机体的高清 MP4 视频，记录连续多轮次从站立/闪避 -> 步态走回对齐原点 -> 再次站立稳定 -> 闪避抛球的全流程。
+    - 抛球序列组合: 支持 50 次 UP + 50 次 DOWN 抛球，可通过伪随机数种子随机交错混洗打乱或按固定交替轮次进行。
+    - 逻辑严格复用: 渲染路径完整复用 run_task(..., walk_recover=True) 的真实控制流，并在每个仿真步通过 env.render()
+      提取画面，最后由 imageio 编码写出为高质量 MP4 视频文件。保留完整的指标统计结算逻辑，运行完毕后打印表格。
 
-    The render path reuses the same walk-recover logic as run_task(...,
-    walk_recover=True) but captures env.render() after every step and writes the
-    frames to an MP4 via imageio.  The benchmark tallying code is preserved so a
-    per-throw success table is printed at the end.
-
-    Args:
-        key: policy key (e.g. "vision_link" or "gimbal_joint")
-        task: task name string
-        exp: experiment dir name (unused if ckpt is explicit)
-        ckpt: checkpoint path
-        args: parsed argparse namespace (render_video, render_throws,
-              render_randomized, frame_offsets, seed, depth_aug, walk_ckpt,
-              recover_seconds, window, settle_seconds, up_z are used)
-        dev: device string ("cuda:0" etc.)
+    参数说明:
+        key: 策略任务标识键名 (例如 "vision_link" 或 "gimbal_joint")
+        task: 任务注册 ID 字符串
+        exp: 实验目录名称
+        ckpt: 待评估策略的模型权重检查点文件路径
+        args: 命令行解析参数命名空间
+        dev: 计算与渲染设备字符串 (例如 "cuda:0" 或 "cpu")
     """
     import random as _random
     import numpy as np
     import imageio
-    import src.tasks  # noqa
+    import src.tasks  # noqa: F401 (导入自定义任务模块以触发注册表填充)
     from src.tasks.amp_loco.config.g1 import dodge_env_cfgs as dec
     from src.tasks.amp_loco.mdp.events import reset_to_default_stand
     from mjlab.envs import ManagerBasedRlEnv
@@ -972,20 +958,20 @@ def render_task(key, task, exp, ckpt, args, dev):
     os.environ["CBF_JOINT"] = "1" if os.environ.get("BENCH_CBF_FILTER") == "1" else "0"
 
     cfg = builders[task](play=True, depth_frame_offsets=offs)
-    # Single environment for rendering
+    # 视频录制采用单个环境实例 (Single environment for rendering)
     cfg.scene.num_envs = 1
     cfg.commands["twist"].rel_inplace_throw_envs = 1.0
     cfg.commands["twist"].rel_standing_envs = 0.0
-    # No on-screen markers in the recovery video: drop the origin goal sphere + velocity arrow
-    # (GoToGoalCommand._debug_vis_impl draws both only when the command term's debug_vis is on).
+    # 在恢复阶段导出的视频中隐藏画面调试标记：关闭原点目标球与速度箭头显示
+    # (GoToGoalCommand 仅在其 command 项的 debug_vis 开启时才在画面上绘制这两者)
     cfg.commands["twist"].debug_vis = False
     if "reset_from_motion" in cfg.events:
         cfg.events["reset_from_motion"].func = reset_to_default_stand
         cfg.events["reset_from_motion"].params = {}
     cfg.events.pop("throw_ball_on_dwell", None)
 
-    # Configure viewer: track the robot root body, third-person angle
-    # Azimuth 135 = robot visible with throws coming from front-left; distance 4m
+    # 配置离屏渲染相机视角：相机跟随机器人根节点刚体 (robot root body)，设置为第三人称斜后方视角
+    # 方位角 Azimuth 135°：能够清晰俯瞰机器人全身以及小球从左前方袭来的完整飞行弧线；跟拍距离 4.0 米
     cfg.viewer = ViewerConfig(
         origin_type=ViewerConfig.OriginType.ASSET_ROOT,
         entity_name="robot",
@@ -1006,14 +992,14 @@ def render_task(key, task, exp, ckpt, args, dev):
     runner = (load_runner_cls(task) or MjlabOnPolicyRunner)(envw, asdict(agent_cfg), device=dev)
     runner.load(ckpt); policy = runner.get_inference_policy(device=dev)
 
-    n = 1  # single env
+    n = 1  # 单个并行环境 (single env)
     tm = env.termination_manager
     active = list(tm.active_terms)
     HIT_TERMS = [t for t in active if t == "ball_hit"]
     FALL_TERMS = [t for t in active if t in ("bad_orientation", "bad_base_height", "collapsed_crouch")]
     print(f"  [render] termination terms: hit={HIT_TERMS} fall={FALL_TERMS}")
 
-    # Build seeded UP/DOWN sequence
+    # 构造带固定随机种子的高低抛球 UP/DOWN 序列 (Build seeded UP/DOWN sequence)
     if randomized:
         n_up = n_throws // 2; n_dn = n_throws - n_up
         up_seq = [True] * n_up + [False] * n_dn
@@ -1021,7 +1007,7 @@ def render_task(key, task, exp, ckpt, args, dev):
     else:
         up_seq = [(r % 2 == 0) for r in range(n_throws)]
 
-    # Walk-recover setup (mirrors run_task walk_recover=True)
+    # 走回恢复模式配置与策略加载（镜像 run_task 中的 walk_recover 逻辑）
     from src.tasks.amp_loco.rl.frozen_actor import load_frozen_actor
     from tensordict import TensorDict as TD
     import rsl_rl.utils.utils as _rsl_utils
@@ -1066,8 +1052,8 @@ def render_task(key, task, exp, ckpt, args, dev):
     n_recover = round(args.recover_seconds / env.step_dt)
     n_dwell = round(args.prethrow_settle / env.step_dt)
 
-    # Per-throw tally
-    results = []  # list of dicts per throw
+    # 逐次抛球结果统计容器 (Per-throw tally: list of dicts per throw)
+    results = []
     frames = []
 
     up_dev = torch.zeros(1, dtype=torch.bool, device=dev)
@@ -1075,13 +1061,13 @@ def render_task(key, task, exp, ckpt, args, dev):
     obs, _ = envw.reset()
 
     with torch.inference_mode():
-        # Initial settle with dodge policy
+        # 使用避障策略执行初始站立稳定并录制帧 (Initial settle with dodge policy)
         print(f"  [render] settling {n_settle} steps with dodge policy ...")
         for _ in range(n_settle):
             obs, _, _, _ = envw.step(policy(obs))
             frames.append(env.render())
 
-        # Gimbal slice logic for walk actor (mirrors run_task)
+        # 针对行走策略 Actor 的云台观测切片逻辑（严格镜像 run_task 逻辑）(Gimbal slice logic for walk actor)
         _actor_dim = int(obs["actor"].shape[-1])
         _robot = env.scene["robot"]
         _has_gimbal_joint = "camera_pitch_joint" in list(_robot.joint_names)
@@ -1109,12 +1095,12 @@ def render_task(key, task, exp, ckpt, args, dev):
             print(f"  [render] gimbal: slicing walk proprio {_actor_dim} -> {PROPRIO_BASE}")
 
         def _walk_obs(o):
-            # Fresh tensor so the recovery loop can overwrite the command slice safely.
+            # 返回全新的独立张量，确保恢复循环覆写速度指令切片时安全无副作用 (Fresh tensor for safe overwrite)
             a = o["actor"]
             a = a.index_select(-1, walk_keep) if walk_keep is not None else a.clone()
             return TD({"actor": a}, batch_size=o.batch_size)
 
-        cmd_off, cmd_w = _actor_cmd_slice(env)  # command slice (offset, width=3*H)
+        cmd_off, cmd_w = _actor_cmd_slice(env)  # 速度指令切片范围 (起始偏移 offset, 总宽度 width = 3 * H)
 
         walk_actor, walk_groups = load_frozen_actor(
             teacher_task="Unitree-G1-AMP-Flat",
@@ -1155,7 +1141,7 @@ def render_task(key, task, exp, ckpt, args, dev):
                     _m.degrees(float(err.mean())))
 
         for r in range(n_throws):
-            # Recovery phase: walk back to the env origin (station), 0.5 m/s velocity deadband.
+            # 走回恢复阶段：走回环境原点工位，设置 0.5 m/s 速度死区 (Recovery phase: walk back to station)
             if _dbg_home:
                 d0, a0 = _dist_home(), _yaw_err_home()
             if _dbg_home:
@@ -1170,7 +1156,7 @@ def render_task(key, task, exp, ckpt, args, dev):
                 obs, _, _, _ = envw.step(walk_actor(wo))
                 frames.append(env.render())
                 used += 1
-            # Pre-throw settle: hold a zero velocity command so residual motion damps out.
+            # 投球前静止稳定：保持零速度指令使残余动量阻尼衰减 (Pre-throw settle: hold zero velocity command)
             for _ in range(n_dwell):
                 wo = _walk_obs(obs)
                 wo["actor"][:, cmd_off:cmd_off + cmd_w] = 0.0
@@ -1183,7 +1169,7 @@ def render_task(key, task, exp, ckpt, args, dev):
                       f"head {hw0:+.0f}->{hw1:+.0f} deg (home {hh0:+.0f}), "
                       f"recover {used}/{n_recover} steps [{gated}] + {n_dwell} dwell", flush=True)
 
-            # Inject throw + dodge phase
+            # 注入测试球并进入避障阶段 (Inject throw + dodge phase)
             up = up_seq[r]
             up_dev.fill_(up)
             inject_throw(env, up_dev, seed=args.seed + r, h_tgt=args.up_z, omni=getattr(args, 'omni', False))
@@ -1192,7 +1178,7 @@ def render_task(key, task, exp, ckpt, args, dev):
             for _ in range(args.window):
                 obs, _, _, _ = envw.step(policy(obs))
                 frames.append(env.render())
-                # Tally: read terminations
+                # 结算：读取环境各终止项触发状态 (Tally: read terminations)
                 hb = any(tm.get_term(t).bool()[0].item() for t in HIT_TERMS)
                 fb = any(tm.get_term(t).bool()[0].item() for t in FALL_TERMS)
                 if hb and not hit_r: hit_r = True
@@ -1204,7 +1190,7 @@ def render_task(key, task, exp, ckpt, args, dev):
                 print(f"  [render] throw {r+1}/{n_throws}: up={up} hit={hit_r} fell={fell_r} | "
                       f"running success {suc}/{len(results)}")
 
-    # Write MP4
+    # 编码写出 MP4 视频文件 (Write MP4)
     print(f"  [render] writing {len(frames)} frames to {out_path} ...")
     valid_frames = [f for f in frames if f is not None]
     print(f"  [render] {len(valid_frames)}/{len(frames)} frames are non-None")
@@ -1216,7 +1202,7 @@ def render_task(key, task, exp, ckpt, args, dev):
     else:
         print("  [render] ERROR: no valid frames captured!")
 
-    # Per-type tally
+    # 按投球类型 (UP/DOWN/ALL) 统计成功率、被击中率与摔倒率 (Per-type tally)
     up_res = [x for x in results if x["up"]]
     dn_res = [x for x in results if not x["up"]]
     def _pct(lst, key): return 100.0 * sum(x[key] for x in lst) / max(len(lst), 1)
@@ -1246,8 +1232,8 @@ def main():
                          "(reset: 0.1s=94 -> 1s=87 -> 3s=79 for vision_baseline), which is a settle "
                          "artifact, not real perception difficulty. Short settle = the deployment-"
                          "realistic 'ready robot' condition and agrees with the walk-recover regime.")
-    # 120 steps = ~1.8 s after ball arrival (~step 30): a zero-action stand takes ~1.3 s to topple,
-    # so this window is long enough to catch a dodge-destabilized fall (70 was not).
+    # 评估窗口设为 120 步 (小球到达约第 30 步后持续 ~1.8 秒)：零动作站立约需 1.3 秒失稳倒地，
+    # 因此 120 步窗口足够充分捕获由躲球机动导致的失稳迟发摔倒（原 70 步窗口过短无法完全捕获）。
     ap.add_argument("--window", type=int, default=120)
     ap.add_argument("--up-z", type=lambda s: tuple(float(x) for x in s.split(",")), default=H_TGT,
                     help="UP-throw arrival height range, e.g. '0.9,1.3' (default; matches training "
@@ -1300,12 +1286,12 @@ def main():
     args = ap.parse_args()
     if args.walk_recover and args.continuous:
         raise SystemExit("--walk-recover and --continuous are mutually exclusive.")
-    import mjlab.tasks  # noqa
+    import mjlab.tasks  # noqa: F401 (导入以触发基础任务模块注册)
     from mjlab.utils.torch import configure_torch_backends
     configure_torch_backends()
     dev = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-    # ---- render-video path: single policy, num_envs=1, captures frames ----
+    # ---- 渲染视频分支路径: 单策略、单环境并发 (num_envs=1)、捕获每步图像帧 ----
     if args.render_video:
         if not args.only or len(args.only.split(",")) != 1:
             raise SystemExit("--render-video requires exactly one --only key.")
@@ -1322,8 +1308,8 @@ def main():
         render_task(k, task, exp, ckpt, args, dev)
         return
 
-    # Default key set: omni-trained policies are only a fair eval against omni throws, and
-    # front-throw policies only against front throws -- so the default list follows --omni.
+    # 默认策略键值集合选择逻辑：全向训练策略仅能全向抛球评测，正面训练策略仅能正面抛球评测 —— 默认列表遵循 --omni 参数。
+    # [英文对照说明: Default key set: omni policies only against omni throws, front policies only against front throws]
     if args.only:
         keys = args.only.split(",")
     elif args.omni:
@@ -1332,7 +1318,7 @@ def main():
         keys = ["statue"] + [k for k in TASKS if not k.endswith("_omni")]
     rows = []
     for k in keys:
-        if k == "statue":   # frozen control: free-miss floor (no checkpoint)
+        if k == "statue":   # 运行静止雕像基准：测量天然未命中底线 (无需加载模型检查点) (frozen control: free-miss floor)
             rows.append(run_statue(args, dev))
             continue
         task, exp = TASKS[k]

@@ -62,17 +62,17 @@ def test_classroom_clearance_and_wiring():
     assert throw['launch_speed_range'] is None
     assert len(poses[:30:2]) == 15
     assert {p[1] for p in poses[:30:2]} == set(CLASSROOM_COLUMN_Y)
-    # Inner desk edges define the central aisle.
+    # 内侧课桌边缘界定中央主走廊宽度（走廊净宽经桌宽 1.2m 扣除后精确满足要求） (Inner desk edges define the central aisle).
     assert CLASSROOM_COLUMN_Y[2] - CLASSROOM_COLUMN_Y[1] - 1.2 == pytest.approx(2.1988233258)
-    # Adjacent columns define the two additional longitudinal aisles.
+    # 相邻排课桌间距界定两条纵向侧走廊净宽 (Adjacent columns define the two additional longitudinal aisles).
     assert CLASSROOM_COLUMN_Y[1] - CLASSROOM_COLUMN_Y[0] - 1.2 == pytest.approx(1.8410524494)
-    # Every chair/desk pair must leave the promised cross aisle to the next row.
+    # 每对桌椅与下一排桌椅之间必须预留承诺的横向过道净空 (Every chair/desk pair must leave the promised cross aisle to the next row).
     for row in range(4):
         for col in range(3):
             desk = poses[row * 6 + col * 2]
             next_chair = poses[(row + 1) * 6 + col * 2 + 1]
             assert next_chair[0] - 0.25 - (desk[0] + 0.4) == pytest.approx(1.7988233258)
-            # Junctions stay centered between the unchanged furniture envelopes.
+            # 路径拐点枢纽精确居中于前后排家具包络之间 (Junctions stay centered between the unchanged furniture envelopes).
             assert CLASSROOM_ROUTE_STATIONS[row + 1] == pytest.approx(
                 (desk[0] + 0.4 + next_chair[0] - 0.25) / 2)
     x_min, x_max = CLASSROOM_X_BOUNDS
@@ -128,7 +128,7 @@ def test_random_routes_stay_clear_of_furniture():
     assert (lengths.sum(-1) > 200).all()
     assert ((route[..., 0] >= 0) & (route[..., 0] <= CLASSROOM_ROUTE_STATIONS[-1])).all()
     assert (route[..., 1].abs() <= max(abs(y) for y in CLASSROOM_SPAWN_LANES)).all()
-    # Sample all segments and check clearance to every desk and chair footprint.
+    # 对全路径各线段高密插值采样，严格核验每个采样点至所有课桌与椅子的物理包络安全间隙 (Sample all segments and check clearance to every desk and chair footprint).
     t = torch.linspace(0, 1, 17)
     samples = route[:, :-1, None] * (1 - t[None, None, :, None]) + route[:, 1:, None] * t[None, None, :, None]
     for i, pose in enumerate(cfg.events['initialize_static_classroom'].params['layout'][:30]):
@@ -147,7 +147,7 @@ def test_classroom_registered_task_configs():
         3. 训练与演示配置中重置路径事件函数绑定为 reset_classroom_robot，抛球模式为全向抛球；
         4. RL 运行配置中实验名称与动作库文件路径一致。
     """
-    import src.tasks  # noqa: F401 -- register all project tasks
+    import src.tasks  # noqa: F401 -- 注册项目中所有任务配置环境 (register all project tasks via side-effect import)
     from mjlab.tasks.registry import (
         list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls,
     )
@@ -204,7 +204,7 @@ def test_goal_heading_reward_front_side_back_and_threat():
     assert torch.allclose(value, torch.tensor([
         1., stopped_turn_score, stopped_turn_score, stopped_turn_score, 0., 0., 0.
     ]), atol=1e-6)
-    # Turning both robot and target by 90 degrees preserves the reward.
+    # 将机器人朝向与目标点同时旋转 90 度（保持相对夹角不变），奖励值保持完全不变，验证 SO(2) 旋转等变性 (Turning both robot and target by 90 degrees preserves the reward).
     command.goal_pos_w[:6] = origins[:6, :2] + torch.tensor([0., 1.])
     env.scene['robot'].data.heading_w += torch.pi / 2
     assert torch.allclose(walk_goal_heading_when_safe(env), value, atol=1e-6)
@@ -226,7 +226,7 @@ def test_goal_heading_reward_sharpness():
     import math
     import torch
     from src.tasks.amp_loco.mdp.rewards import walk_goal_heading_when_safe
-    headings = torch.tensor([math.pi / 9, -math.pi / 9])  # +/-20deg
+    headings = torch.tensor([math.pi / 9, -math.pi / 9])  # 机器人朝向角偏差为 ±20° (+/-20deg)
     origins = torch.tensor([[5., -2., 0.8]]).repeat(2, 1)
     goals = origins[:, :2] + torch.tensor([1., 0.])
     command = SimpleNamespace(goal_pos_w=goals,
@@ -245,7 +245,7 @@ def test_goal_heading_reward_sharpness():
     assert torch.allclose(
         walk_goal_heading_when_safe(env, sharpness=1.0),
         torch.full((2,), cos20), atol=1e-6)
-    # Outside the threshold, stopped turning is negative regardless of sharpness.
+    # 当朝向偏差超出 30° 阈值（如掉头 180°）时，无论锐化指数 sharpness 为何值，静止不转向的惩罚均固定为负分 -1.0 (Outside the threshold, stopped turning is negative regardless of sharpness).
     env.scene['robot'].data.heading_w += torch.pi
     assert torch.allclose(
         walk_goal_heading_when_safe(env, sharpness=4.0),

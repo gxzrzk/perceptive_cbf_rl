@@ -94,9 +94,9 @@ def test_wall_placement_randomized_beside_spawn_heading_relative():
 
     assert hasattr(env, "_wall_pos_w"), "reset_wall_pose did not stash the wall pose"
     assert env._wall_pos_w.shape == (env.num_envs, 1, 3)
-    # Wall yaw == the robot's reset heading: use it as the placement frame.
+    # 墙体航向角等于机器人重置时的朝向：将其作为横向与沿向摆放的基准局部坐标系 (Wall yaw == the robot's reset heading: use it as the placement frame).
     fwd, perp = _heading_frame_from_yaw(env._wall_yaw_w[:, 0])
-    off = env._wall_pos_w[:, 0, :2] - robot.data.root_link_pos_w[:, :2]  # (N, 2)
+    off = env._wall_pos_w[:, 0, :2] - robot.data.root_link_pos_w[:, :2]  # 墙体相对机器人的水平偏移向量，形状为 (N, 2)
 
     lat = (off * perp).sum(dim=-1)
     along = (off * fwd).sum(dim=-1)
@@ -106,9 +106,9 @@ def test_wall_placement_randomized_beside_spawn_heading_relative():
     assert torch.all(along.abs() <= 0.5 + 1e-5), (
         f"along-heading offset out of [-0.5, 0.5]: max {along.abs().max():.3f}"
     )
-    # Bimodal side sampling: with 64 envs both sides must appear (p(all one side) = 2^-63).
+    # 双峰左右双侧采样：在 64 个并行环境中，左右两侧必须同时出现（全在同一侧的概率极低仅为 2^-63） (Bimodal side sampling: with 64 envs both sides must appear).
     assert (lat > 0).any() and (lat < 0).any(), "wall only ever on one side"
-    # Centre at half height (wall base on the ground), and entity pose matches the stash.
+    # 墙体几何中心位于半高处（确保墙体底面与地面相切贴合），且实体实际位姿与暂存数据完全匹配 (Centre at half height, wall base on the ground, and entity pose matches the stash).
     assert torch.allclose(
         env._wall_pos_w[:, 0, 2], torch.ones_like(lat), atol=1e-4
     )
@@ -131,7 +131,7 @@ def test_pin_wall_restores_pose():
     n = env.num_envs
 
     away = env._wall_pos_w[:, 0].clone()
-    away[:, 1] += 2.0  # shove the wall 2 m further out
+    away[:, 1] += 2.0  # 将墙体坐标沿 Y 轴平移推远 2m 以构造受扰动状态 (shove the wall 2 m further out)
     quat = torch.zeros(n, 4, device=env.device)
     quat[:, 0] = 1.0
     wall.write_root_link_pose_to_sim(torch.cat([away, quat], dim=-1))
@@ -162,7 +162,7 @@ def test_wall_link_cbf_zero_when_standing_far():
     robot = env.scene["robot"]
     n = env.num_envs
 
-    # RSI reset writes the motion clip's velocities; zero them so the robot is truly still.
+    # RSI 重置会写入动作片段的初始速度；此处强制清零以确保机器人处于绝对静止状态 (RSI reset writes the motion clip's velocities; zero them so the robot is truly still).
     robot.write_root_link_velocity_to_sim(torch.zeros(n, 6, device=env.device))
     robot.write_joint_state_to_sim(
         robot.data.joint_pos.clone(), torch.zeros_like(robot.data.joint_vel)
@@ -173,7 +173,7 @@ def test_wall_link_cbf_zero_when_standing_far():
         env, robot_name="robot", wall_names=("wall",),
         alpha=1.0, margin=0.05, constraint_clip=2.0,
     )
-    # Links are >= ~0.5 m from the surface and ~stationary: h_dot ~ 0, alpha*h > 0 -> 0.
+    # 各连杆距离墙面 >= 0.5m 且处于静止状态：法向接近速度 h_dot ~ 0，屏障值 alpha*h > 0，故 CBF 惩罚截断为 0 (Links are >= ~0.5 m from the surface and ~stationary: h_dot ~ 0, alpha*h > 0 -> 0).
     assert r.max() <= 0.0, "CBF reward must be <= 0"
     assert r.min() > -0.05, (
         f"standing far from the wall should be (near) penalty-free, got min {r.min():.3f}"
@@ -196,13 +196,12 @@ def test_wall_link_cbf_penalizes_approach():
     robot = env.scene["robot"]
     n = env.num_envs
 
-    # Zero the RSI clip velocities, then drive the whole robot laterally toward its
-    # wall at 1 m/s.
+    # 清除 RSI 初始速度，随后驱动整个机器人以 1.0 m/s 侧向线速度直接冲向墙体 (Zero the RSI clip velocities, then drive the whole robot laterally toward its wall at 1 m/s).
     robot.write_joint_state_to_sim(
         robot.data.joint_pos.clone(), torch.zeros_like(robot.data.joint_vel)
     )
     robot_xy = robot.data.root_link_pos_w[:, :2]
-    direction = torch.sign(env._wall_pos_w[:, 0, :2] - robot_xy)  # (N, 2)
+    direction = torch.sign(env._wall_pos_w[:, 0, :2] - robot_xy)  # 机器人朝向墙体的单位符号方向向量，形状为 (N, 2)
     vel = torch.zeros(n, 6, device=env.device)
     vel[:, 0:2] = direction * 1.0
     robot.write_root_link_velocity_to_sim(vel)
@@ -212,8 +211,7 @@ def test_wall_link_cbf_penalizes_approach():
         env, robot_name="robot", wall_names=("wall",),
         alpha=1.0, margin=0.05, constraint_clip=2.0,
     )
-    # h ~ 0.5 m (wall at 0.6-1.0 m, minus thickness/radius), h_dot ~ -1 m/s toward the
-    # wall -> h_dot + alpha*h ~ -0.5 < 0 for the links facing the wall.
+    # 此时安全间距 h ~ 0.5m，接近率 h_dot ~ -1.0 m/s 冲向墙面 -> 朝向墙面的各连杆满足 h_dot + alpha*h ~ -0.5 < 0，从而触发惩罚 (h_dot + alpha*h < 0 triggers penalty for links facing wall).
     assert (r < -0.1).float().mean() > 0.9, (
         f"approaching the wall should penalize nearly all envs; rewards: "
         f"min {r.min():.3f}, mean {r.mean():.3f}"
@@ -250,7 +248,7 @@ def test_wallwalk_forward_command_constant():
         前向速度 vx 稳定饱和在最大线速度 1.3 m/s，侧向速度 vy 与角速度 wz 均为 0。
     """
     env = _build_wallwalk_env()
-    cmd = env.command_manager.get_command("twist")  # (N, 3): vx, vy, wz
+    cmd = env.command_manager.get_command("twist")  # 获取速度跟踪指令，形状为 (N, 3): vx, vy, wz
     assert cmd.shape == (env.num_envs, 3)
     assert torch.allclose(
         cmd[:, 0], torch.full_like(cmd[:, 0], 1.3), atol=1e-4
@@ -263,18 +261,18 @@ def test_wallwalk_forward_command_constant():
 
 def _path_distance_and_station(env, points_xy: torch.Tensor):
     """辅助向量化函数：计算平面上一组点到各环境折线路径的最短距离及对应的弧长桩号。"""
-    pts = env._walk_path_pts  # (N, M, 2)
-    cum = env._walk_path_cumlen  # (N, M)
-    count = env._walk_path_n  # (N,)
-    p0 = pts[:, :-1]  # (N, M-1, 2)
+    pts = env._walk_path_pts  # 折线路径顶点坐标，形状为 (N, M, 2)
+    cum = env._walk_path_cumlen  # 累计弧长桩号，形状为 (N, M)
+    count = env._walk_path_n  # 各环境有效顶点数，形状为 (N,)
+    p0 = pts[:, :-1]  # 线段起始端点集合，形状为 (N, M-1, 2)
     p1 = pts[:, 1:]
     seg = p1 - p0
     l2 = (seg * seg).sum(dim=-1).clamp_min(1e-9)
     u = (((points_xy.unsqueeze(1) - p0) * seg).sum(dim=-1) / l2).clamp(0.0, 1.0)
     closest = p0 + u.unsqueeze(-1) * seg
-    dist = (closest - points_xy.unsqueeze(1)).norm(dim=-1)  # (N, M-1)
+    dist = (closest - points_xy.unsqueeze(1)).norm(dim=-1)  # 点到各分段的垂直/最近距离，形状为 (N, M-1)
     station = cum[:, :-1] + u * seg.norm(dim=-1)
-    # Ignore padding segments beyond each env's vertex count.
+    # 忽略超出各环境真实顶点有效数量的尾部填充线段 (Ignore padding segments beyond each env's vertex count).
     valid = (
         torch.arange(pts.shape[1] - 1, device=env.device).unsqueeze(0)
         < (count - 1).unsqueeze(1)
@@ -330,17 +328,16 @@ def test_wallwalk_recycle_moves_walked_past_walls_ahead():
     fwd, _ = _heading_frame_from_yaw(env._wall_yaw_w[:, 0])
     before = env._wall_pos_w.clone()
 
-    # Drag wall_0 to 3 m BEHIND the robot (leave wall_1/2 untouched).
+    # 将 wall_0 瞬移拖曳至机器人身后 3m 处（保持 wall_1/2 位置不变，仅触发 wall_0 回收） (Drag wall_0 to 3 m BEHIND the robot, leave wall_1/2 untouched).
     env._wall_pos_w[:, 0, :2] = robot.data.root_link_pos_w[:, :2] - 3.0 * fwd
-    # Pass the task's actual recycle lateral range (the function default is the
-    # legacy 0.5-1.2; the wallwalk cfg registers 1.1-1.6).
+    # 传入任务真实的回收横向间距范围（函数默认值为旧版 0.5-1.2，WallWalk 任务实际注册为 1.1-1.6） (Pass the task's actual recycle lateral range [1.1, 1.6]).
     mdp.recycle_walls_ahead(
         env, None, wall_names=_WALLWALK_NAMES, along_path=True,
         lateral_range=(1.1, 1.6),
     )
 
     dist, station = _path_distance_and_station(env, env._wall_pos_w[:, 0, :2])
-    s_robot = env.command_manager.get_term("twist")._path_s  # ~0 right after reset
+    s_robot = env.command_manager.get_term("twist")._path_s  # 机器人重置后的初始路径桩号（约等于 0） (~0 right after reset)
     assert torch.all(station >= s_robot + 7.0 - 1.2) and torch.all(station <= s_robot + 10.0 + 1.2), (
         f"recycled wall_0 station should be ~7-10 m ahead of s_robot, got "
         f"min {station.min():.3f}, max {station.max():.3f} (s_robot ~ {s_robot.mean():.3f})"
@@ -349,12 +346,11 @@ def test_wallwalk_recycle_moves_walked_past_walls_ahead():
         f"recycled wall_0 distance-to-path out of ~[1.1, 1.6]: "
         f"min {dist.min():.3f}, max {dist.max():.3f}"
     )
-    # wall_1/2 were still ahead -> untouched.
+    # wall_1 和 wall_2 仍在前方未被走过 -> 保持原地不动不受影响 (wall_1/2 were still ahead -> untouched).
     assert torch.allclose(env._wall_pos_w[:, 1:], before[:, 1:]), (
         "wall_1/2 should not have been recycled"
     )
-    # The entity pose was teleported too (not just the stash). recycle writes sim
-    # qpos directly, so refresh (forward + update) before reading entity data.
+    # 实体真实物理位姿已同步瞬移（不仅更新了暂存数据）。回收逻辑直接写入了仿真器 qpos，因此读取实体数据前需调用 _refresh 刷新前向动力学缓存 (Entity pose teleported; recycle writes sim qpos, so refresh before reading).
     w0 = env.scene["wall_0"]
     _refresh(env, w0)
     assert torch.allclose(
@@ -381,18 +377,18 @@ def test_wallwalk_obs_k_nearest_sorted():
     )
     assert obs.shape == (env.num_envs, 9)
 
-    # Recompute each wall's centre distance and check the obs slots are rank-ordered.
+    # 重新计算每堵墙到机器人的中心欧氏距离，核验观测特征槽位是否严格按距离升序排列 (Recompute each wall's centre distance and check the obs slots are rank-ordered).
     rp = robot.data.root_link_pos_w[:, :2]
     d = torch.stack(
         [(env.scene[n].data.root_link_pos_w[:, :2] - rp).norm(dim=-1) for n in _WALLWALK_NAMES],
         dim=1,
-    )  # (N, 3)
+    )  # 各墙体中心到机器人的真实距离，形状为 (N, 3)
     d_sorted, _ = torch.sort(d, dim=1)
-    obs_d = obs.view(env.num_envs, 3, 3)[:, :, :2].norm(dim=-1)  # rel_x, rel_y norms
+    obs_d = obs.view(env.num_envs, 3, 3)[:, :, :2].norm(dim=-1)  # 观测特征中解包出的水平相对坐标模长 (rel_x, rel_y norms)
     assert torch.allclose(obs_d, d_sorted, atol=1e-4), (
         "obs slots are not the k walls sorted by centre distance"
     )
 
-    # And the env's ball_state group carries 6 (ball) + 9 (walls) = 15 dims.
+    # 验证观测管理器中 ball_state 特征组的总维度包含 6 维小球状态 + 9 维墙体状态 = 15 维 (ball_state group carries 6 ball + 9 walls = 15 dims).
     group = env.observation_manager.group_obs_dim["ball_state"]
     assert group == [15] or group == (15,), f"ball_state obs dim should be 15, got {group}"

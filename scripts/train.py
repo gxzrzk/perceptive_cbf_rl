@@ -92,10 +92,10 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   else:
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
-    # Set EGL device to match the CUDA device.
+    # 设置 EGL 无头渲染设备，使其与当前 CUDA 计算卡匹配 (Set EGL device to match the CUDA device)
     os.environ["MUJOCO_EGL_DEVICE_ID"] = str(local_rank)
     device = f"cuda:{local_rank}"
-    # Set seed to have diversity in different processes.
+    # 为不同进程设置递增随机种子，避免分布式训练中各进程产生完全相同的随机环境 (Set seed to have diversity in different processes)
     seed = cfg.agent.seed + local_rank
 
   configure_torch_backends()
@@ -105,7 +105,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   print(f"[INFO] Training with: device={device}, seed={seed}, rank={rank}")
 
-  # Check if this is a tracking task by checking for motion command.
+  # 检查当前是否为动作跟踪 (Tracking) 任务（通过检测环境指令字典中是否注册了 MotionCommandCfg）(Check if this is a tracking task)
   is_tracking_task = "motion" in cfg.env.commands and isinstance(
     cfg.env.commands["motion"], MotionCommandCfg
   )
@@ -121,11 +121,11 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     motion_cmd.motion_file = str(motion_path)
     print(f"[INFO] Using motion file: {motion_cmd.motion_file}")
 
-    # Check if motion_file is already set (e.g., via CLI --env.commands.motion.motion-file).
+    # 检查参考动作文件路径是否有效存在 (Check if motion_file is already set and exists)
     if motion_cmd.motion_file and Path(motion_cmd.motion_file).exists():
       print(f"[INFO] Using local motion file: {motion_cmd.motion_file}")
 
-  # Enable NaN guard if requested.
+  # 若用户请求，则启用 MuJoCo 仿真 NaN 异常数值崩溃保护守卫 (Enable NaN guard if requested)
   if cfg.enable_nan_guard:
     cfg.env.sim.nan_guard.enabled = True
     print(f"[INFO] NaN guard enabled, output dir: {cfg.env.sim.nan_guard.output_dir}")
@@ -133,20 +133,22 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
+  # 实例化基于 Manager 架构的强化学习环境 (ManagerBasedRlEnv)
   env = ManagerBasedRlEnv(
     cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
   )
 
-  log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
+  # 实验系列根目录：由单次运行子目录向上一级回到该实验系列总目录 (Go up from specific run dir to experiment dir)
+  log_root_path = log_dir.parent
 
   resume_path: Path | None = None
   if cfg.agent.resume:
-      # Load checkpoint from local filesystem.
+      # 从本地文件系统根据实验名、运行名与检查点编号加载权重 (Load checkpoint from local filesystem)
       resume_path = get_checkpoint_path(
         log_root_path, cfg.agent.load_run, cfg.agent.load_checkpoint
       )
 
-  # Only record videos on rank 0 to avoid multiple workers writing to the same files.
+  # 仅在 Rank 0 主进程上录制训练评估视频，避免多卡 worker 同时写入同一文件发生冲突 (Only record videos on rank 0)
   if cfg.video and rank == 0:
     env = VideoRecorder(
       env,
@@ -157,28 +159,33 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     )
     print("[INFO] Recording videos during training.")
 
+  # 使用 RslRl 向量化环境包装器，提供动作截断 (Action Clipping) 与张量格式适配
   env = RslRlVecEnvWrapper(env, clip_actions=cfg.agent.clip_actions)
 
   agent_cfg = asdict(cfg.agent)
   env_cfg = asdict(cfg.env)
 
+  # 从任务注册表中动态获取对应的算法执行器类 (Runner Class，如 AMPOnPolicyRunner)
   runner_cls = load_runner_cls(task_id)
   if runner_cls is None:
-    runner_cls = MjlabOnPolicyRunner   # 
+    # 默认回退使用基础 MjlabOnPolicyRunner (Default to base MjlabOnPolicyRunner)
+    runner_cls = MjlabOnPolicyRunner
 
   runner_kwargs = {}
   runner = runner_cls(env, agent_cfg, str(log_dir), device, **runner_kwargs)
 
+  # 将当前执行脚本代码与 git 版本信息记录到实验日志中 (Record git repo status)
   runner.add_git_repo_to_log(__file__)
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))
 
-  # Only write config files from rank 0 to avoid race conditions.
+  # 仅由 Rank 0 主进程写出环境与算法的 YAML 配置文件，避免多进程同时写入发生竞态条件 (Only write config files from rank 0)
   if rank == 0:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
     dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
 
+  # 启动强化学习策略训练循环 (Start learning loop)
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
   )
@@ -239,7 +246,7 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
 def main():
   """主函数入口：两阶段命令行解析 (任务 ID 选取 -> 覆盖参数绑定 -> 启动训练)"""
   # 导入任务模块以触发任务注册表 (Registry) 的自动填充
-  import mjlab.tasks  # noqa: F401
+  import mjlab.tasks  # noqa: F401  # 导入基础任务模块以填充注册表（未直接调用故忽略 F401 未使用导入警告）
   import src.tasks
 
   all_tasks = list_tasks()

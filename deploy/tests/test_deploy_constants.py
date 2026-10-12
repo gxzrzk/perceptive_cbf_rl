@@ -68,7 +68,8 @@ def _derive():
     assert not np.isnan(kp).any(), "a joint matched no actuator (KP)"
     assert not np.isnan(kd).any(), "a joint matched no actuator (KD)"
 
-    # ACTION_SCALE: first G1_ACTION_SCALE regex that matches (re.match, mirrors amp_policy).
+    # 动作缩放系数 ACTION_SCALE: 匹配 G1_ACTION_SCALE 中首个命中的正则表达式（采用 re.match，镜像 amp_policy 逻辑）
+    # (原英文注释: ACTION_SCALE: first G1_ACTION_SCALE regex that matches (re.match, mirrors amp_policy).)
     action_scale = np.full(n, np.nan, dtype=np.float64)
     for i, name in enumerate(names):
         for pattern, scale in G1_ACTION_SCALE.items():
@@ -108,9 +109,11 @@ def test_action_scale_matches():
 
 def test_action_scale_consistency_with_kp():
     """测试场景：物理一致性自检——ACTION_SCALE 与 KP 维度必须均为 (29,) 且元素全部严格大于 0。"""
-    # ACTION_SCALE = 0.25 * effort_limit / stiffness, and KP = stiffness, so
-    # ACTION_SCALE * KP = 0.25 * effort_limit. Just sanity that the arrays agree
-    # in shape and are positive (a zero would null an actuator).
+    # 物理一致性推导与校验：动作缩放比例公式为 ACTION_SCALE = 0.25 * effort_limit / stiffness，
+    # 而电机刚度增益 KP = stiffness，因此理论上二者乘积必满足 ACTION_SCALE * KP = 0.25 * effort_limit。
+    # 此处健全性检查确保数组形状严格吻合 (29,) 且数值全部严格大于 0（若为 0 将导致电机执行器失去响应失效）。
+    # (原英文推导: ACTION_SCALE = 0.25 * effort_limit / stiffness, and KP = stiffness)
+    # (原英文结论: ACTION_SCALE * KP = 0.25 * effort_limit. Sanity check shapes agree and are positive.)
     assert C.ACTION_SCALE.shape == C.KP.shape == C.KD.shape == (29,)
     assert (C.ACTION_SCALE > 0).all()
     assert (C.KP > 0).all() and (C.KD > 0).all()

@@ -23,13 +23,13 @@ RANDOM_ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
       noise_step=0.02,          # 采样离散步长 2cm
       border_width=0.25,        # 子地形边缘过渡带宽度
     ),
-    # 可选波动地形（波浪起伏地貌，备用）
-    # "wave_terrain": terrain_gen.HfWaveTerrainCfg(
-    #   proportion=0.1,
-    #   amplitude_range=(0.0, 0.2),
-    #   num_waves=4,
-    #   border_width=0.25,
-    # ),
+    # 可选连续起伏波动地形（正弦波浪地貌，可作为进阶泛化测试备用）：
+    # "wave_terrain": terrain_gen.HfWaveTerrainCfg(  # 正弦波动起伏地形配置项
+    #   proportion=0.1,             # 地形占比：占全部子地形网格的 10%
+    #   amplitude_range=(0.0, 0.2), # 波峰波谷振幅范围：起伏高度在 0.0m 至 0.2m 之间随机采样
+    #   num_waves=4,                # 波动周期数：每个 8x8m 子网格内包含 4 个连续起伏的正弦波峰
+    #   border_width=0.25,          # 边缘平滑过渡区宽度：0.25m，避免子地形拼接处发生几何高度跳变
+    # ),                            # 结束 wave_terrain 起伏配置
   },
   add_lights=True,            # 在地形上方添加渲染光源
 )

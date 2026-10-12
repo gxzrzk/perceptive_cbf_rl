@@ -97,8 +97,7 @@ def test_path_starts_at_robot_aligned_with_heading():
         f"initial path should be >= 80 m, min {total.min():.2f}"
     )
 
-    # Random shapes: heading a few segments in must vary across envs (the shared
-    # start heading washes out after the first random turn increments).
+    # 随机走廊几何形状检验：经过若干分段后，各环境的航向角必须展现出显著多样性（跨越环境方差 std > 0.05，首段共享的初始航向在经历随机转弯增量后迅速分散） (Random shapes: heading a few segments in must vary across envs).
     k = 6
     segk = env._walk_path_pts[:, k] - env._walk_path_pts[:, k - 1]
     yaw_k = torch.atan2(segk[:, 1], segk[:, 0])
@@ -129,8 +128,7 @@ def test_walk_path_query_endpoints_and_interpolation():
     last = env._walk_path_pts[ar, env._walk_path_n - 1]
     assert torch.allclose(p1, last, atol=1e-4)
 
-    # Midpoint of segment 0: s = half its length -> halfway between vertices 0/1,
-    # tangent == the segment direction.
+    # 第 0 分段中点插值验证：桩号 s 等于半段长度时，插值坐标应精确位于顶点 0 与 1 的几何中点，切向角与该分段几何方向一致 (Midpoint of segment 0: s = half its length -> halfway between vertices 0/1, tangent == segment direction).
     c1 = env._walk_path_cumlen[:, 1]
     pm, yaw = mdp.walk_path_query(env, ar, 0.5 * c1)
     expect = 0.5 * (env._walk_path_pts[:, 0] + env._walk_path_pts[:, 1])
@@ -140,7 +138,7 @@ def test_walk_path_query_endpoints_and_interpolation():
     dyaw = torch.atan2(torch.sin(yaw - seg0_yaw), torch.cos(yaw - seg0_yaw))
     assert dyaw.abs().max() < 1e-4
 
-    # Querying past the end clamps to the last vertex.
+    # 越界桩号保护：查询桩号超出折线总弧长时，平滑截断于最后一个末端顶点 (Querying past the end clamps to the last vertex).
     p2, _ = mdp.walk_path_query(env, ar, total + 50.0)
     assert torch.allclose(p2, last, atol=1e-4)
 
@@ -171,7 +169,7 @@ def test_extend_walk_path_continuous_and_longer():
 
     n1 = env._walk_path_n
     assert torch.all(n1 > n0), "extension added no vertices"
-    # Old prefix untouched (compare against the snapshot, padded rows excluded).
+    # 历史前缀完整性：路径动态追加延长时，原有旧分段顶点完全不受修改（与快照严格完全一致，排除填充行） (Old prefix untouched).
     for i in (0, 1, 5):
         assert torch.allclose(env._walk_path_pts[ar, i], pts0[ar, i], atol=0.0)
     assert torch.allclose(
@@ -184,7 +182,7 @@ def test_extend_walk_path_continuous_and_longer():
     assert torch.all(total1 >= total0 + 50.0 - 1e-4), (
         f"extended total should be >= old+50, got min delta {(total1 - total0).min():.2f}"
     )
-    # First appended segment continues from the old endpoint (no jump).
+    # 空间位置平滑接续：追加的首个新线段必须紧接旧终点延伸，不产生任何坐标跳变 (First appended segment continues from the old endpoint, no jump).
     first_new = env._walk_path_pts[ar, n0]
     gap = (first_new - end0).norm(dim=-1)
     assert torch.all(gap >= 2.0 - 1e-4) and torch.all(gap <= 4.0 + 1e-4), (
@@ -211,7 +209,7 @@ def test_command_tracks_progress_and_lookahead_goal():
     cmd = env.command_manager.get_term("twist")
 
     target_xy, _ = mdp.walk_path_query(env, ar, torch.full((env.num_envs,), 10.0, device=env.device))
-    pose = robot.data.root_link_pose_w.clone()  # (N, 7): pos(3) + quat wxyz(4)
+    pose = robot.data.root_link_pose_w.clone()  # 机器人基座世界位姿，形状为 (N, 7): pos(3) + quat wxyz(4)
     pose[:, :2] = target_xy
     robot.write_root_link_pose_to_sim(pose)
     _refresh(env, robot)
@@ -225,7 +223,7 @@ def test_command_tracks_progress_and_lookahead_goal():
     assert torch.allclose(cmd.goal_pos_w, goal_xy, atol=1e-3), (
         "goal should be the path point path_lookahead ahead of the robot's progress"
     )
-    # And the episode-reset epoch logic left no env flagged as standing/in-place.
+    # 剧集重置代际（epoch）逻辑确保在正常走廊导航任务中没有任何环境被误标记为原地站立或定点模式 (The episode-reset epoch logic left no env flagged as standing/in-place).
     assert not cmd.is_standing_env.any() and not cmd.is_inplace_env.any()
 
 
@@ -245,15 +243,14 @@ def test_walk_path_progress_reward():
     ar = torch.arange(env.num_envs, device=env.device)
     cmd = env.command_manager.get_term("twist")
 
-    # Stationary at the path origin -> no progress.
+    # 机器人在路径原点静止时 -> 无前向进度，奖励接近 0 (Stationary at the path origin -> no progress).
     env.command_manager.compute(dt=env.step_dt)
     r0 = mdp.walk_path_progress_reward(env)
     assert r0.abs().max() < 0.5, (
         f"stationary robot should get ~0 progress reward, got max {r0.abs().max():.3f}"
     )
 
-    # Teleport 0.5 m forward along the path -> 0.5 m in one 0.02 s step = 25 m/s,
-    # clipped to the +2.0 m/s cap.
+    # 沿路径向前瞬移 0.5m：在单个 0.02s 控制步长内等效速度达 25 m/s，进度奖励被安全截断在 +2.0 上限处 (Teleport 0.5 m forward along path -> 25 m/s, clipped to +2.0 cap).
     target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
     pose = robot.data.root_link_pose_w.clone()
     pose[:, :2] = target_xy
@@ -265,8 +262,7 @@ def test_walk_path_progress_reward():
         f"forward teleport should saturate the progress reward, min {r1.min():.3f}"
     )
 
-    # Standing still again -> the next compute reports ~0 (delta is per-step, no
-    # memory of the teleport).
+    # 再次恢复静止 -> 下一次计算报告 ~0 进度奖励（delta 是步间差分，不保留历史瞬移记忆） (Standing still again -> next compute reports ~0).
     env.command_manager.compute(dt=env.step_dt)
     r2 = mdp.walk_path_progress_reward(env)
     assert r2.abs().max() < 0.5, (
@@ -291,7 +287,7 @@ def test_walk_path_adherence_reward():
     ar = torch.arange(env.num_envs, device=env.device)
     cmd = env.command_manager.get_term("twist")
 
-    # On the route at spawn -> adherence ~1, lat_err ~0.
+    # 出生时精准处于路径中心中轴线上 -> 贴合度奖励 ~1.0，横向偏离误差 ~0 (On the route at spawn -> adherence ~1, lat_err ~0).
     env.command_manager.compute(dt=env.step_dt)
     r0 = mdp.walk_path_adherence_reward(env)
     assert torch.all(r0 > 0.95), (
@@ -301,7 +297,7 @@ def test_walk_path_adherence_reward():
         f"lat_err should be ~0 at the path origin, max {cmd._path_lat_err.max():.3f}"
     )
 
-    # Teleport 0.5 m perpendicular to the local path tangent -> adherence ~e^-1.
+    # 沿局部切线垂直法向侧向瞬移 0.5m -> 贴合度奖励按高斯核衰减至 exp(-1.0) ≈ 0.368 (Teleport 0.5 m perpendicular to path tangent -> adherence ~e^-1).
     _, tan_yaw = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
     perp = torch.stack([-torch.sin(tan_yaw), torch.cos(tan_yaw)], dim=-1)
     pose = robot.data.root_link_pose_w.clone()
@@ -339,7 +335,7 @@ def test_throw_along_path_launches_from_path_ahead():
     ar = torch.arange(env.num_envs, device=env.device)
 
     s0 = cmd._path_s.clone()
-    env._dodge_throw_once = True  # force a throw at every env on the next call
+    env._dodge_throw_once = True  # 强制下一次调用时在所有并行环境中触发一次抛球事件 (force a throw at every env on the next call)
     mdp.throw_ball_on_dwell(
         env, None,
         throw_interval_range=(1.0, 4.0),
@@ -349,10 +345,10 @@ def test_throw_along_path_launches_from_path_ahead():
         along_path=True,
     )
     _refresh(env, ball)
-    launch = ball.data.root_link_pos_w  # (N, 3)
+    launch = ball.data.root_link_pos_w  # 球体发射起始世界坐标，形状为 (N, 3) (ball launch position in world frame)
     vel_xy = ball.data.root_link_lin_vel_w[:, :2]
 
-    # 1. Launch point lies ON the path, at station ~s0 + dist (dist in [2, 3]).
+    # 1. 验证发射点严格位于走廊路径中轴线上，桩号位于 s0 + dist 处（距离 dist 在 [2.0, 3.0] 米之间） (Launch point lies ON the path, at station ~s0 + dist).
     d_path, station = _path_distance_and_station(env, launch[:, :2])
     assert d_path.max() < 0.05, (
         f"launch point should be on the path, max off-path dist {d_path.max():.3f}"
@@ -361,7 +357,7 @@ def test_throw_along_path_launches_from_path_ahead():
         f"launch station out of ~[s0+2, s0+3]: min {(station - s0).min():.2f}, "
         f"max {(station - s0).max():.2f} ahead"
     )
-    # 2. Ball flies back AT the robot (velocity xy ~ direction launch -> robot).
+    # 2. 验证小球水平初速度方向精确朝向机器人迎面飞来（速度向量与发射点到机器人连线余弦值 > 0.85） (Ball flies back AT the robot).
     to_robot = robot.data.root_link_pos_w[:, :2] - launch[:, :2]
     cos = (
         (vel_xy * to_robot).sum(dim=-1)
@@ -370,7 +366,7 @@ def test_throw_along_path_launches_from_path_ahead():
     assert torch.all(cos > 0.85), (
         f"ball should fly back at the robot, min cos(vel, to_robot) {cos.min():.3f}"
     )
-    # 3. And roughly AGAINST the path travel direction (oncoming down the corridor).
+    # 3. 验证小球沿走廊逆向袭来（水平初速度与路径切线方向呈钝角反向，余弦值 < -0.5） (And roughly AGAINST the path travel direction).
     _, tan_yaw = mdp.walk_path_query(env, ar, station)
     tan = torch.stack([torch.cos(tan_yaw), torch.sin(tan_yaw)], dim=-1)
     cos_tan = (vel_xy * tan).sum(dim=-1) / vel_xy.norm(dim=-1).clamp_min(1e-6)
@@ -396,11 +392,11 @@ def test_walk_path_progress_when_safe_gated():
     ar = torch.arange(env.num_envs, device=env.device)
     cmd = env.command_manager.get_term("twist")
 
-    # Ball parked after reset -> no threat.
+    # 重置后球体停泊在安全停机位 -> 无来球威胁 (Ball parked after reset -> no threat).
     env.command_manager.compute(dt=env.step_dt)
     assert not cmd._dodge_threat.any(), "test expects no looming ball after reset"
 
-    # Teleport 0.5 m forward along the path -> rate 25 m/s, capped at v_max=1.5.
+    # 沿路径向前瞬移 0.5m：等效瞬时速度 25 m/s，奖励截断在 v_max=1.5 (Teleport 0.5 m forward along the path -> rate 25 m/s, capped at v_max=1.5).
     target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
     pose = robot.data.root_link_pose_w.clone()
     pose[:, :2] = target_xy
@@ -413,7 +409,7 @@ def test_walk_path_progress_when_safe_gated():
         f"forward progress while safe should pay ~v_max (1.5), min {r_safe.min():.3f}"
     )
 
-    # Force the threat flag -> the SAME progress reads exactly 0.
+    # 强制注入威胁标志 -> 相同的物理前向运动下，受门控保护的进度奖励严格清零 (Force the threat flag -> the SAME progress reads exactly 0).
     cmd._dodge_threat[:] = True
     r_threat = mdp.walk_path_progress_when_safe(env)
     assert torch.all(r_threat == 0.0), (
@@ -438,14 +434,14 @@ def test_walk_path_progress_when_safe_idle_cost():
     env.command_manager.compute(dt=env.step_dt)
     assert not cmd._dodge_threat.any()
 
-    # Standing still pays a fixed cost, independent of the moving goal.
+    # 静止停滞需支付固定的怠速停滞惩罚代价，与前视移动目标的远近无关 (Standing still pays a fixed cost, independent of the moving goal).
     r_stand = mdp.walk_path_progress_when_safe(env, stillness_penalty=0.6)
     expected = -0.6 * cmd._walk_forward_scale
     assert torch.allclose(r_stand, expected, atol=0.1), (
         f"standing should pay the idle cost, got {r_stand.min():.3f} vs {expected.min():.3f}"
     )
 
-    # Teleport 0.5 m forward: rate caps at v_max, with no distance cost.
+    # 沿路径向前瞬移 0.5m：速率奖励饱和在 v_max，免除任何距离代价 (Teleport 0.5 m forward: rate caps at v_max, with no distance cost).
     ar = torch.arange(env.num_envs, device=env.device)
     target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
     pose = robot.data.root_link_pose_w.clone()
@@ -459,7 +455,7 @@ def test_walk_path_progress_when_safe_idle_cost():
         f"forward progress should pay, got {r_move.min():.3f} vs {expected_move.min():.3f}"
     )
 
-    # Threat gates the combined term to exactly 0.
+    # 威胁激活时门控将该复合奖励项彻底置零，避免避障行为与前进目标竞争 (Threat gates the combined term to exactly 0).
     cmd._dodge_threat[:] = True
     assert torch.all(
         mdp.walk_path_progress_when_safe(env, stillness_penalty=0.6) == 0.0
@@ -485,13 +481,13 @@ def test_walk_path_stillness_when_safe_gated():
     env.command_manager.compute(dt=env.step_dt)
     assert not cmd._dodge_threat.any(), "test expects no looming ball after reset"
 
-    # Parked at the path origin -> stillness cost ~1.
+    # 停留在路径原点时 -> 静止停滞代价接近 1.0 (Parked at the path origin -> stillness cost ~1).
     c0 = mdp.walk_path_stillness_when_safe(env)
     assert torch.all(c0 > 0.9), (
         f"parked robot should read full stillness cost, min {c0.min():.3f}"
     )
 
-    # Teleport 0.5 m forward (rate 25 m/s) -> cost decays to ~0.
+    # 向前瞬移 0.5m（等效速度 25 m/s） -> 静止代价迅速衰减至 ~0 (Teleport 0.5 m forward, rate 25 m/s -> cost decays to ~0).
     target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
     pose = robot.data.root_link_pose_w.clone()
     pose[:, :2] = target_xy
@@ -503,8 +499,7 @@ def test_walk_path_stillness_when_safe_gated():
         f"fast-moving robot should read ~0 stillness cost, max {c1.max():.3f}"
     )
 
-    # Under threat the cost vanishes EVEN WHILE MOVING (rate is still the teleport
-    # delta): planting for a dodge is free.
+    # 威胁激活状态下，该代价完全消失，即便在运动状态中也同样归零：机器人在躲避阶段急停站稳不承受任何静止惩罚 (Under threat the cost vanishes EVEN WHILE MOVING: planting for a dodge is free).
     cmd._dodge_threat[:] = True
     c2 = mdp.walk_path_stillness_when_safe(env)
     assert torch.all(c2 == 0.0), (
@@ -533,7 +528,7 @@ def test_throw_along_path_aim_stays_in_corridor():
     cmd = env.command_manager.get_term("twist")
     ar = torch.arange(env.num_envs, device=env.device)
 
-    # Shove the robot 1.2 m perpendicular to the path (outside the +-0.6 aim band).
+    # 将机器人沿路径垂直法向推移 1.2m（已经完全超出 ±0.6m 的瞄准走廊带） (Shove the robot 1.2 m perpendicular to the path, outside the +-0.6 aim band).
     proj_xy, tan_yaw = mdp.walk_path_query(env, ar, cmd._path_s)
     perp = torch.stack([-torch.sin(tan_yaw), torch.cos(tan_yaw)], dim=-1)
     side = torch.where(
@@ -542,10 +537,8 @@ def test_throw_along_path_aim_stays_in_corridor():
     pose = robot.data.root_link_pose_w.clone()
     pose[:, :2] = proj_xy + side * 1.2 * perp
     robot.write_root_link_pose_to_sim(pose)
-    # Zero the leftover RSI clip velocities: they point in arbitrary directions and
-    # the tangent-only lead would otherwise drag the aim along-track (behind the
-    # path start), which inflates the distance-to-polyline metric without any wall
-    # relevance (wall safety is about the LATERAL offset, not the along-track one).
+    # 清除 RSI 初始残余速度：由于其指向任意方向，纯切向超前预测会将瞄准点拖曳至沿轨迹方向（甚至落后于起点），
+    # 从而虚假放大点到折线的几何距离，而走廊安全性核心关注的是横向偏离而非沿轨迹偏移 (Zero leftover RSI velocities to prevent spurious along-track lead).
     robot.write_root_link_velocity_to_sim(
         torch.zeros(env.num_envs, 6, device=env.device)
     )
@@ -564,26 +557,21 @@ def test_throw_along_path_aim_stays_in_corridor():
     launch = ball.data.root_link_pos_w[:, :2]
     vel_xy = ball.data.root_link_lin_vel_w[:, :2]
 
-    # The ball arrives at the aim point at t_flight in [0.58, 0.63] s (velocity =
-    # disp/t_flight). Sample only [0, 0.58] -- guaranteed inside the flight for
-    # every env, so no extrapolation past the target (which diverges laterally).
-    t = torch.linspace(0.0, 0.58, 59, device=env.device).unsqueeze(0)  # (1, T)
-    traj = launch.unsqueeze(1) + vel_xy.unsqueeze(1) * t.unsqueeze(-1)  # (N, T, 2)
+    # 小球在 t_flight ∈ [0.58, 0.63] 秒时到达瞄准点（初速度 = 位移 / 飞行时间）。仅在 [0, 0.58] 秒内密集插值采样，
+    # 确保所有环境的采样点严格处于飞行中段，避免飞过目标点后的横向几何发散 (The ball arrives at t_flight in [0.58, 0.63] s; sample [0, 0.58] inside flight).
+    t = torch.linspace(0.0, 0.58, 59, device=env.device).unsqueeze(0)  # 采样时间网格，形状为 (1, T)
+    traj = launch.unsqueeze(1) + vel_xy.unsqueeze(1) * t.unsqueeze(-1)  # 轨迹采样点三维水平投影，形状为 (N, T, 2)
     d_to_path = []
     for j in range(traj.shape[1]):
         d_j, _ = _path_distance_and_station(env, traj[:, j])
         d_to_path.append(d_j)
-    d_to_path = torch.stack(d_to_path, dim=1)  # (N, T)
-    # The trajectory should NEVER wander outside band (0.4) + curve sagitta (~0.26)
-    # + lateral-noise slack (0.15) -- still inside the ~1.05 m wall inner edge.
+    d_to_path = torch.stack(d_to_path, dim=1)  # 轨迹点到走廊折线中轴线距离矩阵，形状为 (N, T)
+    # 飞行弹道绝不能飘出走廊防碰撞包络：走廊限制带 (0.4m) + 弯道弓形拱高 (~0.26m) + 横向扰动裕量 (0.15m)，始终处于 ~1.05m 的内侧墙体安全边界之内 (Trajectory must stay inside corridor band + sagitta slack).
     assert d_to_path.max() < 0.4 + 0.26 + 0.2, (
         f"trajectory leaves the corridor band: max off-path dist {d_to_path.max():.3f}"
     )
-    # And it must still be a genuine shot TOWARD the robot's station: with the
-    # robot 1.2 m off-line and the aim clamped to the 0.4 band, the closest pass is
-    # ~0.8 m lateral + along-track jitter (~0.3 at 3 sigma) -- assert < 1.7 (i.e.
-    # the ball is not wildly short/long/misdirected; an off-line robot is BY
-    # DESIGN only reachable once it rejoins the corridor).
+    # 并且该射击必须切实朝向机器人当前所在桩号：在机器人脱离中轴线 1.2m 且瞄准点被截断在 0.4m 走廊带的情况下，
+    # 最近掠过距离约为 0.8m 横向间隙 + 沿轨抖动 (~0.3m) -> 断言 < 1.7m（证明球体没有射偏或射空；脱离走廊的机器人按设计唯有重新回到走廊才能被再次有效瞄准） (Ball shot genuine toward robot station, distance < 1.7m).
     d_to_robot = (traj - robot.data.root_link_pos_w[:, :2].unsqueeze(1)).norm(dim=-1)
     assert d_to_robot.min(dim=1).values.max() < 1.7, (
         f"ball should still pass near the (off-line) robot's station, min-pass "
@@ -623,12 +611,11 @@ def test_path_debug_vis_draws_polyline():
 
     viz = _FakeViz()
     cmd.debug_vis(viz)
-    # 2 envs x (<= 41 segments) path cylinders, and progress + goal spheres.
+    # 验证绘制元素：包含 2 个可视化环境 × (<= 41 个线段) 的路径圆柱体，以及进度球与目标球 (2 envs x path cylinders, plus progress and goal spheres).
     assert len(viz.cylinders) > 40, (
         f"expected the path polyline to be drawn, got {len(viz.cylinders)} cylinders"
     )
-    # Every cylinder segment lies on the path: its start point must be within the
-    # generated vertex set of one of the two visualized envs (z=0.03 added).
+    # 验证每个绘制圆柱线段均精准落在折线路径上：其起点坐标必须落在两个可视化环境中之一的已生成顶点集合内 (Every cylinder segment lies on the path).
     pts0 = env._walk_path_pts[0].cpu().numpy()
     s0 = viz.cylinders[0][0]
     import numpy as np

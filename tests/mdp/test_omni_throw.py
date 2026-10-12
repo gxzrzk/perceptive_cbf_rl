@@ -69,10 +69,10 @@ def test_passes_through_target():
     vel = solve_ballistic_velocity(start, target, speed)
     d = (target[:, :2] - start[:, :2]).norm(dim=-1)
     vh = vel[:, :2].norm(dim=-1)
-    t = d / vh                                   # time to cover the horizontal range
+    t = d / vh  # 覆盖水平位移所需飞行时间 (time to cover the horizontal range)
     z = start[:, 2] + vel[:, 2] * t - 0.5 * G * t * t
     assert torch.allclose(z, target[:, 2], atol=1e-2)
-    # horizontal direction points at the target
+    # 验证水平飞行速度方向精确指向目标点坐标 (horizontal direction points at the target)
     dir_solved = vel[:, :2] / vh.unsqueeze(-1)
     dir_target = (target[:, :2] - start[:, :2]) / d.unsqueeze(-1)
     assert torch.allclose(dir_solved, dir_target, atol=1e-4)
@@ -92,7 +92,7 @@ def test_direct_arc_is_flat():
     speed = torch.tensor([23.0])
     vel = solve_ballistic_velocity(start, target, speed)
     vh = vel[0, :2].norm().item()
-    assert abs(vel[0, 2].item()) < vh           # elevation < 45 deg -> flat/direct arc
+    assert abs(vel[0, 2].item()) < vh  # 发射仰角小于 45° -> 对应平射直射低平弹道解 (elevation < 45 deg -> flat/direct arc)
 
 
 def test_omni_throw_flag_sets_state_env_params(monkeypatch):
@@ -106,7 +106,7 @@ def test_omni_throw_flag_sets_state_env_params(monkeypatch):
     """
     monkeypatch.setenv("OMNI_THROW", "1")
     monkeypatch.delenv("CBF_JOINT", raising=False)
-    import src.tasks  # noqa: F401
+    import src.tasks  # noqa: F401 -- 触发任务注册 (triggers task registration)
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import g1_amp_dodge_mimickit_flat_env_cfg
     cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=False)
     p = cfg.events["throw_ball_on_dwell"].params
@@ -124,7 +124,7 @@ def test_omni_throw_flag_off_keeps_front_cone(monkeypatch):
     """
     monkeypatch.delenv("OMNI_THROW", raising=False)
     monkeypatch.delenv("CBF_JOINT", raising=False)
-    import src.tasks  # noqa: F401
+    import src.tasks  # noqa: F401 -- 触发任务注册 (triggers task registration)
     from src.tasks.amp_loco.config.g1.dodge_env_cfgs import g1_amp_dodge_mimickit_flat_env_cfg
     cfg = g1_amp_dodge_mimickit_flat_env_cfg(play=False)
     p = cfg.events["throw_ball_on_dwell"].params

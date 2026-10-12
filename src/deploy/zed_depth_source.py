@@ -87,7 +87,7 @@ def percentile_pool_depth(
   top, left = (h0 - ch) // 2, (w0 - cw) // 2  # 居中裁剪偏移量
 
   # 3. 维度变换与重塑：将每个网格块内部的所有像素收集到最后一个轴 (axis=2)
-  # [H, bh, W, bw] -> transpose -> [H, W, bh, bw] -> reshape -> [H, W, bh * bw]
+  # 变换流程：[H, bh, W, bw] -> 转置重排为 -> [H, W, bh, bw] -> 展平单个池化块内所有像素 -> [H, W, bh * bw]
   blocks = (
     d[top : top + ch, left : left + cw]
     .reshape(height, bh, width, bw)
@@ -267,7 +267,7 @@ class ZedDepthSource:
       raise RuntimeError(
         f"No ZED depth frame within {first_frame_timeout_s}s of opening the camera (打开相机后在超时时间内未收到首帧图像)."
       )
-    self.raw_height, self.raw_width = self._latest_raw.shape  # type: ignore[union-attr]
+    self.raw_height, self.raw_width = self._latest_raw.shape  # 静态类型检查提示忽略 (type: ignore[union-attr])
 
   def _loop(self) -> None:
     """后台采集守护线程执行循环：持续读取帧、执行软最小值池化并更新缓存。"""
@@ -279,11 +279,11 @@ class ZedDepthSource:
 
       # 获取深度浮点数据矩阵 (float32, 单位: 米)
       self._cam.retrieve_measure(self._mat, sl.MEASURE.DEPTH)
-      depth_np = np.array(self._mat.get_data(), copy=True)  # [H, W] float32 metres
+      depth_np = np.array(self._mat.get_data(), copy=True)  # 深度图张量尺寸 [H, W]，float32 精度，物理单位为米 (metres)
 
       # 获取左目 RGB 图像（用于可视化显示，ZED 原生返回 BGRA，需切片转为 RGB）
       self._cam.retrieve_image(self._img_mat, sl.VIEW.LEFT)
-      rgb_np = np.ascontiguousarray(self._img_mat.get_data()[:, :, 2::-1])  # [H, W, 3] uint8
+      rgb_np = np.ascontiguousarray(self._img_mat.get_data()[:, :, 2::-1])  # 彩色图像张量尺寸 [H, W, 3]，uint8 类型，RGB 通道顺序
 
       # 执行低分位数（软最小值）池化
       if self._obs_mask == "far":

@@ -70,7 +70,7 @@ def airborne(env, ball_z: torch.Tensor, ball_name: str = "ball", margin: float =
   if not hasattr(env, "_airborne_ball_geom_id"):
     env._airborne_ball_geom_id = env.sim.mj_model.geom(f"{ball_name}/ball_collision").id
   # 提取每个环境中当前随机化后的球体真实半径
-  r = env.sim.model.geom_size[:, env._airborne_ball_geom_id, 0]  # (N,)
+  r = env.sim.model.geom_size[:, env._airborne_ball_geom_id, 0]  # 形状: (N,)，各并行环境中飞球的当前几何半径
   return ball_z > r + margin
 
 
@@ -146,7 +146,7 @@ def track_anchor_linear_velocity(
   if track_dodge_safe:
     # 提取由 DodgeGoToGoalCommand 暂存的世界系安全速度指令
     cmd_term = env.command_manager.get_term(command_name)
-    u_safe_w = cmd_term._dodge_u_safe_w  # (N, 2)
+    u_safe_w = cmd_term._dodge_u_safe_w  # 形状: (N, 2)，世界坐标系下经 CBF 过滤后的二维安全期望速度 (vx, vy)
     command_xyz_w = torch.cat((u_safe_w, torch.zeros_like(u_safe_w[:, :1])), dim=-1)
   else:
     # 提取标准指令并旋转至世界坐标系
@@ -255,11 +255,11 @@ def feet_slip(
   active = (total_command > command_threshold).float()
   assert contact_sensor.data.found is not None
   # 足底着地布尔掩码
-  in_contact = (contact_sensor.data.found > 0).float()  # [B, N]
+  in_contact = (contact_sensor.data.found > 0).float()  # 形状: [B, N]，环境批次与足底接触点触地指示
   # 提取足底位姿点的世界水平线速度
-  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # [B, N, 2]
-  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)  # [B, N]
-  vel_xy_norm_sq = torch.square(vel_xy_norm)  # [B, N]
+  foot_vel_xy = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, :2]  # 形状: [B, N, 2]，足底各接触点世界水平线速度
+  vel_xy_norm = torch.norm(foot_vel_xy, dim=-1)  # 形状: [B, N]，足底水平速度模长大小
+  vel_xy_norm_sq = torch.square(vel_xy_norm)  # 形状: [B, N]，足底水平速度模长平方
   # 仅在足底着地时计算滑动速度平方惩罚
   cost = torch.sum(vel_xy_norm_sq * in_contact, dim=1) * active
   num_in_contact = torch.sum(in_contact)
@@ -280,12 +280,12 @@ def soft_landing(
   contact_sensor: ContactSensor = env.scene[sensor_name]
   sensor_data = contact_sensor.data
   assert sensor_data.force is not None
-  forces = sensor_data.force  # [B, N, 3]
-  force_magnitude = torch.norm(forces, dim=-1)  # [B, N]
+  forces = sensor_data.force  # 形状: [B, N, 3]，各接触点三维接触力矢量
+  force_magnitude = torch.norm(forces, dim=-1)  # 形状: [B, N]，接触力大小模长
   # 计算第一拍触地检测事件
-  first_contact = contact_sensor.compute_first_contact(dt=env.step_dt)  # [B, N]
-  landing_impact = force_magnitude * first_contact.float()  # [B, N]
-  cost = torch.sum(landing_impact, dim=1)  # [B]
+  first_contact = contact_sensor.compute_first_contact(dt=env.step_dt)  # 形状: [B, N]，第一拍着地事件掩码
+  landing_impact = force_magnitude * first_contact.float()  # 形状: [B, N]，着地瞬时冲击力大小
+  cost = torch.sum(landing_impact, dim=1)  # 形状: [B]，每个环境汇总的着地冲击惩罚值
   num_landings = torch.sum(first_contact.float())
   mean_landing_force = torch.sum(landing_impact) / torch.clamp(num_landings, min=1)
   env.extras["log"]["Metrics/landing_force_mean"] = mean_landing_force
@@ -313,7 +313,7 @@ def leap_flight_time(
   只有当两只脚均完全离地时才为正值，行走或拖步时至少一足触地从而严格得 0 分，杜绝作弊。
   """
   sensor: ContactSensor = env.scene[sensor_name]
-  air_time = sensor.data.current_air_time  # [B, N_feet]
+  air_time = sensor.data.current_air_time  # 形状: [B, N_feet]，双足各自当前空中滞空时间 (秒)
   assert air_time is not None, (
     f"传感器 '{sensor_name}' 必须设置 track_air_time=True。"
   )
@@ -514,10 +514,10 @@ def dodge_cbf_reward(
      奖励真实线速度 v 贴合 CBF 滤波器推荐的安全速度 v_safe。
   """
   command = env.command_manager.get_term(command_name)
-  threat = command._dodge_threat  # (N,)
-  e = command._dodge_e_w  # (N, 2)
-  h = command._dodge_h  # (N,)
-  v_safe = command._dodge_u_safe_w  # (N, 2)
+  threat = command._dodge_threat  # 形状: (N,)，威胁激活度标量 (0: 无威胁, 1: 威胁逼近)
+  e = command._dodge_e_w  # 形状: (N, 2)，世界坐标系下垂直于小球速度的法向侧移单位矢量
+  h = command._dodge_h  # 形状: (N,)，当前屏障函数代数安全裕度 (米)
+  v_safe = command._dodge_u_safe_w  # 形状: (N, 2)，CBF 推荐执行的二维世界系避碰安全速度
   alpha = command.cfg.cbf_alpha
 
   v = command.robot.data.root_link_lin_vel_w[:, :2]
@@ -574,23 +574,23 @@ def dodge_link_cbf_reward(
     radii = [body_r.get(int(b), 0.05) for b in body_ids]
     env._dodge_link_radii = torch.tensor(
       radii, device=env.device, dtype=torch.float32
-    ) + margin  # (L,)
+    ) + margin  # 形状: (L,)，机器人 L 个被监视连杆各自的安全包络球半径
     env._dodge_ball_geom_id = int(
       mjm.geom(f"{ball_name}/ball_collision").id
     )
 
-  r_link = env._dodge_link_radii  # (L,)
-  r_ball = env.sim.model.geom_size[:, env._dodge_ball_geom_id, 0]  # (N,)
+  r_link = env._dodge_link_radii  # 形状: (L,)，各连杆安全半径
+  r_ball = env.sim.model.geom_size[:, env._dodge_ball_geom_id, 0]  # 形状: (N,)，各环境中飞球几何半径
 
-  ball_p = ball.data.root_link_pos_w  # (N, 3)
-  ball_v = ball.data.root_link_lin_vel_w  # (N, 3)
-  link_p = robot.data.body_link_pos_w  # (N, L, 3)
-  link_v = robot.data.body_link_lin_vel_w  # (N, L, 3)
+  ball_p = ball.data.root_link_pos_w  # 形状: (N, 3)，飞球在世界系下的空间位置
+  ball_v = ball.data.root_link_lin_vel_w  # 形状: (N, 3)，飞球在世界系下的线速度矢量
+  link_p = robot.data.body_link_pos_w  # 形状: (N, L, 3)，机器人各连杆在世界系下的空间位置
+  link_v = robot.data.body_link_lin_vel_w  # 形状: (N, L, 3)，机器人各连杆在世界系下的线速度矢量
 
-  rel = ball_p.unsqueeze(1) - link_p  # (N, L, 3)
-  d = rel.norm(dim=-1).clamp_min(1e-6)  # (N, L)
-  h = d - (r_ball.unsqueeze(1) + r_link.unsqueeze(0))  # (N, L) 线性安全净距
-  h_dot = (rel * (ball_v.unsqueeze(1) - link_v)).sum(dim=-1) / d  # (N, L) 接近速率
+  rel = ball_p.unsqueeze(1) - link_p  # 形状: (N, L, 3)，飞球相对各连杆中心的相对位移
+  d = rel.norm(dim=-1).clamp_min(1e-6)  # 形状: (N, L)，飞球中心到各连杆中心的欧氏距离
+  h = d - (r_ball.unsqueeze(1) + r_link.unsqueeze(0))  # 形状: (N, L)，连杆与球体的线性安全净距
+  h_dot = (rel * (ball_v.unsqueeze(1) - link_v)).sum(dim=-1) / d  # 形状: (N, L)，安全净距的时间导数（接近率）
   cbf = (h_dot + alpha * h).clamp(min=-constraint_clip, max=0.0)
 
   if danger_band is not None:
@@ -639,9 +639,9 @@ def wall_link_cbf_reward(
       int(mjm.geom(f"{w}/wall_collision").id) for w in wall_names
     ]
 
-  r_link = env._wall_link_radii  # (L,)
-  link_p = robot.data.body_link_pos_w  # (N, L, 3)
-  link_v = robot.data.body_link_lin_vel_w  # (N, L, 3)
+  r_link = env._wall_link_radii  # 形状: (L,)，各身体连杆安全包络球半径
+  link_p = robot.data.body_link_pos_w  # 形状: (N, L, 3)，机器人各连杆在世界系下的空间位置
+  link_v = robot.data.body_link_lin_vel_w  # 形状: (N, L, 3)，机器人各连杆在世界系下的线速度矢量
 
   cbf_per_wall = []
   wyaw = getattr(env, "_wall_yaw_w", None)
@@ -649,9 +649,9 @@ def wall_link_cbf_reward(
   for wi, wname in enumerate(wall_names):
     gid = env._wall_geom_ids[wi]
     wall: Entity = env.scene[wname]
-    wp = wall.data.root_link_pos_w  # (N, 3)
-    hl = env.sim.model.geom_size[:, gid, 0]  # (N,)
-    ht = env.sim.model.geom_size[:, gid, 1]  # (N,)
+    wp = wall.data.root_link_pos_w  # 形状: (N, 3)，静态障碍墙体在世界系下的中心位置
+    hl = env.sim.model.geom_size[:, gid, 0]  # 形状: (N,)，障碍墙体在局部 X 方向的半长 (half-length)
+    ht = env.sim.model.geom_size[:, gid, 1]  # 形状: (N,)，障碍墙体在局部 Y 方向的半厚度 (half-thickness)
 
     if wyaw is not None:
       w_yaw = wyaw[:, wi]
@@ -659,14 +659,14 @@ def wall_link_cbf_reward(
       w_yaw = torch.zeros(env.num_envs, device=env.device)
     c, s = torch.cos(-w_yaw), torch.sin(-w_yaw)
 
-    rel_w = link_p - wp.unsqueeze(1)  # (N, L, 3)
+    rel_w = link_p - wp.unsqueeze(1)  # 形状: (N, L, 3)，连杆相对于障碍墙中心的空间位移矢量
     lx = c.unsqueeze(1) * rel_w[:, :, 0] - s.unsqueeze(1) * rel_w[:, :, 1]
     ly = s.unsqueeze(1) * rel_w[:, :, 0] + c.unsqueeze(1) * rel_w[:, :, 1]
 
     ex = (lx.abs() - hl.unsqueeze(1)).clamp(min=0.0)
     ey = (ly.abs() - ht.unsqueeze(1)).clamp(min=0.0)
-    d = torch.sqrt(ex * ex + ey * ey + 1e-12)  # (N, L)
-    h = d - r_link.unsqueeze(0)  # (N, L)
+    d = torch.sqrt(ex * ex + ey * ey + 1e-12)  # 形状: (N, L)，连杆中心到墙体平截面的欧氏距离
+    h = d - r_link.unsqueeze(0)  # 形状: (N, L)，连杆外包络到墙体外表面的几何安全净距
 
     gx = torch.where(ex > 0, lx.sign() * (ex / d), torch.zeros_like(d))
     gy = torch.where(ey > 0, ly.sign() * (ey / d), torch.zeros_like(d))
@@ -681,8 +681,8 @@ def wall_link_cbf_reward(
       cbf_w = torch.where(h < danger_band, cbf_w, torch.zeros_like(cbf_w))
     cbf_per_wall.append(cbf_w)
 
-  stacked = torch.stack(cbf_per_wall, dim=-1)  # (N, L, W)
-  cbf_link = stacked.min(dim=-1).values  # (N, L)
+  stacked = torch.stack(cbf_per_wall, dim=-1)  # 形状: (N, L, W)，汇集所有 W 堵静态墙体对各连杆的 CBF 屏障违例值
+  cbf_link = stacked.min(dim=-1).values  # 形状: (N, L)，各连杆面对所有墙体中最紧迫的屏障值
 
   if reduce == "sum":
     agg = cbf_link.sum(dim=1)

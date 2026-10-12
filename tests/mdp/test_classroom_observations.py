@@ -82,10 +82,10 @@ def test_near_long_wall_beats_nearer_centre_and_updates_geometry():
                           [[[6., .1, 1.5], [.05, .05, .38]]])
     obs = dodge_obstacle_geometry_b(env, wall_names=names, k=1)
     assert obs.shape == (1, 9)
-    assert obs[0, 0] == 5  # farther centre, but surface .9 m vs .95 m
+    assert obs[0, 0] == 5  # 虽然中心距离更远（5.1m vs 1.0m），但其表面距离更近（0.9m vs 0.95m），故排在首位 (farther centre, but surface .9 m vs .95 m)
     assert obs[0, 8].item() == pytest.approx(.9)
     assert torch.allclose(obs[0, 3:6], torch.tensor([6., .1, 1.5]))
-    # Cache only IDs, never poses/sizes: changing the actual geometry changes rank.
+    # 缓存仅索引几何体 ID，从不静态缓存位姿/尺寸：动态改变真实几何尺寸后，排序位次立即相应更新 (Cache only IDs, never poses/sizes: changing the actual geometry changes rank).
     env.sim.model.geom_size[0, 1, 0] = .5
     obs = dodge_obstacle_geometry_b(env, wall_names=names, k=1)
     assert obs[0, 0] == 1 and obs[0, 8] == .5
@@ -117,7 +117,7 @@ def test_world_translation_rotation_invariance_across_envs():
     预期输出及验证逻辑：
         两环境在机体坐标系下生成的几何观测特征向量 obs[0] 与 obs[1] 严格相同 (atol=1e-6)。
     """
-    # Same geometry and relative pose, second environment translated and rotated 90 deg.
+    # 构造相同相对几何位姿：环境 1 整体刚体平移至 (9, 22, 3.5) 并旋转 90°，验证机体观测特征的刚体不变性 (Same geometry and relative pose, second environment translated and rotated 90 deg).
     env, names = make_env([[[2., 1., .5]], [[9., 22., 3.5]]],
                           [[[.4, .6, .5]], [[.4, .6, .5]]],
                           yaw=[[0.], [torch.pi / 2]], heading=[0., torch.pi / 2],
@@ -190,7 +190,7 @@ def test_gpu_observation_and_actor_critic_forward():
         assert (distances.diff(dim=1) >= 0).all()
         obs = wrapper.get_observations()
         runner_cfg = asdict(g1_amp_dodge_mimickit_classroom_ppo_runner_cfg())
-        # Use the actual runner's model-config conversion and dimension inference.
+        # 采用实际训练运行器（Runner）的网络模型配置转换与观测维度自动推断逻辑 (Use the actual runner's model-config conversion and dimension inference).
         runner_cfg.update(logger='tensorboard', num_steps_per_env=4,
                           amp_replay_buffer_size=1024)
         runner = AMPOnPolicyRunner(wrapper, runner_cfg, log_dir=None, device='cuda')

@@ -176,12 +176,15 @@ def _apply_dodge_overrides(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
 
   # 4. 被小球击中时的非正常终止条件：
   # 包含接触传感器触发与速度突变回退检测（防止高速飞球发生单步穿模 Tunneling 现象）
+  # 被球击中将立即触发终止，并在 rewards 中施加完整的 -200 失败严惩（与超时终止 time_out=True 区别）
   cfg.terminations["ball_hit"] = TerminationTermCfg(
     func=mdp.ball_contact,
     params={
       "sensor_name": "ball_robot_contact",
-      # 速度不连续双重保护：在 MuJoCo 理想刚体物理中除碰撞外无空气阻力，
-      # 若小球在躯干 1.0m 范围内速度与纯重力自由落体产生显著偏离（>1.5 m/s），判定发生穿模碰撞
+      # 速度不连续双重保护（Velocity-Discontinuity Fallback）：
+      # 在 MuJoCo 理想刚体物理中除碰撞外无空气阻力，飞球在空中仅受重力做自由落体运动；
+      # 若小球在躯干 1.0m 范围内且离地高度大于 0.3m（排除地面反弹球），速度与纯重力自由落体
+      # 产生显著偏离（delta_v > 1.5 m/s），判定发生穿模碰撞，与接触传感器取并集（OR）
       "delta_v_threshold": 1.5,
       "hit_dist": 1.0,
       "hit_z_min": 0.3,
@@ -191,8 +194,8 @@ def _apply_dodge_overrides(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
   # 5. 替换上层目标指令为具备小球 CBF 避碰过滤能力的 DodgeGoToGoalCommandCfg
   twist = cfg.commands["twist"]
   assert isinstance(twist, GoToGoalCommandCfg)
-  # 演示模式下目标点固定在初始位置后方 0.5m，促使机器人保持缓慢后撤巡航步态（躲避成功率更高）；
-  # 训练模式下保留随机目标点与 20% 原地站立混合比
+  # 演示模式下目标点固定在初始位置后方 0.5m，促使机器人保持缓慢后撤巡航步态（处于行进运动模式，
+  # 躲避成功率远高于原地站立冻结吸引子）；训练模式下保留随机目标点与 20% 原地站立混合比
   twist.rel_standing_envs = 0.0 if play else _STAND_RATIO
   twist.rel_inplace_throw_envs = 0.0 if play else _INPLACE_THROW_RATIO
   goto_params = {f.name: getattr(twist, f.name) for f in fields(GoToGoalCommandCfg)}
@@ -202,10 +205,11 @@ def _apply_dodge_overrides(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
     back_offset=0.5 if play else 0.0,
     cbf_enabled=True,
     # CBF 避障参数：基于小球预测直线轨迹输出垂直于轨迹切线的侧移躲避速度
-    cbf_alpha=1.5,     # Class-K 增益系数，控制侧移响应烈度
-    safe_radius=0.9,   # 横向安全期望裕度（米）
-    sense_radius=4.0,  # 沿小球飞行路径的感知预警前瞻距离（米）
-    z_active=0.25,     # CBF 生效的离地高度门限
+    cbf_alpha=1.5,     # Class-K 增益系数，控制侧移响应烈度 (h_dot >= -alpha * h)
+    safe_radius=0.9,   # 横向安全期望裕度（米）：0.9m 远大于球半径 0.1m + 机器人机体半宽；
+                       # 鉴于策略网络速度跟踪保真度约为 54%，设定高裕度目标可确保实际避障留有舒适的安全裕量
+    sense_radius=4.0,  # 沿小球飞行路径的感知预警前瞻距离（米）：确保 2-3m 处发射的飞球出膛瞬间即触发滤波
+    z_active=0.25,     # CBF 生效的离地高度门限（米）：低于该高度视为已落地滚动，不触发空中避让
   )
 
   # 6. 小球生成与投掷事件配置
@@ -216,6 +220,9 @@ def _apply_dodge_overrides(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
     params={"ball_name": "ball", "park_offset": (0.0, 3.0, 0.1)},
   )
   # 域随机化：小球半径在 7.5cm 至 12.5cm（直径 15-25cm）之间随机化
+  # 物理依据：原版下限 3cm（直径 6cm）在 16x9 深度相机视野中，直到 0.65m 近距离前都属于亚像素 (sub-pixel)
+  # 级别，大部分飞行时间在视觉上完全隐形导致无法学习；提升至 15-25cm 后在 1.6-2.1m 即可有效成像，正处于
+  # 躲避决策的关键时间窗口内。小球质量固定为 136g（发射事件直接写入初速度，接触判定基于几何形状，质量不影响动力学）
   cfg.events["randomize_ball_size"] = EventTermCfg(
     func=dr.geom_size,
     mode="reset",
@@ -243,18 +250,20 @@ def _apply_dodge_overrides(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
       "dist_range": (2.0, 3.0),
       "height_range": (1.5, 2.3),
       "angle_deg": 25.0,
-      "flight_time_range": (0.58, 0.63), # 飞行时间反应窗口约 0.6s
-      "lead_target": True,         # 提前量瞄准：考虑机器人当前运动速度，瞄准未来拦截点
-      "aim_noise_scale": 0.1,      # 瞄准点高斯抖动噪声尺度
-      # 混合投掷模式：50% 概率发射平抛/下落球，50% 概率发射低位起抛的高抛球（迫使机器人下蹲闪避）
+      # 纯水平平抛飞行时间反应窗口约 0.58-0.63s（去除骨盆目标约束，允许小球自然下落至小腿，最大化滞空反应时间）
+      "flight_time_range": (0.58, 0.63),
+      "lead_target": True,         # 提前量瞄准：瞄准机器人未来运动拦截点，防止匀速直线移动机器人无伤规避
+      "aim_noise_scale": 0.1,      # 瞄准点高斯抖动噪声尺度（+/-0.1m，使拦截点非绝对精确）
+      # 混合投掷模式：50% 概率发射平抛/下落球（诱导侧闪），50% 概率发射低位起抛的高抛球（诱导下蹲 DUCK 闪避）
       "high_throw_fraction": 0.5,
       "high_launch_height_range": (0.4, 0.9),
+      # 高抛到达高度：0.9-1.3m（躯干至头顶高度；实测 z > 1.4m 会直接从头顶飞过造成无威胁无效发射）
       "high_target_z_range": (0.9, 1.3),
-      "skip_standing_envs": True,  # 跳过永久站立的参考环境
+      "skip_standing_envs": True,  # 跳过永久站立的参考环境，保持无球纯净站立基线
     },
   )
 
-  # 演示模式下小幅收紧高抛到达高度以保证更清晰的下蹲展示效果
+  # 演示模式下小幅收紧高抛到达高度至 (0.9, 1.1)m，消除贴头皮掠过的临界球，呈现更清晰的屈膝下蹲视觉效果
   if play:
     cfg.events["throw_ball_on_dwell"].params["high_target_z_range"] = (0.9, 1.1)
 
@@ -269,91 +278,56 @@ def g1_amp_dodge_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 
 
-# Full-strength (scale=1.0) single-camera depth sim2real augmentation. Used by
-# `_add_depth_obs_single` (training) and `enable_depth_aug_preview` (the play preview that lets you
-# eyeball the augmentation live). See `DepthImageObs._augment` / `_ground_far_out` for the semantics.
+# 全强度（scale=1.0）单目深度相机 Sim2Real 域随机化数据增强参数字典 (_DEPTH_AUG_FULL)。
+# 供 `_add_depth_obs_single`（策略训练阶段）与 `enable_depth_aug_preview`（交互演示阶段实时预览）调用。
+# 详细语义与底层算法实现参见 `DepthImageObs._augment` 与 `_ground_far_out`。
+# 包含高斯测距噪声、随机丢帧、离散散斑、远场薄雾、无效孔洞、边缘静态伪影斑块及地面远端截断。
 _DEPTH_AUG_FULL: dict = {
-  # Base D435/ZED gaussian + dropout.
+  # 基础双目测距噪声（Base D435/ZED gaussian noise + pixel dropout）：
+  # noise_sigma_base: 基础高斯深度测量噪声标准差（单位：米）
   "noise_sigma_base": 0.01,
+  # noise_sigma_per_m: 随测量距离线性增加的噪声斜率（米/米），距离越远双目视差精度越低
   "noise_sigma_per_m": 0.01,
+  # dropout_rate: 单像素测量随机丢失/失效置零的概率（模拟红外吸收或镜面反射导致的无回波点）
   "dropout_rate": 0.01,
-  # Per-frame flickering speckle, far-field haze, invalid->far holes. The real ZED speckles in
-  # low-texture FREE SPACE (open air), not on the close ground, and with moderate values -- so we bias
-  # speckle toward FAR/empty pixels (speckle_far_bias) instead of depth edges (edge_bias=0; the edge
-  # bias actually starved the uniform far field of speckle and piled it on the ground), and make the
-  # spurious depth a RELATIVE perturbation depth*U(keep_min,1) (speckle_keep_min) so a free-space
-  # fleck reads a moderate fraction of its true range rather than a phantom slammed to `near`.
-  "speckle_rate_max": 0.15,
-  "speckle_edge_bias": 0.0,
-  "speckle_border_bias": 0.2,
-  "speckle_far_bias": 1.0,
-  "speckle_keep_min": 0.6,
-  "haze_sigma_max": 0.05,
-  "hole_rate_max": 0.05,
-  # Coherent clutter: SMALL persistent+drifting blobs pinned to the frame EDGES/corners (matching the
-  # real ZED feed -- far field clean, junk only at the periphery). Persist across the frame stack so
-  # the policy must use the ball's looming, not proximity. Half the envs stay fully clean.
-  "clutter_blobs": 3,
-  "clutter_prob": 0.5,
-  "clutter_edge_bias": 1.5,
-  "clutter_size_min": 0.04,
-  "clutter_size_max": 0.14,
-  "clutter_depth_min": 0.1,
-  "clutter_depth_max": 0.95,
-  "clutter_drift": 0.02,
-  # Ground blindness: far-out floor pixels (read from the segmentation map: plane-type geoms) so the
-  # policy never leans on a ground cue a real ZED can't deliver at a grazing angle.
-  "ground_far_prob": 0.9,
-  # BACKGROUND FILL (the room sim2real fix; hardware forensics 2026-06-09): with prob 0.8 an env's
-  # far/no-hit pixels read a per-env random vertical-gradient "room shell" (b_top, b_bottom ~
-  # U(2, 5) m, lerped over rows, held all episode) instead of far -- a real room's ceiling/walls
-  # sit inside the 5 m clip and an empty-arena-trained policy reads them as a wall-sized incoming
-  # ball. Static + non-looming, so only the ball's depth-collapse remains a dodge cue. The other
-  # 20% of envs keep the empty-arena background as an anchor. NOT scaled by DEPTH_DR_SCALE
-  # (scene content, not noise intensity). See DepthImageObs._bg_fill.
-  # THIRD attempt (2026-06-10): (2,5) coverage restored -- the deployment room's
-  # content sits at 1.6-3.5 m (mid rows median 2.38 m), so a (4,5) fill trains
-  # nothing the room actually shows. What changed vs the failed (2,5)@0.8 run:
-  # the fill now composites OCCLUDING (min(b, x), see DepthImageObs._bg_fill) --
-  # the ball pops into view exactly when nearer than its background, deployment
-  # optics -- and the camera is back at +20 deg, restoring the close/low late
-  # window where the ball always out-contrasts a >=2 m background. Benchmark
-  # attribution of the failure: bench A/B 39/40% with DOWN 0% both ways = the
-  # DOWN skill was never learned (early window contrast-erased by the fill, late
-  # window cut by the +25 deg tilt). prob 0.5 keeps a strong clean-arena anchor.
-  "bg_fill_prob": 0.0,
-  "bg_depth_range": (2.0, 5.0),
-}
 
-# 全强度单相机深度图 Sim2Real 域随机化参数字典。
-# 包含高斯噪声、随机丢弃（Dropout）、离散斑点噪声（Speckle）、远场薄雾（Haze）、无效孔洞（Holes）、
-# 边缘假阳性静态聚类（Clutter Blobs）以及地面远距离截断（Ground Far-out）。
-_DEPTH_AUG_FULL: dict = {
-  # 基础高斯深度测量噪声标准差
-  "noise_sigma_base": 0.01,
-  "noise_sigma_per_m": 0.01,
-  "dropout_rate": 0.01,
-  # 真实 ZED Mini 相机在低纹理开阔空间中出现的随机斑点噪声与孔洞
-  "speckle_rate_max": 0.15,
-  "speckle_edge_bias": 0.0,
-  "speckle_border_bias": 0.2,
-  "speckle_far_bias": 1.0,
-  "speckle_keep_min": 0.6,
-  "haze_sigma_max": 0.05,
-  "hole_rate_max": 0.05,
-  # 连贯杂波/静态斑块：模拟视野边缘持久存在且轻微漂移的近距离伪影，迫使策略学会依赖小球的
-  # “快速逼近扩散”（Looming）而非单纯凭借静态近距离深度触发躲避动作
-  "clutter_blobs": 3,
-  "clutter_prob": 0.5,
-  "clutter_edge_bias": 1.5,
-  "clutter_size_min": 0.04,
-  "clutter_size_max": 0.14,
-  "clutter_depth_min": 0.1,
-  "clutter_depth_max": 0.95,
-  "clutter_drift": 0.02,
-  # 地面盲区模拟（Ground Blindness）：掠射角下的地面无法有效反射红外结构光，自动填充为远端截断值
+  # 逐帧动态闪烁散斑、远场薄雾与无效孔洞（Per-frame flickering speckle, far-field haze, invalid->far holes）：
+  # 实机 ZED Mini 在低纹理开阔空间（空中）会出现散斑，而非在近距离地面上，且数值适中。
+  # 因此将散斑偏置向远端/空旷像素（speckle_far_bias），关闭边缘偏置（speckle_edge_bias=0；边缘偏置
+  # 曾导致远景空域缺少散斑而地面堆积噪声）；
+  # 伪影深度采用相对扰动 depth * U(keep_min, 1)（speckle_keep_min），使开阔空间的散斑读取为其真实距离的
+  # 合理比例，而非突然跌落至近端 near 引发虚假迫近惊跳。
+  "speckle_rate_max": 0.15,      # 散斑发生率上限（每帧受影响像素比例）
+  "speckle_edge_bias": 0.0,      # 深度边缘偏置（设为 0，避免地面边缘过度聚集）
+  "speckle_border_bias": 0.2,    # 图像四周边框区域偏置
+  "speckle_far_bias": 1.0,       # 远端空旷像素偏置（集中在远景无遮挡空域）
+  "speckle_keep_min": 0.6,       # 散斑深度扰动下限比例 depth * U(0.6, 1.0)
+  "haze_sigma_max": 0.05,        # 远场高斯薄雾扰动标准差（米）
+  "hole_rate_max": 0.05,         # 深度图无效空洞率（无效像素回填为远端截断值）
+
+  # 连贯杂波/静态斑块（Coherent Clutter Blobs）：
+  # 模拟视野边缘/角落持久存在且轻微漂移的近距离伪影（贴合真实 ZED 视频流特性：中心远场干净，伪影集中在外围边缘）。
+  # 在时序帧堆叠（Frame Stack）中保持时间连贯性，迫使策略学会依赖小球的“快速逼近扩张”（Looming）特征，
+  # 而非单纯凭借静态近距离深度触发躲避动作。50% 的环境保持完全纯净作为基准锚点。
+  "clutter_blobs": 3,            # 每个环境中最大伪影斑块数量
+  "clutter_prob": 0.5,           # 包含静态伪影斑块的环境比例（50% 纯净，50% 带杂波）
+  "clutter_edge_bias": 1.5,      # 边缘偏置强度（将伪影推向图像四周角落）
+  "clutter_size_min": 0.04,      # 伪影斑块最小半尺寸（占图像 H, W 比例）
+  "clutter_size_max": 0.14,      # 伪影斑块最大半尺寸
+  "clutter_depth_min": 0.1,      # 伪影最近归一化深度
+  "clutter_depth_max": 0.95,     # 伪影最远归一化深度
+  "clutter_drift": 0.02,         # 跨帧伪影中心缓慢漂移速率
+
+  # 地面盲区模拟（Ground Blindness）：
+  # 掠射角下的地面（从分割图 plane 几何体读取）无法有效反射双目匹配特征，
+  # 策略绝不能依赖真实 ZED 在极低掠射角下无法稳定提供的地面线索，以 90% 概率填充为 far。
   "ground_far_prob": 0.9,
-  # 背景房间墙面模拟填充
+
+  # 背景房间墙面模拟填充（Room Shell Background Fill，Sim2Real 室内环境修复，详见硬件复盘）：
+  # 真实房间的天花板与墙面处于 5m 测距截断范围内，空旷竞技场训练出的策略会将其误判为墙体大小的扑面巨球。
+  # 以 bg_fill_prob 概率将远景像素替换为逐环境随机斜率渐变的“房间外壳”（b_top, b_bottom ~ U(2, 5)m），
+  # 且采用遮挡合成 min(b, x)（小球只有在比背景更近时才会显现，完全符合真实光学成像）。
+  # 相机仰角保持在 +20°，保留飞球低矮下落时的最后可见窗口与下蹲躲避（DOWN）技能学习能力。
   "bg_fill_prob": 0.0,
   "bg_depth_range": (2.0, 5.0),
 }
@@ -494,28 +468,38 @@ def _add_depth_obs_single_ballonly(cfg: ManagerBasedRlEnvCfg, play: bool) -> Non
   _aug_on = (not play) or os.environ.get("BALLONLY_AUG", "0") == "1"
   _s = BALLONLY_DR_SCALE
   ball_dr = {
-    "ball_full_dropout_prob": 0.02 * _s,   # 小球整体短暂丢失概率（模拟跟踪丢帧）
-    "ball_pixel_dropout": 0.10 * _s,       # 掩膜边缘像素缺失率
-    "ball_depth_jitter": 0.15 * _s,        # 小球整体测距偏移抖动（+/- 米）
-    "ball_noise_sigma": 0.03 * _s,         # 小球自身区域的高斯深度噪声
-    "edge_tile_flicker": 0.15 * _s,        # 边缘分块闪烁率
-    # 静态假阳性斑块：模拟分割器误将某个静态物体识别为小球，持续整个回合且不发生 Looming 逼近
-    "clutter_blobs": 3,
-    "clutter_prob": 0.6,
-    "clutter_blob_prob": 0.5,
-    "clutter_drift": 0.0,
-    "clutter_edge_bias": 0.0,
-    "clutter_size_min": 0.04,
-    "clutter_size_max": 0.12,
+    # 小球突发整球丢失概率（模拟视频分割模型丢帧或目标被短暂遮挡，bursty whole-ball loss）
+    "ball_full_dropout_prob": 0.02 * _s,
+    # 小球掩膜边缘像素缺失率（模拟 EfficientTAM 在低分辨率下边缘分割锯齿毛刺，ragged mask）
+    "ball_pixel_dropout": 0.10 * _s,
+    # 小球整体测距偏移抖动（+/- 米，模拟双目视差匹配全局浮动，+/- coherent ball-depth offset）
+    "ball_depth_jitter": 0.15 * _s,
+    # 仅作用于小球自身区域的逐像素高斯深度噪声（per-pixel depth noise ON THE BALL only；背景保持纯净远端值）
+    "ball_noise_sigma": 0.03 * _s,
+    # 边缘分块闪烁率（小球外围 1 像素环翻转为小球测距的比例，frac of 1-tile ring flipping to ball-distance）
+    "edge_tile_flicker": 0.15 * _s,
+    # 静态假阳性固定斑块（Static fixed clusters）：模拟实机场景中分割器误将某个静态物体检测为小球；
+    # 斑块在整个回合中持续存在且不发生快速扩张（No looming），迫使策略网络仅依据深度的“快速坍缩扩张”（Looming）
+    # 触发躲避动作，杜绝因背景中存在近距离静态球状物而产生过度惊跳抽搐。
+    "clutter_blobs": 3,               # 单环境最大斑块数；实际生成数量服从二项分布 Binomial(3, 0.5) 随机得到 0..3 个
+    "clutter_prob": 0.6,              # 60% 的环境携带静态伪影，剩余 40% 环境保持完全纯净作为基线锚点
+    "clutter_blob_prob": 0.5,         # 单个斑块的独立激活概率
+    "clutter_drift": 0.0,             # 无连贯线性漂移（斑块相对世界坐标系严格固定，由下方自身抖动模型驱动）
+    "clutter_edge_bias": 0.0,         # 全视野均匀分布（无边缘偏置，允许出现在正中过道，迫使策略明白正前方的静态物体不是威胁）
+    "clutter_size_min": 0.04,         # 斑块最小半尺寸（占图像 H, W 比例，约对应 9x16 视野下小球视尺寸）
+    "clutter_size_max": 0.12,         # 斑块最大半尺寸
+    # 放置深度下限受缩放系数自适应调节：满强度 1.0 时斑块最近可达 0.1（归一化深度约 0.6m）；缩放降至 0.5 时下限升至 0.3（1.6m）
     "clutter_depth_min": 0.1 + 0.4 * (1.0 - BALLONLY_CLUTTER_SCALE),
-    "clutter_depth_max": 0.9,
-    # 机器人自身运动引发的假阳性物体相对视差抖动
-    "clutter_jitter": BALLONLY_CLUTTER_JITTER,
-    "clutter_jitter_max": 1.0 * BALLONLY_CLUTTER_SCALE,
-    "clutter_depth_jitter": BALLONLY_CLUTTER_DEPTH_JITTER,
-    "clutter_depth_jitter_max": 0.2 * BALLONLY_CLUTTER_SCALE,
+    "clutter_depth_max": 0.9,         # 斑块最远归一化深度（约 4.5m）
+    # 机器人自身运动引发的机体视差抖动（Ego-motion wobble）：每个控制步由于机器人本体晃动，斑块在视野中轻微晃动；
+    # 横向抖动以世界坐标系米（WORLD m）为单位，经深度和 FOV 映射至图像，距离越近视差摆动越剧烈；
+    # 深度抖动受严格截断限制，绝不产生虚假的 Looming 逼近假象，让策略适应身体晃动引发的视觉视差。
+    "clutter_jitter": BALLONLY_CLUTTER_JITTER,                 # 步间横向随机游走标准差 (世界米/步)
+    "clutter_jitter_max": 1.0 * BALLONLY_CLUTTER_SCALE,        # 横向游走最大边界 (+/- 米)
+    "clutter_depth_jitter": BALLONLY_CLUTTER_DEPTH_JITTER,     # 步间深度随机游走标准差 (米/步)
+    "clutter_depth_jitter_max": 0.2 * BALLONLY_CLUTTER_SCALE,  # 深度游走最大边界 (米，严格限制防止触发虚假躲避)
   } if _aug_on else {}
-  depth_noise = {}
+  depth_noise = {}  # 背景不施加全屏高斯噪声，保持干净平整的 far 远平面截断值
   cfg.observations["depth"] = ObservationGroupCfg(
     terms={
       "head_depth": ObservationTermCfg(
@@ -539,14 +523,16 @@ def _add_depth_obs_single_ballonly(cfg: ManagerBasedRlEnvCfg, play: bool) -> Non
 
 
 def _add_ball_state_obs(cfg: ManagerBasedRlEnvCfg) -> None:
-  """Wire MimicKit's dodgeball observation into an actor-visible ``ball_state`` group.
+  """将 MimicKit 风格的飞球状态观测接入 Actor 可见的 ``ball_state`` 观测组。
 
-  MimicKit's ``compute_dodgeball_observations`` is the ball's position + velocity relative
-  to the character, expressed in its heading (yaw) frame -- exactly ``dodge_ball_state_b``
-  ([B, 6]). For the MimicKit-observation task this group is given to BOTH the actor and the
-  critic (MimicKit's PPO is symmetric: actor and critic share the obs), so the actor is
-  handed clean ground-truth ball state instead of inferring it from depth. ``history_length
-  =0`` -- pos+vel already encode the ball's motion (MimicKit uses a single frame too).
+  【算法与观测体系设计】
+  - 几何语义：对齐 MimicKit 的 ``compute_dodgeball_observations`` 函数，计算飞球相对于智能体质心
+    在机体水平航向偏航坐标系（Heading/Yaw Frame）下的相对 3D 位置与相对 3D 速度，即 6 维状态向量
+    ``dodge_ball_state_b``（形状为 [B, 6]）。
+  - 对称观测机制（Symmetric PPO）：在状态真值（State Oracle）任务中，该观测组同时分发给 Actor 和 Critic，
+    使得策略网络直接获取干净、确定性的真实物理状态，无需通过视觉深度图进行时序推断。
+  - 零历史堆叠考量（``history_length=0``）：由于相对位置与相对速度已经完整构成了飞球马尔可夫运动学状态，
+    单帧数据即可完全满足控制需求（MimicKit 原生实现同样仅使用单帧状态输入）。
   """
   cfg.observations["ball_state"] = ObservationGroupCfg(
     terms={
@@ -579,47 +565,64 @@ def _apply_mimickit_reward(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
   """
   twist = cfg.commands["twist"]
   assert isinstance(twist, DodgeGoToGoalCommandCfg)
-  # MimicKit 任务不使用指令级硬 CBF 滤波
+  # MimicKit 任务不使用指令级硬 CBF 滤波（命令直接透传，仅作为特权 Critic 观测依据）
   twist.cbf_filter_command = False
 
-  # 原地站立等待来球，不设定远距离导航目标点
+  # 原地站立等待来球：将目标点固定在出生点（训练与演示统一采用 home_goal=True 且 back_offset=0.0），
+  # 名义速度指令为 0，机器人保持原地站立并在闪避后自动回归原位，消除因后撤偏移导致的持续后退漂移。
   twist.home_goal = True
   twist.back_offset = 0.0
+  # 移除跳跃目标导航相关的距离、进度与滞空奖励项
   for term in ("goal_distance", "goal_progress", "goal_reached", "stop_at_goal", "leap_flight"):
     cfg.rewards.pop(term, None)
+  # 将质心线速度与角速度跟踪奖励降至轻量 0.5（基础任务为 1.0）：
+  # 作为双足站立姿态的稳定锚点——由于 amp_dodge 动作库先验中有约 46% 的单腿站立/离地帧（容易诱导机器人单腿抬起），
+  # 轻量速度锚点可压制单腿抬起，而第 0 步即生效的击中终止又保证闪避优先级高于死板站立。
   for term in ("track_anchor_linear_velocity", "track_anchor_angular_velocity"):
     if term in cfg.rewards:
       cfg.rewards[term].weight = 0.5
+  # 原地投掷环境（rel_inplace_throw_envs）：指令速度恒为 0，若开启速度跟踪其静止拉力会与侧移躲避对抗，
+  # 因此对原地投掷环境设置 mask_inplace=True 豁免线速度跟踪惩罚，由躲避奖励驱动闪避。
   if "track_anchor_linear_velocity" in cfg.rewards:
     cfg.rewards["track_anchor_linear_velocity"].params["mask_inplace"] = True
 
-  # 施加微弱的复位软拉力，抑制长时间运行下的微小前移漂移
+  # 施加微弱而宽平的位置恢复软拉力（Light Position-Hold against forward drift）：
+  # 长时间运行下机器人容易积累微小的前移累积漂移；重新引入宽松的 goal_distance 项（权重 0.3，std 1.5），
+  # 提供温和的复位拉力以消除累积漂移，同时其平缓的梯度不会惩罚闪避时瞬间 ~0.5m 的侧移位移。
   cfg.rewards["goal_distance"] = RewardTermCfg(
     func=mdp.goal_distance_reward,
     weight=0.3,
     params={"command_name": "twist", "std": 1.5},
   )
 
-  # MimicKit 核心躲避奖励（小球与骨盆间距排斥项 + 速度抑制项）
+  # MimicKit 核心躲避奖励（对齐 SMP 原生设计：骨盆与小球欧氏距离排斥项 + 速度抑制项）
   cfg.rewards.pop("dodge_cbf", None)
   cfg.rewards["mimickit_dodge"] = RewardTermCfg(
     func=mdp.mimickit_dodge_reward,
     weight=1.0,
     params={"robot_name": "robot", "ball_name": "ball"},
   )
-  # 和平期基座静止奖励（小球未逼近时鼓励站定）
+  # 和平期基座静止奖励（Threat-Gated Stillness Reward）：
+  # 在没有小球来袭的和平期（threat=0，视野内仅有背景噪声和静态杂波），奖励机体接近零速度站定；
+  # 当飞球真正在空中逼近时（threat=1），门控信号归零，绝不拖累真实的闪避侧移动作。
+  # 迫使基于视觉深度输入的策略学会区分静态假阳性杂波与动态急速逼近（Looming）的真球。
   cfg.rewards["dodge_stillness_when_safe"] = RewardTermCfg(
     func=mdp.dodge_stillness_when_safe,
     weight=0.5,
     params={"command_name": "twist", "robot_name": "robot", "vel_scale": 2.0},
   )
-  # 和平期动作平滑性惩罚（抑制因传感器噪声引起的关节高频微小抽动）
+  # 和平期动作平滑性惩罚（Threat-Gated Action Jitter Penalty）：
+  # 在无球威胁时严惩关节动作高频快速抖动（抑制传感器噪声引发的关节微小抽搐）；来球威胁时自动归零。
   cfg.rewards["dodge_action_rate_when_safe"] = RewardTermCfg(
     func=mdp.dodge_action_rate_when_safe,
     weight=-0.05,
     params={"command_name": "twist"},
   )
-  # 全身各连杆层级的 CBF 障碍物安全屏障奖励（约束所有肢体与小球的相对速度和距离）
+  # 全身各连杆层级的 CBF 障碍物安全屏障奖励（Per-link Full-Body Control Barrier Penalty）：
+  # mimickit_dodge 仅计算小球到骨盆的距离，导致策略只顾骨盆躲避而将手臂或小腿暴露在弹道中
+  # （实测残余击中部位分布：手臂占 41%、脚部占 26%，躯干仅占 2.5%）。
+  # 该项对所有连杆施加 clamp(h_dot + alpha * h, -clip, 0) 屏障惩罚；安全时严格为 0，小球靠近肢体时急剧扣分。
+  # alpha=1.0（Class-K 增益，经标定提前约 0.4s 发出警报），权重 0.27（使得危险区净收益略呈负值，有效约束肢体）。
   cfg.rewards["dodge_link_cbf"] = RewardTermCfg(
     func=mdp.dodge_link_cbf_reward,
     weight=0.27,
@@ -631,18 +634,20 @@ def _apply_mimickit_reward(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
       "constraint_clip": 2.0,
     },
   )
-  # 全局机体侧移 CBF 惩罚项（默认置 0 禁用）
+  # 全局机体侧移 CBF 惩罚项（已测试并废弃，权重置 0）：
+  # 历史实验（2026-06-04）表明，惩罚质心不侧移会强制机器人在正对来球时向侧面甩腿，反而将腿部甩入飞球弹道中，
+  # 导致击中率恶化 ~7 个百分点且腿部击中率上升至 38.5%，因此保持权重为 0 保留代码仅作对照。
   cfg.rewards["dodge_sidestep"] = RewardTermCfg(
     func=mdp.dodge_sidestep_reward,
     weight=0.0,
     params={"robot_name": "robot", "ball_name": "ball", "alpha": 1.0, "safe_radius": 0.4},
   )
 
-  # 若显式设定 NO_LINK_CBF=1，则关闭连杆级 CBF，还原为纯骨盆距离基线
+  # 若显式设定 NO_LINK_CBF=1，则关闭连杆级 CBF，作为纯骨盆距离基线进行消融对比
   if os.environ.get("NO_LINK_CBF", "0") == "1":
     cfg.rewards["dodge_link_cbf"].weight = 0.0
 
-  # 击中即刻触发终止（第 0 步开始生效）
+  # 击中即刻触发终止（第 0 步开始生效，移除课程学习延迟，施加 -200.0 硬惩罚）
   cfg.rewards["is_terminated"] = RewardTermCfg(
     func=mdp.is_terminated_except,
     weight=-200.0,
@@ -650,7 +655,7 @@ def _apply_mimickit_reward(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
   )
   cfg.terminations["ball_hit"].params.pop("enable_after_steps", None)
 
-  # 间歇性发射节律（随机 1.0 ~ 4.0 秒间隔）
+  # 间歇性发射节律（随机 1.0 ~ 4.0 秒间隔，给机器人闪避后的平衡与姿态恢复留出充分窗口）
   interval = (1.0, 4.0)
   throw = cfg.events["throw_ball_on_dwell"]
   throw.params.pop("rethrow_ground_height", None)
