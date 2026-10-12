@@ -21,6 +21,7 @@ There is no dodge reward or ball observation yet -- this commit only puts the ba
 world and throws it on a standing dwell. Those come next.
 """
 
+import math
 import os
 from dataclasses import dataclass, fields, replace
 
@@ -1262,11 +1263,18 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     CLASSROOM_ROW_START, CLASSROOM_ROW_PITCH,
     CLASSROOM_X_BOUNDS, CLASSROOM_Y_BOUNDS,
   )
-  from src.tasks.amp_loco.mdp.classroom import initialize_static_classroom, reset_classroom_robot
+  from src.tasks.amp_loco.mdp.classroom import (
+    initialize_static_classroom, reset_classroom_robot,
+    classroom_path_follow_reward, classroom_path_success,
+  )
+  from mjlab.managers.metrics_manager import MetricsTermCfg
+  from src.tasks.amp_loco.mdp.path_navigation import (
+    classroom_navigation_observation, classroom_navigation_metric, classroom_failure_cost,
+  )
 
   cfg = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play=play)
-  # Match standing MimicKit dodge reward scaling. At the 0.02 s control step:
-  # reward = 0.01 * sum(weight_i * term_i) + 0.25 * style_score.
+  # Continuous terms scale by dt; the unified follower compensates angular
+  # differences and the success event so they are applied once without dt.
   cfg.scale_rewards_by_dt = True
   old_names = cfg.events["pin_wall"].params["wall_names"]
   cfg.scene.entities = {k: v for k, v in cfg.scene.entities.items() if k not in old_names}
@@ -1316,50 +1324,108 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   )
   # This reset slot follows RSI, so the randomized pose preserves its gait state.
   cfg.events["reset_walk_path"] = EventTermCfg(
-    func=reset_classroom_robot, mode="reset", params={},
+    func=reset_classroom_robot, mode="reset",
+    params={"route_nodes": int(os.environ.get("WALK_ROUTE_NODES", 4)),
+            "spawn_lateral_range": float(os.environ.get("WALK_SPAWN_LATERAL_RANGE", 0.5))},
   )
   # Shorter lookahead limits corner cutting at cross-aisle intersections.
-  cfg.commands["twist"].path_lookahead = 0.8
-  cfg.commands["twist"].path_switch_radius = 0.8
+  cfg.commands["twist"].path_lookahead = float(os.environ.get("WALK_LOOKAHEAD", 0.8))
+  cfg.commands["twist"].path_switch_radius = float(os.environ.get("WALK_PATH_SWITCH_RADIUS", 0.8))
   cfg.commands["twist"].path_allow_backtracking = True
   cfg.commands["twist"].turn_before_walk = True
   cfg.commands["twist"].simple_heading = True
   cfg.commands["twist"].max_lin_vel_x = 0.6
-  # One signed spawn-relative progress term rewards forward motion and penalizes
-  # retreat/idle time. Keep the standalone WallWalk stillness term out of classroom.
-  cfg.rewards.pop("walk_path_stillness_when_safe", None)
-  cfg.rewards["walk_goal_heading_when_safe"] = RewardTermCfg(
-    func=mdp.walk_goal_heading_when_safe,
-    weight=float(os.environ.get("WALK_GOAL_HEADING_WEIGHT", 2.0)),
+  def follow_param(name, default):
+    return float(os.environ.get(name, default))
+
+  command = cfg.commands["twist"]
+  command.classroom_follow = True
+  command.align_enter_angle = math.radians(follow_param("WALK_ALIGN_ENTER_DEG", 75.0))
+  command.align_exit_angle = math.radians(follow_param("WALK_ALIGN_EXIT_DEG", 25.0))
+  command.path_v_ref = follow_param("WALK_V_REF", 0.6)
+  command.max_lin_vel_x = command.path_v_ref
+  command.curvature_alpha = follow_param("WALK_CURVATURE_ALPHA", 0.6)
+  command.curvature_window = follow_param("WALK_CURVATURE_WINDOW", 0.4)
+  command.stall_duration = follow_param("WALK_STALL_DURATION", 1.0)
+  command.turn_progress_threshold = follow_param("WALK_TURN_PROGRESS_THRESHOLD", 0.02)
+  command.follow_progress_fraction = follow_param("WALK_FOLLOW_PROGRESS_FRACTION", 0.2)
+  command.join_d_in = follow_param("WALK_JOIN_D_IN", 0.2)
+  command.join_d_out = follow_param("WALK_JOIN_D_OUT", 0.4)
+  command.join_lookahead = follow_param("WALK_JOIN_LOOKAHEAD", 0.8)
+  command.join_progress_rate = follow_param("WALK_JOIN_PROGRESS_RATE", 0.02)
+  command.startup_grace = follow_param("WALK_STARTUP_GRACE", 0.5)
+  command.phase_min_window_time = follow_param("WALK_PHASE_MIN_WINDOW_TIME", 0.3)
+  command.recovery_timeout = follow_param("WALK_RECOVERY_TIMEOUT", 10.0)
+  command.velocity_filter_time = follow_param("WALK_VELOCITY_FILTER_TIME", 0.15)
+  command.command_acceleration = follow_param("WALK_COMMAND_ACCELERATION", 0.8)
+  command.projection_max_segments = int(os.environ.get("WALK_PROJECTION_MAX_SEGMENTS", 8))
+  command.navigation_d_ref = follow_param("WALK_D_REF", 0.5)
+  command.navigation_obs_clip = follow_param("WALK_NAV_OBS_CLIP", 5.0)
+  command.projection_progress_ratio = follow_param("WALK_PROJECTION_PROGRESS_RATIO", 1.5)
+  command.navigation_obstacles = names
+  command.join_obstacle_margin = follow_param("WALK_JOIN_OBSTACLE_MARGIN", 0.25)
+  for name in ("walk_path_stillness_when_safe", "walk_goal_heading_when_safe",
+               "walk_path_progress", "walk_path_progress_when_safe", "walk_path_adherence"):
+    cfg.rewards.pop(name, None)
+  cfg.rewards["classroom_path_follow"] = RewardTermCfg(
+    func=classroom_path_follow_reward, weight=1.0,
     params={
       "command_name": "twist",
-      "robot_name": "robot",
-      # Within 30deg reward alignment; outside reward actual signed yaw-rate
-      # tracking, with a negative score for idle/wrong-way/excessive rotation.
-      "sharpness": float(os.environ.get("WALK_GOAL_HEADING_SHARP", 4.0)),
-      "turn_angle_threshold": cfg.commands["twist"].walk_full_speed_angle,
-      "turn_velocity_std": float(os.environ.get("WALK_GOAL_TURN_STD", 0.25)),
+      "k_theta": follow_param("WALK_GOAL_HEADING_WEIGHT", 2.0),
+      "k_join": follow_param("WALK_JOIN_WEIGHT", 2.0),
+      "k_p": follow_param("WALK_PATH_PROGRESS_SAFE_WEIGHT", 2.0),
+      "k_b": follow_param("WALK_PATH_BACKWARD_WEIGHT", 2.0),
+      "backward_weight": follow_param("WALK_BODY_BACKWARD_WEIGHT", 1.0),
+      "backward_limit": follow_param("WALK_BODY_BACKWARD_LIMIT", 0.05),
+      "lateral_weight": follow_param("WALK_LATERAL_WEIGHT", 0.5),
+      "lateral_limit": follow_param("WALK_LATERAL_LIMIT", 0.2),
+      "align_lateral_scale": follow_param("WALK_ALIGN_LATERAL_SCALE", 0.2),
+      "deviation_weight": follow_param("WALK_PATH_DEVIATION_WEIGHT", 0.5),
+      "deviation_std": follow_param("WALK_PATH_ADHERENCE_STD", 0.5),
+      "join_deviation_scale": follow_param("WALK_JOIN_DEVIATION_SCALE", 0.2),
+      "movement_cost_cap": follow_param("WALK_MOVEMENT_COST_CAP", 4.0),
+      "deviation_cost_cap": follow_param("WALK_DEVIATION_COST_CAP", 4.0),
+      "stall_weight": follow_param("WALK_STALL_WEIGHT", 1.2),
+      "turn_stall_weight": follow_param("WALK_TURN_STALL_WEIGHT", 1.2),
+      "join_stall_weight": follow_param("WALK_JOIN_STALL_WEIGHT", 1.2),
+      "recovery_stall_weight": follow_param("WALK_RECOVERY_STALL_WEIGHT", 1.2),
+      "success_bonus": follow_param("WALK_PATH_SUCCESS_BONUS", 10.0),
     },
   )
-  # Reward safe-time signed progress from spawn, with a separate idle branch.
-  # Drop the always-on term so retreat during a ball threat is not penalized here.
-  # Cap forward pay near the 0.6 m/s cruise and keep tight velocity tracking to
-  # discourage running. All ball-threat rows receive zero from this path term.
-  cfg.rewards.pop("walk_path_progress", None)
-  cfg.rewards["walk_path_progress_when_safe"].weight = float(
-    os.environ.get("WALK_PATH_PROGRESS_SAFE_WEIGHT", 2.0)
+  # This term refreshes progress before rewards and is last so failures win.
+  cfg.terminations["path_success"] = TerminationTermCfg(
+    func=classroom_path_success, params={"command_name": "twist"},
   )
-  cfg.rewards["walk_path_progress_when_safe"].params["v_max"] = float(
-    os.environ.get("WALK_PROGRESS_SAFE_VMAX", 0.75)
+  # Failure costs exceed the remaining bounded navigation-rate penalty budget;
+  # intentionally falling cannot cheaply erase future navigation costs.
+  rp = cfg.rewards["classroom_path_follow"].params
+  max_navigation_cost = (rp["k_b"] + rp["backward_weight"] * rp["movement_cost_cap"]
+    + rp["lateral_weight"] * rp["movement_cost_cap"]
+    + rp["deviation_weight"] * rp["deviation_cost_cap"]
+    + max(rp["stall_weight"], rp["turn_stall_weight"], rp["join_stall_weight"])
+    + rp["recovery_stall_weight"])
+  cfg.rewards["is_terminated"] = RewardTermCfg(
+    func=classroom_failure_cost, weight=-1., params={
+      "base_cost": follow_param("WALK_FAILURE_COST", 10.),
+      "remaining_rate": follow_param("WALK_FAILURE_REMAINING_RATE", max_navigation_cost),
+    },
   )
-  # Raw values: cruise +0.6, idle -0.6*forward_scale, retreat signed negative.
-  # Near-zero rates (<=0.02 m/s) count as idle rather than projection jitter.
-  cfg.rewards["walk_path_progress_when_safe"].params["stillness_penalty"] = float(
-    os.environ.get("WALK_PROGRESS_STILLNESS_PENALTY", 0.6)
+  cfg.observations["path_navigation"] = ObservationGroupCfg(
+    terms={"navigation": ObservationTermCfg(func=classroom_navigation_observation)},
+    concatenate_terms=True, enable_corruption=False, history_length=0,
   )
-  cfg.rewards["walk_path_progress_when_safe"].params["stillness_threshold"] = float(
-    os.environ.get("WALK_PROGRESS_STILLNESS_THRESHOLD", 0.02)
-  )
+  for key in ("phase", "theta", "distance", "speed", "command_speed", "recovery_age",
+              "reward_turn", "reward_join", "reward_forward", "reward_retreat",
+              "reward_body_backward", "reward_lateral", "reward_deviation",
+              "reward_turn_stall", "reward_join_stall", "reward_follow_stall",
+              "reward_recovery_stall", "reward_success"):
+    cfg.metrics[f"navigation/{key}"] = MetricsTermCfg(
+      func=classroom_navigation_metric, params={"key": key})
+  # Tracking becomes a nonpositive cost: perfect zero-velocity tracking is
+  # neutral, rather than paying the robot for standing still while aligning.
+  for name in ("track_anchor_linear_velocity", "track_anchor_angular_velocity"):
+    if name in cfg.rewards:
+      cfg.rewards[name].params["as_cost"] = True
   cfg.rewards["track_anchor_linear_velocity"].params["std"] = float(
     os.environ.get("WALK_TRACK_LIN_STD", 0.3)
   )

@@ -16,7 +16,7 @@ class Scene(dict):
     pass
 
 
-def make_command(angles):
+def make_command(angles, classroom_follow=True):
     n = len(angles)
     heading = -torch.deg2rad(torch.tensor(angles, dtype=torch.float32))
     quat = torch.zeros(n, 4)
@@ -24,17 +24,24 @@ def make_command(angles):
     scene = Scene(
         robot=NS(data=NS(root_link_pos_w=torch.zeros(n, 3),
                          root_link_quat_w=quat, heading_w=heading,
+                         root_com_lin_vel_w=torch.zeros(n, 3),
                          root_link_ang_vel_w=torch.zeros(n, 3))),
         ball=NS(data=NS(root_link_pos_w=torch.tensor([[0., 1000., .8]]).repeat(n, 1),
                         root_link_lin_vel_w=torch.zeros(n, 3))),
     )
     scene.env_origins = torch.zeros(n, 3)
-    env = NS(num_envs=n, device='cpu', step_dt=.02, scene=scene,
+    env = NS(num_envs=n, device='cpu', step_dt=.02, common_step_counter=0, scene=scene,
              sim=NS(mj_model=NS(geom=lambda _: NS(id=0)),
                     model=NS(geom_size=torch.full((n, 1, 3), .1))))
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg().commands['twist']
     cfg.path_follow = False
+    cfg.classroom_follow = classroom_follow
     cfg.forward_offset = 0.
+    # Formula tests remove command ramp/filter; dedicated navigation tests
+    # exercise the deployed G1 defaults.
+    cfg.command_acceleration = 100.
+    cfg.velocity_filter_time = 0.
+    cfg.navigation_obstacles = ()
     command = DodgeGoToGoalCommand(cfg, env)
     command.goal_pos_w[:, 0] = 1.
     env.command_manager = NS(get_term=lambda _: command)
@@ -42,15 +49,16 @@ def make_command(angles):
 
 
 @pytest.mark.parametrize('cbf_enabled', [False, True])
-def test_turn_then_smooth_forward_and_matching_stillness(cbf_enabled):
+def test_turn_then_cosine_forward_and_matching_stillness(cbf_enabled):
     command, env = make_command([180., 120., 90., 75., 60., 45., 30., 0., -60., -120.])
     command.cfg.cbf_enabled = cbf_enabled
     command._update_command()
     vx, vy, wz = command.command.unbind(-1)
     assert torch.allclose(vx[:3], torch.zeros(3), atol=1e-6)
     assert torch.all(vx[3:7].diff() > 0)
-    assert vx[4].item() == pytest.approx(.3, abs=1e-6)  # max 0.6 m/s x scale(60deg)=0.5
-    assert torch.allclose(vx[6:8], torch.full((2,), .6))
+    assert vx[4].item() == pytest.approx(.3, abs=1e-6)
+    assert vx[6].item() == pytest.approx(.6 * 3 ** .5 / 2, abs=1e-6)
+    assert vx[7].item() == pytest.approx(.6)
     assert vx[8].item() == pytest.approx(vx[4].item())
     assert vx[9] == 0 and torch.all(vy == 0) and torch.all(vx >= 0)
     assert torch.all(wz[1:7] > 0) and torch.all(wz[8:] < 0) and wz[7] == 0
@@ -58,7 +66,8 @@ def test_turn_then_smooth_forward_and_matching_stillness(cbf_enabled):
     cost = walk_path_stillness_when_safe(env)
     assert torch.allclose(cost[:3], torch.zeros(3), atol=1e-6)
     assert cost[4].item() == pytest.approx(.5, abs=1e-6)
-    assert torch.allclose(cost[6:8], torch.ones(2))
+    assert cost[6].item() == pytest.approx(3 ** .5 / 2, abs=1e-6)
+    assert cost[7].item() == pytest.approx(1.)
 
 
 @pytest.mark.parametrize('filter_command', [False, True])
@@ -101,7 +110,7 @@ def test_arrived_standing_and_inplace_commands_remain_zero():
 
 def test_other_tasks_retain_backward_commands_and_stillness():
     assert not g1_amp_dodge_mimickit_wallwalk_flat_env_cfg().commands['twist'].turn_before_walk
-    command, env = make_command([120.])
+    command, env = make_command([120.], classroom_follow=False)
     command.cfg.turn_before_walk = False
     command._update_command()
     assert command.command[0, 0] < 0 and command.command[0, 1] > 0

@@ -96,10 +96,13 @@ def track_anchor_linear_velocity(
   anchor_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
   track_dodge_safe: bool = False,
   mask_inplace: bool = False,
+  as_cost: bool = False,
 ) -> torch.Tensor:
   """Reward for tracking the commanded anchor linear velocity.
 
   The commanded z velocity is assumed to be zero.
+
+  ``as_cost`` shifts the exponential to [-1, 0], making perfect tracking neutral.
 
   ``track_dodge_safe`` (dodge tasks): track the CBF-FILTERED ("safe") velocity command
   instead of the observed (nominal) one. The ``DodgeGoToGoalCommand`` stashes the safe
@@ -133,7 +136,7 @@ def track_anchor_linear_velocity(
       command_xyz_b,
     )
   lin_vel_error = torch.sum(torch.square(command_xyz_w[:,:3] - asset.data.body_link_lin_vel_w[:, anchor_cfg.body_ids[0], :3]), dim=1)
-  reward = torch.exp(-lin_vel_error / std**2)
+  reward = torch.exp(-lin_vel_error / std**2) - float(as_cost)
   if mask_inplace and not track_dodge_safe:
     # In-place-throw envs: zero command but pelted -> don't reward stillness (it fights the dodge).
     cmd_term = env.command_manager.get_term(command_name)
@@ -151,10 +154,12 @@ def track_anchor_angular_velocity(
   delay_env_rew_ratio: float = 1.0,
   asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
   anchor_cfg: SceneEntityCfg = SceneEntityCfg("robot", body_names=()),
+  as_cost: bool = False,
 ) -> torch.Tensor:
   """Reward heading error for heading-controlled envs, angular velocity for others.
 
   The commanded xy angular velocities are assumed to be zero.
+  ``as_cost`` shifts the exponential to [-1, 0], making perfect tracking neutral.
   """
   asset: Entity = env.scene[asset_cfg.name]
   command = env.command_manager.get_command(command_name)
@@ -173,7 +178,7 @@ def track_anchor_angular_velocity(
 
   total_error = ang_vel_z_error + ang_vel_xy_error
 
-  reward = torch.exp(-total_error / std**2)
+  reward = torch.exp(-total_error / std**2) - float(as_cost)
   return _apply_delay_env_reward_scaling(env, reward, mask_delay, delay_env_rew_ratio)
 
 def body_ang_vel_xy_l2(

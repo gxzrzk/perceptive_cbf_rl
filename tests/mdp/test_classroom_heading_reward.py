@@ -4,19 +4,26 @@ import math
 import pytest
 import torch
 
-from mjlab.managers.reward_manager import RewardManager
+from mjlab.managers.reward_manager import RewardManager, RewardTermCfg
 from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
     g1_amp_dodge_mimickit_classroom_flat_env_cfg,
 )
 from src.tasks.amp_loco.mdp.rewards import walk_goal_heading_when_safe
-from tests.mdp.test_classroom_heading_command import make_command
+from tests.mdp.test_classroom_heading_command import make_command as make_heading_command
+
+
+def make_command(angles):
+    return make_heading_command(angles, classroom_follow=False)
 
 
 @pytest.fixture
 def term():
-    return g1_amp_dodge_mimickit_classroom_flat_env_cfg().rewards[
-        "walk_goal_heading_when_safe"
-    ]
+    # Legacy helper remains available to other tasks; classroom now uses the
+    # unified signed-difference follower tested in test_classroom_follow.py.
+    return RewardTermCfg(func=walk_goal_heading_when_safe, weight=2., params={
+        "sharpness": 4., "turn_angle_threshold": math.pi / 6,
+        "turn_velocity_std": .25,
+    })
 
 
 @pytest.mark.parametrize("angle", [30.001, 31., 60., 90., 120., 179., -30.001, -31., -90., -179.])

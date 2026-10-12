@@ -278,6 +278,27 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
 
   def __init__(self, cfg: DodgeGoToGoalCommandCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg, env)
+    if cfg.classroom_follow:
+      if not cfg.turn_before_walk or not cfg.simple_heading:
+        raise ValueError("classroom_follow requires turn_before_walk and simple_heading")
+      if not 0 <= cfg.align_exit_angle < cfg.align_enter_angle < math.pi:
+        raise ValueError("alignment angles must satisfy 0 <= exit < enter < pi")
+      if (cfg.path_v_ref <= 0 or cfg.curvature_alpha < 0
+          or cfg.curvature_window <= 0 or cfg.stall_duration <= 0
+          or cfg.turn_progress_threshold < 0
+          or not 0 < cfg.follow_progress_fraction <= 1):
+        raise ValueError("Invalid classroom speed, curvature or stall parameters")
+      if (not 0 < cfg.join_d_in < cfg.join_d_out or cfg.join_lookahead <= 0
+          or cfg.join_progress_rate <= 0 or cfg.startup_grace < 0
+          or cfg.velocity_filter_time < 0 or cfg.command_acceleration <= 0
+          or cfg.recovery_timeout <= cfg.stall_duration
+          or cfg.projection_max_segments < 1 or cfg.path_lookahead <= 0
+          or cfg.navigation_d_ref <= 0 or cfg.navigation_obs_clip <= 0
+          or cfg.projection_progress_ratio < 1 or cfg.join_obstacle_margin < 0
+          or cfg.max_lin_vel_x <= 0 or cfg.max_ang_vel_z <= 0 or cfg.kp_yaw <= 0):
+        raise ValueError("Invalid classroom join, filter or projection parameters")
+      if not 0 < cfg.phase_min_window_time <= cfg.stall_duration:
+        raise ValueError("phase_min_window_time must be within the stall window")
     if cfg.turn_before_walk:
       if not cfg.simple_heading:
         raise ValueError("turn_before_walk requires simple_heading")
@@ -387,7 +408,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
 
     # Update the segment index locally, including retreat when enabled. The
     # capped loop handles several short rounded-corner segments or teleport edges.
-    for _ in range(8):
+    for _ in range(getattr(self.cfg, "projection_max_segments", 8)):
       i = torch.minimum(self._path_seg_idx, (count - 2).clamp(min=0))
       p0 = pts[ar, i]
       p1 = pts[ar, i + 1]
@@ -457,7 +478,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     total = cum[ar, count - 1]
     horizon = self._path_s + self.cfg.path_lookahead + self.cfg.path_wall_ahead
     need = total < horizon
-    if need.any():
+    if need.any() and not getattr(self.cfg, "classroom_follow", False):
       extend_walk_path(env, ar[need], horizon[need] + 20.0)
 
     goal_xy, _ = walk_path_query(env, ar, self._path_s + self.cfg.path_lookahead)
@@ -527,7 +548,11 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     # (2 m) >> arrive_radius (0.25 m) so the arrived-zeroing never triggers.
     path_active = False
     if self.cfg.path_follow and hasattr(self._env, "_walk_path_pts"):
-      self._update_path_goal()
+      if self.cfg.classroom_follow:
+        from .classroom import classroom_follow_state
+        classroom_follow_state(self)
+      else:
+        self._update_path_goal()
       path_active = True
 
     # Forward-offset mode: every step pin the goal forward_offset metres AHEAD of the
@@ -626,6 +651,22 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     self._walk_forward_scale.fill_(1.0)
     if not self.cfg.turn_before_walk:
       return
+    if self.cfg.classroom_follow:
+      from .classroom import classroom_follow_state
+      state = classroom_follow_state(self)
+      safe = ~self._dodge_threat
+      moving = ~self.is_standing_env & ~self.is_inplace_env & ~state.success
+      if not self.cfg.path_follow:
+        moving &= self.distance_to_goal >= self.cfg.arrive_radius
+      forward = state.command_speed * moving
+      for command in (self.vel_command_b, self.vel_command_nominal_b):
+        command[:, 0] = torch.where(safe, forward, command[:, 0])
+        command[:, 1] = torch.where(safe, 0.0, command[:, 1])
+        yaw_rate = (self.cfg.kp_yaw * state.theta).clamp(
+          -self.cfg.max_ang_vel_z, self.cfg.max_ang_vel_z) * moving
+        command[:, 2] = torch.where(safe, yaw_rate, command[:, 2])
+      self._walk_forward_scale = forward / self.cfg.path_v_ref
+      return
     direction = self.goal_pos_w - self.robot.data.root_link_pos_w[:, :2]
     yaw_error = wrap_to_pi(
       torch.atan2(direction[:, 1], direction[:, 0]) - self.robot.data.heading_w
@@ -674,6 +715,33 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   turn_before_walk: bool = False
   """When safe, command forward-only walking gated by goal heading alignment.
   Incoming threats retain the original lateral/backward command freedoms."""
+  classroom_follow: bool = False
+  """Finite-route alignment/following with current-step rewards; classroom only."""
+  align_enter_angle: float = math.radians(75)
+  align_exit_angle: float = math.radians(25)
+  path_v_ref: float = 0.6
+  curvature_alpha: float = 0.6
+  curvature_window: float = 0.4
+  stall_duration: float = 1.0
+  turn_progress_threshold: float = 0.02
+  """Minimum net angular improvement rate (rad/s) to avoid a turn stall."""
+  follow_progress_fraction: float = 0.2
+  """Minimum signed path speed as a fraction of the curvature-aware command."""
+  join_d_in: float = 0.2
+  join_d_out: float = 0.4
+  join_lookahead: float = 0.8
+  join_progress_rate: float = 0.02
+  startup_grace: float = 0.5
+  phase_min_window_time: float = 0.3
+  recovery_timeout: float = 10.0
+  velocity_filter_time: float = 0.15
+  command_acceleration: float = 0.8
+  projection_max_segments: int = 8
+  navigation_d_ref: float = 0.5
+  navigation_obs_clip: float = 5.0
+  projection_progress_ratio: float = 1.5
+  navigation_obstacles: tuple[str, ...] = ()
+  join_obstacle_margin: float = 0.25
   walk_full_speed_angle: float = math.pi / 6
   """Yaw error (radians) below which forward speed is unrestricted."""
   walk_stop_angle: float = math.pi / 2

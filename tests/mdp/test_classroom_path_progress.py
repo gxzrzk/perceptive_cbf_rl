@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 import pytest
 import torch
 
-from mjlab.managers.reward_manager import RewardManager
+from mjlab.managers.reward_manager import RewardManager, RewardTermCfg
 from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
     g1_amp_dodge_mimickit_classroom_flat_env_cfg,
     g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
@@ -18,9 +18,11 @@ from tests.mdp.test_classroom_turns import make_command
 
 @pytest.fixture
 def term():
-    return g1_amp_dodge_mimickit_classroom_flat_env_cfg().rewards[
-        "walk_path_progress_when_safe"
-    ]
+    # Retain coverage of the legacy helper used by WallWalk.
+    return RewardTermCfg(func=walk_path_progress_when_safe, weight=2., params={
+        "command_name": "twist", "v_max": .75,
+        "stillness_penalty": .6, "stillness_threshold": .02,
+    })
 
 
 def progress_command(points=None):

@@ -126,8 +126,12 @@ def g1_amp_dodge_mimickit_classroom_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
   """State-oracle classroom runner with the WallWalk locomotion AMP prior."""
   cfg = g1_amp_dodge_mimickit_wallwalk_ppo_runner_cfg()
   cfg.experiment_name = "g1_amp_dodge_mimickit_classroom"
+  cfg.obs_groups = {
+    "actor": ("actor", "ball_state", "path_navigation"),
+    "critic": ("critic", "ball_state", "path_navigation"),
+  }
   # Match standing MimicKit dodge: dt-scaled task reward and the original
-  # AMP blend. At dt=0.02: reward = 0.01 * task_sum + 0.25 * style_score.
+  # AMP blend. Differential/event terms compensate dt inside the follower.
   cfg.amp_reward_coef = 0.5
   cfg.amp_task_reward_lerp = 0.5
   return cfg

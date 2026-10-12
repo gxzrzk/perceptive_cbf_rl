@@ -1,7 +1,10 @@
-"""Fixed classroom layout and safe randomized robot spawns."""
+"""Static classroom routes, alignment/following rewards and randomized spawns."""
 import torch
 from mjlab.utils.lab_api.math import quat_apply, quat_mul
 from .walk_path import _ensure_stash
+from .path_navigation import (  # noqa: F401
+  classroom_follow_state, classroom_path_success, classroom_path_follow_reward,
+)
 from src.assets.objects.classroom import (
   CLASSROOM_SPAWN_LANES, CLASSROOM_ROUTE_STATIONS,
   CLASSROOM_ROW_PITCH, CLASSROOM_COLUMN_Y, CLASSROOM_ROUTE_CLEARANCE,
@@ -23,11 +26,15 @@ def initialize_static_classroom(env, env_ids, wall_names, layout):
   env._wall_yaw_w = poses[None, :, 3].expand(env.num_envs, -1)
 
 
-def reset_classroom_robot(env, env_ids):
+def reset_classroom_robot(env, env_ids, route_nodes=4, spawn_lateral_range=0.5):
   """Randomize planar pose after RSI and build a route inside the clear aisles.
 
   Preserve RSI height, tilt and joints; rotate world velocities with the yaw.
   """
+  if route_nodes < 3:
+    raise ValueError("classroom route_nodes must be >= 3")
+  if not 0 <= spawn_lateral_range <= 0.5:
+    raise ValueError("spawn_lateral_range must be in [0, 0.5] for the clear G1 aisles")
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)
   if len(env_ids) == 0:
@@ -40,7 +47,7 @@ def reset_classroom_robot(env, env_ids):
   lane = torch.randint(0, len(CLASSROOM_SPAWN_LANES), (n,), device=device)
   lane_y = torch.tensor(CLASSROOM_SPAWN_LANES, device=device)[lane]
   x = torch.rand(n, device=device) * CLASSROOM_ROUTE_STATIONS[-1]
-  y = lane_y + (torch.rand(n, device=device) * 2 - 1) * 0.15
+  y = lane_y + (torch.rand(n, device=device) * 2 - 1) * spawn_lateral_range
   origins = env.scene.env_origins[env_ids]
   pose[:, :2] = origins[:, :2] + torch.stack((x, y), -1)
   q = pose[:, 3:7]
@@ -57,7 +64,8 @@ def reset_classroom_robot(env, env_ids):
   robot.write_root_link_pose_to_sim(pose, env_ids=env_ids)
   robot.write_root_link_velocity_to_sim(velocity, env_ids=env_ids)
 
-  local, counts = round_classroom_route(generate_classroom_route(x, y, lane))
+  # Route starts at the aisle center; the robot may start beside it and must join.
+  local, counts = round_classroom_route(generate_classroom_route(x, lane_y, lane, count=route_nodes))
   count = local.shape[1]
   _ensure_stash(env, max_points=count)
   env._walk_path_pts[env_ids, :count] = local + origins[:, None, :2]
