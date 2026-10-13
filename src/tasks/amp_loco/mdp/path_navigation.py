@@ -8,6 +8,7 @@ import math
 from types import SimpleNamespace
 
 import torch
+from .ball_region import ball_in_play
 from mjlab.utils.lab_api.math import wrap_to_pi
 
 from .walk_path import walk_path_query
@@ -227,7 +228,7 @@ def classroom_follow_state(command):
   novel_s = (command._path_s - frontier).clamp_min(0)
   novel_s = torch.minimum(novel_s, delta_s.clamp_min(0))
   frontier = torch.maximum(frontier, command._path_s)
-  safe = ~command._dodge_threat
+  safe = ~(command._dodge_threat & ball_in_play(command._env, command.cfg.ball_name))
   eligible = safe & ~new
   active_turn = eligible & step_aligning
   active_join = eligible & ~step_aligning & step_joining
@@ -302,14 +303,21 @@ def classroom_path_follow_reward(
   align_lateral_scale=.2, deviation_weight=.5, deviation_std=.5,
   join_deviation_scale=.2, movement_cost_cap=4., deviation_cost_cap=4.,
   stall_weight=1.2, turn_stall_weight=1.2, join_stall_weight=1.2,
-  recovery_stall_weight=1.2,
+  recovery_stall_weight=1.2, progress_penalty_scale=1.,
 ):
-  """Reward rate: manager integrates rates once; differences/events divide by dt."""
+  """Reward rate, entirely paused during an in-room incoming-ball threat.
+
+  Keep updating geometry and the paid-distance frontier while paused so no
+  displacement or turn reward accumulates for payment when the threat clears.
+  progress_penalty_scale discounts only negative turn/join/retreat components;
+  positive progress and all other costs keep their original strength.
+  """
   if (min(k_theta, k_join, k_p, backward_weight, lateral_weight, deviation_weight,
           stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight
           ) < 0 or k_b < k_p or deviation_std <= 0 or lateral_limit < 0
       or backward_limit < 0 or min(movement_cost_cap, deviation_cost_cap) <= 0
-      or not 0 <= align_lateral_scale <= 1 or not 0 <= join_deviation_scale <= 1):
+      or not 0 <= align_lateral_scale <= 1 or not 0 <= join_deviation_scale <= 1
+      or not 0 <= progress_penalty_scale <= 1):
     raise ValueError("Invalid classroom reward parameters (require k_b >= k_p)")
   command = env.command_manager.get_term(command_name)
   state, cfg = classroom_follow_state(command), command.cfg
@@ -317,7 +325,7 @@ def classroom_path_follow_reward(
   g = state.step_theta.cos().clamp_min(0).square()
   follow = (~state.step_aligning & ~state.step_joining).float()
   join = (state.step_joining & ~state.step_aligning).float()
-  safe = (~command._dodge_threat).float()
+  safe = ~(command._dodge_threat & ball_in_play(env, command.cfg.ball_name))
   # Stop both sides of join accounting at d_in. Otherwise an inward step that
   # overshoots the join threshold could earn unrepaid credit inside the gait band.
   positive_join = g * state.join_credit_delta.clamp_min(0) * join
@@ -333,14 +341,19 @@ def classroom_path_follow_reward(
     "join": k_join * (positive_join - negative_join) / cfg.navigation_d_ref,
     "forward": dt * k_p * g * (state.novel_speed / cfg.path_v_ref).clamp(0, 1) * follow,
     "retreat": -dt * k_b * (-state.speed / cfg.path_v_ref).clamp(0, 1),
-    "body_backward": -dt * safe * backward_weight * backward,
-    "lateral": -dt * safe * lateral_weight * lateral,
+    "body_backward": -dt * backward_weight * backward,
+    "lateral": -dt * lateral_weight * lateral,
     "deviation": -dt * deviation_weight * deviation,
     "turn_stall": -dt * turn_stall_weight * state.turn_stall.float(),
     "join_stall": -dt * join_stall_weight * state.join_stall.float(),
     "follow_stall": -dt * stall_weight * state.follow_stall.float(),
     "recovery_stall": -dt * recovery_stall_weight * state.recovery_stall.float(),
   }
+  for name in ("turn", "join", "retreat"):
+    parts[name] = torch.where(parts[name] < 0, parts[name] * progress_penalty_scale, parts[name])
+  # Gate every component, including differences and retreat/deviation costs.
+  # Store the gated values so reward-component metrics also remain zero.
+  parts = {name: torch.where(safe, value, 0.0) for name, value in parts.items()}
   state.reward_components = parts
   return sum(parts.values()) / dt
 

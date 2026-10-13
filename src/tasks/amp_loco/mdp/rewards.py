@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import mujoco
 import torch
+from .ball_region import ball_in_play
 
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
@@ -39,7 +40,7 @@ def airborne(env, ball_z: torch.Tensor, ball_name: str = "ball", margin: float =
   if not hasattr(env, "_airborne_ball_geom_id"):
     env._airborne_ball_geom_id = env.sim.mj_model.geom(f"{ball_name}/ball_collision").id
   r = env.sim.model.geom_size[:, env._airborne_ball_geom_id, 0]  # (N,) per-env radius
-  return ball_z > r + margin
+  return (ball_z > r + margin) & ball_in_play(env, ball_name)
 
 
 def _get_delay_env_mask(env: ManagerBasedRlEnv) -> torch.Tensor | None:
@@ -958,7 +959,8 @@ def mimickit_dodge_reward(
   pos_reward = 1.0 - torch.exp(-pos_scale * pos_err)
   vel_err = torch.sum(torch.square(robot.data.root_link_lin_vel_w[:, :2]), dim=-1)
   vel_reward = torch.exp(-vel_scale * vel_err)
-  return pos_w * pos_reward + vel_w * vel_reward
+  reward = pos_w * pos_reward + vel_w * vel_reward
+  return torch.where(ball_in_play(env, ball_name), reward, 0.0)
 
 
 def dodge_stillness_when_safe(

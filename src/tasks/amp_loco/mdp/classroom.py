@@ -9,6 +9,7 @@ from src.assets.objects.classroom import (
   CLASSROOM_SPAWN_LANES, CLASSROOM_ROUTE_STATIONS,
   CLASSROOM_ROW_PITCH, CLASSROOM_COLUMN_Y, CLASSROOM_ROUTE_CLEARANCE,
   CLASSROOM_PAIR_LENGTH, CLASSROOM_DESK_HALF_SIZE,
+  CLASSROOM_BALL_BOUNDS, CLASSROOM_BALL_PARK_POS,
 )
 
 
@@ -25,6 +26,8 @@ def initialize_static_classroom(env, env_ids, wall_names, layout):
     raise ValueError("Classroom obstacle names and layout must have matching lengths")
   env._wall_pos_w = poses[None, :, :3].expand(env.num_envs, -1, -1)
   env._wall_yaw_w = poses[None, :, 3].expand(env.num_envs, -1)
+  env._classroom_ball_bounds = poses.new_tensor(CLASSROOM_BALL_BOUNDS)
+  env._classroom_ball_park_pos = poses.new_tensor(CLASSROOM_BALL_PARK_POS)
 
 
 def reset_classroom_robot(env, env_ids, route_nodes=4, spawn_lateral_range=0.5,

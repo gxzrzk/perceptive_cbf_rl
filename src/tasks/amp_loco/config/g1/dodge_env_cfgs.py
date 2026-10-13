@@ -1278,11 +1278,13 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     CLASSROOM_X_BOUNDS, CLASSROOM_Y_BOUNDS,
     CLASSROOM_DESK_HALF_SIZE, CLASSROOM_CHAIR_HALF_SIZE,
     CLASSROOM_CHAIR_OFFSET, CLASSROOM_WALL_HALF_THICKNESS,
+    CLASSROOM_WALL_HEIGHT, CLASSROOM_BALL_PARK_POS,
   )
   from src.tasks.amp_loco.mdp.classroom import (
     initialize_static_classroom, reset_classroom_robot,
     classroom_path_follow_reward, classroom_navigation_update,
   )
+  from src.tasks.amp_loco.mdp.ball_region import hide_outside_classroom_ball
   from mjlab.managers.metrics_manager import MetricsTermCfg
   from src.tasks.amp_loco.mdp.path_navigation import (
     classroom_navigation_observation, classroom_navigation_metric, classroom_failure_cost,
@@ -1318,10 +1320,10 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   hx, hy = (x_max - x_min) / 2, (y_max - y_min) / 2
   wall_half = CLASSROOM_WALL_HALF_THICKNESS
   for half, pose in (
-    ((hx, wall_half, 1.5), (cx, y_min, 1.5, 0.0)),
-    ((hx, wall_half, 1.5), (cx, y_max, 1.5, 0.0)),
-    ((wall_half, hy, 1.5), (x_min, cy, 1.5, 0.0)),
-    ((wall_half, hy, 1.5), (x_max, cy, 1.5, 0.0)),
+    ((hx, wall_half, CLASSROOM_WALL_HEIGHT / 2), (cx, y_min, CLASSROOM_WALL_HEIGHT / 2, 0.0)),
+    ((hx, wall_half, CLASSROOM_WALL_HEIGHT / 2), (cx, y_max, CLASSROOM_WALL_HEIGHT / 2, 0.0)),
+    ((wall_half, hy, CLASSROOM_WALL_HEIGHT / 2), (x_min, cy, CLASSROOM_WALL_HEIGHT / 2, 0.0)),
+    ((wall_half, hy, CLASSROOM_WALL_HEIGHT / 2), (x_max, cy, CLASSROOM_WALL_HEIGHT / 2, 0.0)),
   ):
     layout.append(pose)
     assets.append(get_static_wall_cfg(half_extents=half, rgba=(0.82, 0.85, 0.88, 1.0)))
@@ -1393,15 +1395,16 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
                "walk_path_progress", "walk_path_progress_when_safe", "walk_path_adherence"):
     cfg.rewards.pop(name, None)
   cfg.rewards["classroom_path_follow"] = RewardTermCfg(
-    func=classroom_path_follow_reward, weight=0.5,
+    func=classroom_path_follow_reward, weight=1.0,
     params={
       "command_name": "twist",
-      # Strengthen alignment and novel progress, retaining signed differences
-      # and a matching retreat cost so reversal cycles cannot earn extra credit.
+      # Keep correct alignment/join/forward gains; halve only the negative
+      # turn/join/retreat components, leaving other navigation costs unchanged.
       "k_theta": follow_param("WALK_GOAL_HEADING_WEIGHT", 6.0),
       "k_join": follow_param("WALK_JOIN_WEIGHT", 4.0),
       "k_p": follow_param("WALK_PATH_PROGRESS_SAFE_WEIGHT", 6.0),
       "k_b": follow_param("WALK_PATH_BACKWARD_WEIGHT", 6.0),
+      "progress_penalty_scale": follow_param("WALK_PROGRESS_PENALTY_SCALE", 0.5),
       "backward_weight": follow_param("WALK_BODY_BACKWARD_WEIGHT", 1.0),
       "backward_limit": follow_param("WALK_BODY_BACKWARD_LIMIT", 0.05),
       "lateral_weight": follow_param("WALK_LATERAL_WEIGHT", 0.5),
@@ -1466,9 +1469,9 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
   )
   if not play:
     throw_curriculum = {
-      "warmup_iterations": int(os.environ.get("WALK_THROW_WARMUP_ITERS", 5000)),
-      "ramp_iterations": int(os.environ.get("WALK_THROW_RAMP_ITERS", 3000)),
-      "start_interval": (4.0, 8.0),
+      "warmup_iterations": int(os.environ.get("WALK_THROW_WARMUP_ITERS", 6000)),
+      "ramp_iterations": int(os.environ.get("WALK_THROW_RAMP_ITERS", 4000)),
+      "start_interval": (6.0, 9.0),
       "final_interval": classroom_interval,
     }
     cfg.curriculum["classroom_throw_interval"] = CurriculumTermCfg(
@@ -1505,9 +1508,10 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     )
     for collision in cfg.scene.entities["robot"].collisions
   )
-  # Keep the reset ball outside the classroom until the throw event launches it.
-  # It remains out of view while falling; each timed throw resets pose/velocity.
-  hidden_ball_pos = (0.0, 1000.0, 0.15)
+  # Hide and hold out-of-room balls below the floor, after any launch in this step.
+  cfg.events["hide_outside_classroom_ball"] = EventTermCfg(
+    func=hide_outside_classroom_ball, mode="step")
+  hidden_ball_pos = CLASSROOM_BALL_PARK_POS
   cfg.scene.entities["ball"].init_state.pos = hidden_ball_pos
   cfg.events["reset_dodge_state"].params["park_offset"] = hidden_ball_pos
   # TRAINING-VIDEO CAMERA: near-top-down view that clears the room. The inherited

@@ -128,7 +128,7 @@ def configured_reward_params(configured=True):
     return g1_amp_dodge_mimickit_classroom_flat_env_cfg().rewards['classroom_path_follow'].params.copy()
 
 
-def test_configured_navigation_gains_increase_correct_motion():
+def test_configured_navigation_keeps_correct_gains_and_halves_wrong_motion():
     params = configured_reward_params()
     command, env = follower((120.,))
     advance(command, env, angles=[110.])
@@ -136,7 +136,7 @@ def test_configured_navigation_gains_increase_correct_motion():
     assert classroom_follow_state(command).reward_components['turn'].item() == pytest.approx(6 * 10 / 180)
     advance(command, env, angles=[120.])
     reward(env, **params)
-    assert classroom_follow_state(command).reward_components['turn'].item() == pytest.approx(-6 * 10 / 180)
+    assert classroom_follow_state(command).reward_components['turn'].item() == pytest.approx(-3 * 10 / 180)
 
     command, env = off_path()
     advance(command, env, xy=[[.08, .45]])
@@ -144,17 +144,53 @@ def test_configured_navigation_gains_increase_correct_motion():
     assert classroom_follow_state(command).reward_components['join'].item() == pytest.approx(.4, abs=1e-6)
     advance(command, env, xy=[[.08, .5]])
     reward(env, **params)
-    assert classroom_follow_state(command).reward_components['join'].item() == pytest.approx(-.4, abs=1e-6)
+    assert classroom_follow_state(command).reward_components['join'].item() == pytest.approx(-.2, abs=1e-6)
 
     command, env = follower()
     advance(command, env, xy=[[.012, 0.]])
     assert reward(env, **params).item() == pytest.approx(.12)
     advance(command, env, xy=[[0., 0.]])
-    assert reward(env, **params).item() == pytest.approx(-.12)
+    assert reward(env, **params).item() == pytest.approx(-.06)
+
+
+@pytest.mark.parametrize('mode', ['forward', 'retreat', 'turn', 'join_in', 'join_out', 'stall'])
+def test_progress_discount_changes_only_negative_progress_components(mode):
+    params = configured_reward_params()
+    command, env = off_path() if mode.startswith('join_') else follower((120.,) if mode == 'turn' else (0.,))
+    if mode == 'stall':
+        for _ in range(60):
+            advance(command, env)
+            reward(env, **params)
+    if mode == 'forward':
+        advance(command, env, xy=[[.012, .1]], velocity=[[0., .6, 0.]])
+    elif mode == 'retreat':
+        advance(command, env, xy=[[-.012, .1]], velocity=[[-.6, .6, 0.]])
+    elif mode == 'turn':
+        advance(command, env, angles=[130.], velocity=[[0., .6, 0.]])
+    elif mode.startswith('join_'):
+        advance(command, env, xy=[[.08, .45 if mode == 'join_in' else .55]])
+    else:
+        advance(command, env)
+    reward(env, **dict(params, progress_penalty_scale=1.))
+    original = {name: value.clone() for name, value in classroom_follow_state(command).reward_components.items()}
+    reward(env, **params)
+    for name, value in classroom_follow_state(command).reward_components.items():
+        expected = original[name]
+        if name in ('turn', 'join', 'retreat'):
+            expected = torch.where(expected < 0, expected * .5, expected)
+        assert torch.allclose(value, expected), name
+
+
+def test_progress_penalty_scale_can_restore_original_costs(monkeypatch):
+    monkeypatch.setenv('WALK_PROGRESS_PENALTY_SCALE', '1.0')
+    params = configured_reward_params()
+    command, env = follower((120.,))
+    advance(command, env, angles=[130.])
+    assert reward(env, **params).item() == pytest.approx(-6 * 10 / 180)
 
 
 @pytest.mark.parametrize('configured', [False, True])
-def test_phase_cycling_does_not_grant_new_grace_or_positive_join_cycle(configured):
+def test_phase_cycling_keeps_watchdog_and_reflects_join_penalty_discount(configured):
     command, env = follower()
     params = configured_reward_params(configured)
     params['k_theta'] = 0.
@@ -166,8 +202,12 @@ def test_phase_cycling_does_not_grant_new_grace_or_positive_join_cycle(configure
             total += classroom_follow_state(command).reward_components['join'].item()
     state = classroom_follow_state(command)
     assert state.age >= 1. and state.recovery_age >= 1.
-    # Following outward costs and joining inward credits cancel or lose.
-    assert total <= 1e-5
+    # Discounted outward costs allow net join credit; phase changes still
+    # cannot restart grace or the recovery watchdog.
+    if configured:
+        assert total > 0.
+    else:
+        assert total <= 1e-5
 
 
 @pytest.mark.parametrize('configured', [False, True])
@@ -194,7 +234,8 @@ def test_repeated_turns_and_phase_switches_eventually_pay_stall(configured):
         reward(env, **params)
         turn_sum += classroom_follow_state(command).reward_components['turn'].item()
     state = classroom_follow_state(command)
-    assert turn_sum == pytest.approx(0., abs=1e-5)
+    expected_turn_sum = 300 * 6 * 56 / 180 * .5 if configured else 0.
+    assert turn_sum == pytest.approx(expected_turn_sum, abs=1e-4)
     assert state.recovery_stall.item()
     assert state.reward_components['recovery_stall'].item() < 0
 

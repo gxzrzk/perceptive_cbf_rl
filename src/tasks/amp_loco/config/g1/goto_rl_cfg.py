@@ -148,9 +148,9 @@ def g1_amp_dodge_mimickit_classroom_ppo_runner_cfg() -> RslRlAmpRunnerCfg:
     "actor": ("actor", "ball_state", "path_navigation"),
     "critic": ("critic", "ball_state", "path_navigation"),
   }
-  # Final reward = 0.5 * task_reward + 0.4 * style_score.
+  # Final reward = 0.5 * task_reward + 0.25 * style_score.
   # Differential/event terms compensate dt inside the follower.
-  cfg.amp_reward_coef = 0.8
+  cfg.amp_reward_coef = 0.5
   cfg.amp_task_reward_lerp = 0.5
   # Bound exploration noise and reduce the incentive to increase policy entropy.
   cfg.actor.distribution_cfg.update(init_std=0.5, std_range=(0.05, 1.2))

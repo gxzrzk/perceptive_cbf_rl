@@ -33,8 +33,9 @@ def make_env(steps_per_iteration=24):
 
 @pytest.mark.parametrize('steps_per_iteration', [12, 24, 48])
 @pytest.mark.parametrize('iteration,expected', [
-    (0, (4., 8.)), (4999, (4., 8.)), (5000, (4., 8.)),
-    (6500, (3., 6.5)), (8000, (2., 5.)), (12000, (2., 5.)),
+    (0, (6., 9.)), (5999, (6., 9.)), (6000, (6., 9.)),
+    (7000, (5., 8.)), (8000, (4., 7.)), (9000, (3., 6.)),
+    (9999, (2.001, 5.001)), (10000, (2., 5.)), (12000, (2., 5.)),
 ])
 def test_schedule_boundaries_and_both_timers(steps_per_iteration, iteration, expected):
     env = make_env(steps_per_iteration)
@@ -50,16 +51,16 @@ def test_schedule_boundaries_and_both_timers(steps_per_iteration, iteration, exp
 
 def test_resets_sample_new_interval_and_step_countdowns_keep_advancing():
     env = make_env()
-    env.common_step_counter = 6500 * 24
+    env.common_step_counter = 8000 * 24
     classroom_throw_interval_curriculum(env)
     reset_params = env.event_manager.get_term_cfg('reset_dodge_state').params
     reset_dodge_state(env, None, **reset_params)
     first = env._dodge_throw_countdown.clone()
-    assert ((first >= 150) & (first <= 325)).all()
+    assert ((first >= 200) & (first <= 350)).all()
     throw_params = env.event_manager.get_term_cfg('throw_ball_on_dwell').params
     throw_ball_on_dwell(env, None, **throw_params)
     assert torch.equal(env._dodge_throw_countdown, first - 1)
-    env.common_step_counter = 8000 * 24
+    env.common_step_counter = 10000 * 24
     classroom_throw_interval_curriculum(env, torch.tensor([1]))
     reset_dodge_state(env, torch.tensor([1]), **reset_params)
     assert 100 <= env._dodge_throw_countdown[1] <= 250
@@ -70,11 +71,11 @@ def test_training_and_play_configuration():
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg()
     keys = list(cfg.events)
     assert keys.index('classroom_throw_interval_update') < keys.index('throw_ball_on_dwell')
-    assert cfg.curriculum['classroom_throw_interval'].params['warmup_iterations'] == 5000
-    assert cfg.curriculum['classroom_throw_interval'].params['ramp_iterations'] == 3000
+    assert cfg.curriculum['classroom_throw_interval'].params['warmup_iterations'] == 6000
+    assert cfg.curriculum['classroom_throw_interval'].params['ramp_iterations'] == 4000
     assert cfg.events['classroom_throw_interval_update'].params == cfg.curriculum['classroom_throw_interval'].params
     for name in ('reset_dodge_state', 'throw_ball_on_dwell'):
-        assert cfg.events[name].params['throw_interval_range'] == (4., 8.)
+        assert cfg.events[name].params['throw_interval_range'] == (6., 9.)
     play = g1_amp_dodge_mimickit_classroom_flat_env_cfg(play=True)
     assert 'classroom_throw_interval' not in play.curriculum
     assert 'classroom_throw_interval_update' not in play.events
@@ -99,37 +100,37 @@ def make_runner(monkeypatch, env, steps=24):
 def test_checkpoint_preserves_progress_when_rollout_length_changes(monkeypatch, tmp_path, new_steps):
     env = make_env()
     runner = make_runner(monkeypatch, env)
-    runner.current_learning_iteration = 6499
-    env.common_step_counter = 6500 * 24
+    runner.current_learning_iteration = 7999
+    env.common_step_counter = 8000 * 24
     path = str(tmp_path / 'model.pt')
     runner.save(path, infos={'note': 'keep'})
     restored = make_env()
     new_runner = make_runner(monkeypatch, restored, new_steps)
     infos = new_runner.load(path)
     assert infos['note'] == 'keep'
-    assert classroom_training_iteration(restored) == 6500
-    assert restored.event_manager.get_term_cfg('reset_dodge_state').params['throw_interval_range'] == (3., 6.5)
-    assert ((restored._dodge_throw_countdown >= 150) & (restored._dodge_throw_countdown <= 325)).all()
+    assert classroom_training_iteration(restored) == 8000
+    assert restored.event_manager.get_term_cfg('reset_dodge_state').params['throw_interval_range'] == (4., 7.)
+    assert ((restored._dodge_throw_countdown >= 200) & (restored._dodge_throw_countdown <= 350)).all()
     restored.common_step_counter += new_steps
-    assert classroom_training_iteration(restored) == 6501
+    assert classroom_training_iteration(restored) == 8001
 
 
 def test_legacy_checkpoint_and_weights_only_loading(monkeypatch, tmp_path):
     path = str(tmp_path / 'legacy.pt')
-    torch.save({'iter': 7999, 'infos': None}, path)
+    torch.save({'iter': 9999, 'infos': None}, path)
     env = make_env()
     runner = make_runner(monkeypatch, env)
     runner.load(path)
-    assert classroom_training_iteration(env) == 8000
+    assert classroom_training_iteration(env) == 10000
     assert env.event_manager.get_term_cfg('throw_ball_on_dwell').params['throw_interval_range'] == (2., 5.)
     runner.load(path, load_cfg={'iteration': False})
     assert classroom_training_iteration(env) == 0
-    assert env.event_manager.get_term_cfg('throw_ball_on_dwell').params['throw_interval_range'] == (4., 8.)
+    assert env.event_manager.get_term_cfg('throw_ball_on_dwell').params['throw_interval_range'] == (6., 9.)
 
 
 @pytest.mark.parametrize('params', [
     {'ramp_iterations': 0}, {'warmup_iterations': -1},
-    {'start_interval': (8., 4.)}, {'final_interval': (5., 9.)},
+    {'start_interval': (9., 6.)}, {'final_interval': (5., 10.)},
 ])
 def test_invalid_schedule_is_rejected(params):
     with pytest.raises(ValueError, match='curriculum'):

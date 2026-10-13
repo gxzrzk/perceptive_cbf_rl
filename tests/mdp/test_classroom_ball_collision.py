@@ -77,5 +77,38 @@ def test_ball_passes_scene_but_robot_contact_terminates():
         mjw.forward(env.sim.wp_model, env.sim.wp_data)
         env.scene.update(env.step_dt)
         assert ball_contact(env, **cfg.terminations['ball_hit'].params).all()
+
+        # Exercise the real freejoint/event/observation path: an out-of-room ball
+        # is physically parked and absent from every robot signal, even before a
+        # new forward pass refreshes derived quantities.
+        from src.assets.objects.classroom import CLASSROOM_BALL_BOUNDS, CLASSROOM_BALL_PARK_POS
+        from src.tasks.amp_loco.mdp.ball_region import ball_in_play, hide_outside_classroom_ball
+        from src.tasks.amp_loco.mdp.observations import dodge_ball_state_b
+        from src.tasks.amp_loco.mdp.rewards import mimickit_dodge_reward
+        pose[:, :3] = pose.new_tensor(CLASSROOM_BALL_BOUNDS[1]) + 1.
+        ball.write_root_link_pose_to_sim(pose)
+        hide_outside_classroom_ball(env)
+        assert not ball_in_play(env).any()
+        assert not dodge_ball_state_b(env).any()
+        assert not mimickit_dodge_reward(env).any()
+        assert not ball_contact(env, **cfg.terminations['ball_hit'].params).any()
+        assert torch.allclose(
+            env.sim.data.qpos[:, ball.data.indexing.free_joint_q_adr[:3]],
+            pose.new_tensor(CLASSROOM_BALL_PARK_POS).expand(2, 3))
+        assert not env.sim.data.qvel[:, ball.data.indexing.free_joint_v_adr].any()
+        # A full step keeps hidden balls bounded, with unchanged throw timing.
+        env._dodge_throw_paused = True
+        env.step(torch.zeros(2, env.action_manager.total_action_dim, device='cuda'))
+        assert not ball_in_play(env).any()
+        assert not dodge_ball_state_b(env).any()
+        assert not env.sim.data.qvel[:, ball.data.indexing.free_joint_v_adr].any()
+        # The existing throw event reuses the hidden ball; a short launch radius
+        # guarantees the launch points stay inside the room for both robots.
+        env._dodge_throw_once = True
+        throw = cfg.events['throw_ball_on_dwell']
+        throw.func(env, None, **{**throw.params, 'dist_range': (.1, .1)})
+        hide_outside_classroom_ball(env)
+        assert ball_in_play(env).all()
+        assert dodge_ball_state_b(env).abs().sum(dim=1).gt(0).all()
     finally:
         env.close()

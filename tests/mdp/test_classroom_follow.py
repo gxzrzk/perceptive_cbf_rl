@@ -62,13 +62,83 @@ def reward(env, **params):
 
 @pytest.mark.parametrize("angle,expected", [(0., 1.), (45., .5), (75., math.cos(math.radians(75)) ** 2),
                                             (90., 0.), (120., 0.), (180., 0.)])
-def test_forward_alignment_coefficient_and_retreat_always_costs(angle, expected):
+def test_forward_alignment_coefficient_and_threat_freezes_retreat(angle, expected):
     command, env = follower((angle,))
     advance(command, env, xy=[[.006, 0.]])  # .3 m/s: half reference speed
     assert reward(env).item() == pytest.approx(2 * expected * .5 * .02, abs=1e-6)
     command._dodge_threat[:] = True
     advance(command, env, xy=[[0., 0.]])
-    assert reward(env).item() == pytest.approx(-.02, abs=1e-6)
+    assert reward(env).item() == 0.
+    command._dodge_threat[:] = False
+    advance(command, env, xy=[[-.006, 0.]])
+    assert reward(env, deviation_weight=0.).item() == pytest.approx(-.02, abs=1e-6)
+
+
+@pytest.mark.parametrize('mode', ['forward', 'retreat', 'turn', 'join', 'stall'])
+def test_whole_navigation_reward_and_component_metrics_freeze_per_threat_env(mode):
+    command, env = follower((120., 120.) if mode == 'turn' else (0., 0.))
+    if mode == 'join':
+        advance(command, env, xy=[[0., .5]] * 2)
+        reward(env)
+    if mode == 'stall':
+        for _ in range(60):
+            advance(command, env)
+            reward(env)
+    command._dodge_threat[:] = torch.tensor([True, False])
+    if mode == 'forward':
+        advance(command, env, xy=[[.012, 0.]] * 2)
+    elif mode == 'retreat':
+        advance(command, env, xy=[[-.012, .1]] * 2, velocity=[[-.6, .6, 0.]] * 2)
+    elif mode == 'turn':
+        advance(command, env, angles=[110., 110.])
+    elif mode == 'join':
+        advance(command, env, xy=[[0., .45]] * 2)
+    else:
+        advance(command, env)
+    value = reward(env)
+    assert value[0] == 0. and value[1].abs() > 0.
+    parts = classroom_follow_state(command).reward_components
+    assert all(component[0] == 0. for component in parts.values())
+    assert any(component[1] != 0. for component in parts.values())
+
+
+@pytest.mark.parametrize('mode', ['forward', 'turn', 'join'])
+def test_threat_motion_is_not_paid_after_navigation_reward_resumes(mode):
+    command, env = follower((120.,) if mode == 'turn' else (0.,))
+    if mode == 'join':
+        advance(command, env, xy=[[0., .5]])
+        reward(env, deviation_weight=0.)
+    command._dodge_threat[:] = True
+    for step in range(2):
+        if mode == 'forward':
+            advance(command, env, xy=[[(step + 1) * .2, 0.]])
+        elif mode == 'turn':
+            advance(command, env, angles=[120. - (step + 1) * 20.])
+        else:
+            advance(command, env, xy=[[0., .5 - (step + 1) * .05]])
+        assert reward(env, deviation_weight=0.).item() == 0.
+    command._dodge_threat[:] = False
+    advance(command, env)
+    assert reward(env, deviation_weight=0.).item() == 0.
+    if mode == 'forward':
+        advance(command, env, xy=[[.412, 0.]])
+    elif mode == 'turn':
+        advance(command, env, angles=[70.])
+    else:
+        advance(command, env, xy=[[0., .35]])
+    assert reward(env, deviation_weight=0.).item() > 0.
+
+
+def test_hidden_outside_ball_cannot_freeze_navigation_with_a_stale_threat_flag():
+    from tests.mdp.test_classroom_ball_region import make_env
+    command, env = follower((0., 0.))
+    ball_env = make_env([[3., 0., 1.], [0., 1000., 1.]])
+    env._classroom_ball_bounds = ball_env._classroom_ball_bounds
+    env.scene['ball'] = ball_env.scene['ball']
+    env.sim.data = ball_env.sim.data
+    command._dodge_threat[:] = True
+    advance(command, env, xy=[[.012, 0.]] * 2)
+    assert reward(env).tolist() == pytest.approx([0., .04], abs=1e-6)
 
 
 @pytest.mark.parametrize("dt", [.01, .02, .05])
@@ -178,7 +248,7 @@ def test_route_end_does_not_terminate_stop_or_pay_an_endpoint_bonus():
     manager = RewardManager({"follow": cfg.rewards["classroom_path_follow"]}, env, scale_by_dt=True)
     advance(command, env, xy=[[.9, 0.]])
     assert not env.termination_manager.compute().item()
-    assert manager.compute(dt=.02).item() == pytest.approx(.06)
+    assert manager.compute(dt=.02).item() == pytest.approx(.12)
     assert classroom_follow_state(command).command_speed.item() > 0
     env.fail[:] = True
     advance(command, env)

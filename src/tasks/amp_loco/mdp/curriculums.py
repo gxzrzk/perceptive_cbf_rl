@@ -49,9 +49,9 @@ def classroom_training_iteration(env: ManagerBasedRlEnv) -> float:
 def classroom_throw_interval_curriculum(
   env: ManagerBasedRlEnv,
   env_ids: torch.Tensor | slice | None = None,
-  warmup_iterations: int = 5000,
-  ramp_iterations: int = 3000,
-  start_interval: tuple[float, float] = (4., 8.),
+  warmup_iterations: int = 6000,
+  ramp_iterations: int = 4000,
+  start_interval: tuple[float, float] = (6., 9.),
   final_interval: tuple[float, float] = (2., 5.),
 ) -> dict[str, float]:
   """Keep sparse throws during warmup, then linearly tighten both throw timers.

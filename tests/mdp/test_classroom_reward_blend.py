@@ -51,7 +51,7 @@ def test_dt_scaled_task_sum_and_classroom_style_blend(disc_output, style_score):
         discriminator.amp_linear.bias.fill_(disc_output)
     state = torch.zeros(3, 2)
     blended, _ = discriminator.predict_amp_reward(state, state, task_reward)
-    assert torch.allclose(blended, torch.tensor([.02, -.02, -2.]) + .4 * style_score)
+    assert torch.allclose(blended, torch.tensor([.02, -.02, -2.]) + .25 * style_score)
 
 
 def test_registered_classroom_reward_scaling_leaves_other_tasks_unchanged():
@@ -62,9 +62,9 @@ def test_registered_classroom_reward_scaling_leaves_other_tasks_unchanged():
     for play in (False, True):
         env_cfg = load_env_cfg(task, play=play)
         assert env_cfg.scale_rewards_by_dt
-        assert env_cfg.rewards['classroom_path_follow'].weight == .5
+        assert env_cfg.rewards['classroom_path_follow'].weight == 1.
     runner = load_rl_cfg(task)
-    assert runner.amp_reward_coef == .8 and runner.amp_task_reward_lerp == .5
+    assert runner.amp_reward_coef == .5 and runner.amp_task_reward_lerp == .5
     standing_task = 'Unitree-G1-AMP-Dodge-MimicKit-Flat'
     standing_env = load_env_cfg(standing_task)
     standing_runner = load_rl_cfg(standing_task)

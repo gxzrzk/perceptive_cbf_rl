@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
+from .ball_region import ball_in_play
 
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
@@ -110,7 +111,7 @@ def ball_contact(
 
   if enable_after_steps > 0.0 and env.common_step_counter < enable_after_steps:
     return torch.zeros_like(hit)
-  return hit
+  return hit & ball_in_play(env, ball_name)
 
 
 def wall_contact(

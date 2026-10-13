@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import mujoco
 import torch
 import torch.nn.functional as F
+from .ball_region import ball_in_play, ball_world_state
 
 from mjlab.entity import Entity
 from mjlab.managers.manager_base import ManagerTermBase
@@ -782,13 +783,14 @@ def dodge_ball_state_b(
   policy any privileged input.
   """
   robot: Entity = env.scene[robot_name]
-  ball: Entity = env.scene[ball_name]
   yq = yaw_quat(robot.data.root_link_quat_w)
-  rel_pos_w = ball.data.root_link_pos_w - robot.data.root_link_pos_w
-  rel_vel_w = ball.data.root_link_lin_vel_w - robot.data.root_link_lin_vel_w
+  ball_pos, ball_vel = ball_world_state(env, ball_name)
+  rel_pos_w = ball_pos - robot.data.root_link_pos_w
+  rel_vel_w = ball_vel - robot.data.root_link_lin_vel_w
   pos_b = quat_apply_inverse(yq, rel_pos_w)
   vel_b = quat_apply_inverse(yq, rel_vel_w)
-  return torch.cat([pos_b, vel_b], dim=-1)  # (N, 6)
+  state = torch.cat([pos_b, vel_b], dim=-1)
+  return torch.where(ball_in_play(env, ball_name)[:, None], state, 0.0)  # (N, 6)
 
 
 def dodge_wall_state_b(

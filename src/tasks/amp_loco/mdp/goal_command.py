@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+from .ball_region import ball_in_play
 
 from mjlab.entity import Entity
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
@@ -613,6 +614,11 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
       comfort_buffer=self.cfg.comfort_buffer,
       min_ball_speed=self.cfg.min_ball_speed,
     )
+    valid = ball_in_play(self._env, self.cfg.ball_name)
+    threat &= valid
+    u_safe_w = torch.where(valid[:, None], u_safe_w, u_nom_w)
+    h = torch.where(valid, h, 0.0)
+    tti = torch.where(valid, tti, 0.0)
 
     # Latch the escape side when a threat first appears (perp_signed ~ 0 for an on-target
     # ball, so default to +1); hold it until the threat clears. The ball's xy velocity is
