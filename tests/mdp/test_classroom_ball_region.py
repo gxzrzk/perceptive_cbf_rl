@@ -9,7 +9,10 @@ from src.tasks.amp_loco.config.g1.dodge_env_cfgs import (
     g1_amp_dodge_mimickit_classroom_flat_env_cfg,
     g1_amp_dodge_mimickit_wallwalk_flat_env_cfg,
 )
-from src.tasks.amp_loco.mdp.ball_region import ball_in_play, hide_outside_classroom_ball
+from src.tasks.amp_loco.mdp.ball_region import (
+    ball_in_play, hide_outside_classroom_ball, set_ball_throw_target,
+)
+from src.tasks.amp_loco.mdp.events import reset_dodge_state, throw_ball_on_dwell
 from src.tasks.amp_loco.mdp.observations import dodge_ball_state_b
 from src.tasks.amp_loco.mdp.rewards import airborne, mimickit_dodge_reward
 from src.tasks.amp_loco.mdp.terminations import ball_contact
@@ -98,6 +101,95 @@ def test_new_in_room_launch_is_visible_without_forward_and_outside_launch_is_hid
     hide_outside_classroom_ball(env)
     assert torch.equal(env.sim.data.qpos[1, :3], env._classroom_ball_park_pos)
     assert torch.equal(env.sim.data.qvel[1], torch.zeros(6))
+
+
+def test_outside_launches_remain_in_play_until_the_saved_target_is_reached():
+    starts = torch.tensor([[-4., 0., 1.], [22., 0., 1.], [2., -10., 1.], [2., 8., 1.]])
+    env = make_env(starts.tolist(), origins=[[30., -20., 5.]] * 4)
+    ids = torch.arange(4)
+    start_xy = env.sim.data.qpos[:, :2].clone()
+    targets = env.scene.env_origins[:, :2] + torch.tensor([3., 1.])
+    set_ball_throw_target(env, ids, start_xy, targets)
+    hide_outside_classroom_ball(env)
+    assert ball_in_play(env).all()
+    assert dodge_ball_state_b(env).abs().sum(dim=1).gt(0).all()
+    assert mimickit_dodge_reward(env).gt(0).all()
+    assert ball_contact(env, delta_v_threshold=0.).all()
+    assert torch.equal(env.sim.data.qpos[:, :2], start_xy)
+    assert not env._classroom_ball_target_reached.any()
+    # Neither roof nor floor bounds apply during the inbound leg.
+    env.sim.data.qpos[:, 2] = env.scene.env_origins[:, 2] + torch.tensor([4., -1., 4., -1.])
+    hide_outside_classroom_ball(env)
+    assert ball_in_play(env).all()
+    # Overshoot the target within a single step, while still outside vertically.
+    env.sim.data.qpos[:, :2] = targets + .1 * (targets - start_xy)
+    hide_outside_classroom_ball(env)
+    assert env._classroom_ball_target_reached.all()
+    assert not ball_in_play(env).any()
+    assert not dodge_ball_state_b(env).any()
+    assert not ball_contact(env, delta_v_threshold=0.).any()
+    assert torch.equal(env.sim.data.qpos[:, :3],
+                       env.scene.env_origins + env._classroom_ball_park_pos)
+    # Parking behind the target must not reopen the gate.
+    hide_outside_classroom_ball(env)
+    assert not ball_in_play(env).any()
+    assert not env.sim.data.qvel.any()
+
+
+def test_arrival_inside_room_latches_bounds_for_later_exit_and_resets_per_env():
+    env = make_env([[6., 0., 1.], [6., 0., 1.]])
+    env.step_dt = .02
+    ids = torch.arange(2)
+    targets = torch.tensor([[3., 0.], [3., 0.]])
+    set_ball_throw_target(env, ids, env.sim.data.qpos[:, :2], targets)
+    env.sim.data.qpos[0, :2] = targets[0]  # exact arrival; the other ball is still inbound
+    hide_outside_classroom_ball(env, torch.tensor([0]))
+    assert env._classroom_ball_target_reached.tolist() == [True, False]
+    assert ball_in_play(env).all()
+    env.sim.data.qpos[:, 2] = -1.
+    hide_outside_classroom_ball(env)
+    assert ball_in_play(env).tolist() == [False, True]
+    reset_dodge_state(env, torch.tensor([1]), park_offset=CLASSROOM_BALL_PARK_POS)
+    assert env._classroom_ball_target_reached.all()
+    assert not ball_in_play(env).any()
+    # A new throw clears arrival only for the selected world.
+    set_ball_throw_target(env, torch.tensor([0]), torch.tensor([[22., 0.]]), targets[:1])
+    env.sim.data.qpos[0, :3] = torch.tensor([22., 0., 1.])
+    hide_outside_classroom_ball(env)
+    assert env._classroom_ball_target_reached.tolist() == [False, True]
+    assert ball_in_play(env).tolist() == [True, False]
+
+
+@pytest.mark.parametrize('launch_speed_range', [None, (10., 10.)])
+def test_throw_saves_final_led_and_noisy_target_in_both_trajectory_modes(monkeypatch, launch_speed_range):
+    env = make_env([CLASSROOM_BALL_PARK_POS] * 3)
+    env.step_dt = .02
+    robot = env.scene['robot'].data
+    robot.root_link_pos_w[:, 0] = 18.
+    robot.root_link_lin_vel_w[:, :2] = torch.tensor([-1., -.5])
+    env._dodge_throw_countdown = torch.tensor([1, 100, 1])
+    monkeypatch.setattr(torch, 'randn_like', lambda x: torch.full_like(x, .5))
+    throw_ball_on_dwell(env, None, throw_interval_range=(2., 5.),
+                        dist_range=(4., 4.), angle_deg=0., height_range=(2., 2.),
+                        flight_time_range=(.4, .4), lead_target=True, aim_noise_scale=.2,
+                        launch_speed_range=launch_speed_range)
+    ids = torch.tensor([0, 2])
+    expected = robot.root_link_pos_w[ids, :2] + torch.tensor([-.3, -.1])
+    assert torch.allclose(env._classroom_ball_target_xy[ids], expected)
+    assert env._classroom_ball_target_reached.tolist() == [False, True, False]
+    start_xy = env.sim.data.qpos[ids, :2].clone()
+    assert torch.allclose(env._classroom_ball_target_direction[ids], expected - start_xy)
+    # Launch x=22 is outside; it stays visible while passing the robot's old x=18.
+    hide_outside_classroom_ball(env)
+    assert ball_in_play(env).tolist() == [True, False, True]
+    robot.root_link_pos_w[:, :2] = -100.  # later robot motion cannot move the saved aim
+    env.sim.data.qpos[ids, :2] = start_xy + .95 * (expected - start_xy)
+    hide_outside_classroom_ball(env)
+    assert not env._classroom_ball_target_reached[ids].any()
+    env.sim.data.qpos[ids, :2] = start_xy + 1.01 * (expected - start_xy)
+    hide_outside_classroom_ball(env)
+    assert env._classroom_ball_target_reached[ids].all()
+    assert ball_in_play(env).tolist() == [True, False, True]
 
 
 @pytest.mark.parametrize('play', [False, True])

@@ -300,14 +300,11 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
         raise ValueError("Invalid classroom join, filter or projection parameters")
       if not 0 < cfg.phase_min_window_time <= cfg.stall_duration:
         raise ValueError("phase_min_window_time must be within the stall window")
-    if cfg.turn_before_walk:
-      if not cfg.simple_heading:
-        raise ValueError("turn_before_walk requires simple_heading")
-      if not 0 <= cfg.walk_full_speed_angle < cfg.walk_stop_angle <= math.pi / 2:
-        raise ValueError("walk angles must satisfy 0 <= full < stop <= pi/2")
+    if cfg.turn_before_walk and not cfg.classroom_follow:
+      # The heading gate only exists in the classroom branch; elsewhere the
+      # flag would silently do nothing.
+      raise ValueError("turn_before_walk is only implemented by classroom_follow")
     self.ball: Entity = env.scene[cfg.ball_name]
-    # Share the heading gate with the safe-time stillness cost.
-    self._walk_forward_scale = torch.ones(self.num_envs, device=self.device)
     # Global geom id of the ball collision sphere, so the CBF can read the per-env ball
     # radius (randomized each episode by the `randomize_ball_size` event) and widen its
     # clearance for bigger balls. Resolved by name (scene prefixes entity geoms).
@@ -660,50 +657,28 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
 
 
   def _apply_walk_heading_gate(self) -> None:
-    """Turn first when safe; smoothly restore forward walking as yaw aligns."""
-    self._walk_forward_scale.fill_(1.0)
+    """Turn first when safe; smoothly restore forward walking as yaw aligns.
+
+    Classroom-only: turn_before_walk requires classroom_follow (enforced at
+    construction). Safe steps command the follower's curvature-aware forward
+    speed and heading yaw rate; threat steps keep the nominal/CBF command so
+    the dodge retains its lateral/backward freedom.
+    """
     if not self.cfg.turn_before_walk:
       return
-    if self.cfg.classroom_follow:
-      from .classroom import classroom_follow_state
-      state = classroom_follow_state(self)
-      safe = ~self._dodge_threat
-      moving = ~self.is_standing_env & ~self.is_inplace_env
-      if not self.cfg.path_follow:
-        moving &= self.distance_to_goal >= self.cfg.arrive_radius
-      forward = state.command_speed * moving
-      for command in (self.vel_command_b, self.vel_command_nominal_b):
-        command[:, 0] = torch.where(safe, forward, command[:, 0])
-        command[:, 1] = torch.where(safe, 0.0, command[:, 1])
-        yaw_rate = (self.cfg.kp_yaw * state.theta).clamp(
-          -self.cfg.max_ang_vel_z, self.cfg.max_ang_vel_z) * moving
-        command[:, 2] = torch.where(safe, yaw_rate, command[:, 2])
-      self._walk_forward_scale = forward / self.cfg.path_v_ref
-      return
-    direction = self.goal_pos_w - self.robot.data.root_link_pos_w[:, :2]
-    yaw_error = wrap_to_pi(
-      torch.atan2(direction[:, 1], direction[:, 0]) - self.robot.data.heading_w
-    ).abs()
-    fraction = (
-      (self.cfg.walk_stop_angle - yaw_error)
-      / (self.cfg.walk_stop_angle - self.cfg.walk_full_speed_angle)
-    ).clamp(0.0, 1.0)
-    scale = fraction.square() * (3.0 - 2.0 * fraction)
-    moving = (
-      (self.distance_to_goal >= self.cfg.arrive_radius)
-      & ~self.is_standing_env & ~self.is_inplace_env
-    )
-    forward = (self.cfg.kp * self.distance_to_goal).clamp(
-      min=0.0, max=self.cfg.max_lin_vel_x
-    ) * scale * moving
+    from .classroom import classroom_follow_state
+    state = classroom_follow_state(self)
     safe = ~self._dodge_threat
-    # Keep the parent's yaw command and its arrived/standing/in-place zeroing.
-    # On threat rows preserve the original (possibly CBF-filtered) xy commands.
+    moving = ~self.is_standing_env & ~self.is_inplace_env
+    if not self.cfg.path_follow:
+      moving &= self.distance_to_goal >= self.cfg.arrive_radius
+    forward = state.command_speed * moving
     for command in (self.vel_command_b, self.vel_command_nominal_b):
       command[:, 0] = torch.where(safe, forward, command[:, 0])
       command[:, 1] = torch.where(safe, 0.0, command[:, 1])
-    # Only waive stillness for deliberate turning, not an arrived/stalled goal.
-    self._walk_forward_scale = torch.where(safe & moving, scale, 1.0)
+      yaw_rate = (self.cfg.kp_yaw * state.theta).clamp(
+        -self.cfg.max_ang_vel_z, self.cfg.max_ang_vel_z) * moving
+      command[:, 2] = torch.where(safe, yaw_rate, command[:, 2])
 
 
 @dataclass(kw_only=True)
@@ -727,7 +702,8 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   dodging. Overrides home_goal. Used by the walk-and-dodge wall task."""
   turn_before_walk: bool = False
   """When safe, command forward-only walking gated by goal heading alignment.
-  Incoming threats retain the original lateral/backward command freedoms."""
+  Incoming threats retain the original lateral/backward command freedoms.
+  Only implemented by ``classroom_follow`` (the constructor rejects it otherwise)."""
   classroom_follow: bool = False
   """Continuous alignment/following with current-step rewards; classroom only."""
   align_enter_angle: float = math.radians(75)
@@ -755,10 +731,6 @@ class DodgeGoToGoalCommandCfg(GoToGoalCommandCfg):
   projection_progress_ratio: float = 1.5
   navigation_obstacles: tuple[str, ...] = ()
   join_obstacle_margin: float = 0.25
-  walk_full_speed_angle: float = math.pi / 6
-  """Yaw error (radians) below which forward speed is unrestricted."""
-  walk_stop_angle: float = math.pi / 2
-  """Yaw error (radians) at/above which safe walking becomes turning in place."""
   path_follow: bool = False
   """If True, follow the env's random walk path (mdp/walk_path.py, generated at
   reset by the ``reset_walk_path`` event): every step the goal is pinned to a

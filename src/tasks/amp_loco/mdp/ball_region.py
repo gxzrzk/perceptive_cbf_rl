@@ -1,5 +1,38 @@
-"""Mask balls outside a configured room without changing other dodge tasks."""
+"""Apply room bounds to thrown balls only after they reach their saved aim point."""
 import torch
+
+
+def reset_ball_target_gate(env, env_ids):
+  """Parked balls use room bounds; each new throw starts a fresh target gate."""
+  if not hasattr(env, "_classroom_ball_bounds"):
+    return
+  if not hasattr(env, "_classroom_ball_target_reached"):
+    xy = env.scene.env_origins[:, :2]
+    env._classroom_ball_target_xy = torch.zeros_like(xy)
+    env._classroom_ball_target_direction = torch.zeros_like(xy)
+    env._classroom_ball_target_reached = torch.ones(
+      env.num_envs, device=env.device, dtype=torch.bool)
+  env._classroom_ball_target_xy[env_ids] = 0.0
+  env._classroom_ball_target_direction[env_ids] = 0.0
+  env._classroom_ball_target_reached[env_ids] = True
+
+
+def set_ball_throw_target(env, env_ids, start_xy, target_xy):
+  """Save the final world-frame aim, including lead, noise and aim offsets."""
+  if not hasattr(env, "_classroom_ball_bounds"):
+    return
+  reset_ball_target_gate(env, env_ids)
+  env._classroom_ball_target_xy[env_ids] = target_xy
+  env._classroom_ball_target_direction[env_ids] = target_xy - start_xy
+  env._classroom_ball_target_reached[env_ids] = False
+
+
+def _ball_target_reached(env, position):
+  # Crossing the plane through target_xy normal to the initial flight direction
+  # detects arrival even when one simulation step skips over the exact point.
+  offset = position[:, :2] - env._classroom_ball_target_xy
+  crossed = (offset * env._classroom_ball_target_direction).sum(dim=-1) >= 0.0
+  return env._classroom_ball_target_reached | crossed
 
 
 def ball_world_state(env, ball_name="ball"):
@@ -19,16 +52,24 @@ def ball_in_play(env, ball_name="ball"):
     return torch.ones(env.num_envs, device=env.device, dtype=torch.bool)
   position, _ = ball_world_state(env, ball_name)
   origins = env.scene.env_origins
-  return ((position >= origins + bounds[0]) & (position <= origins + bounds[1])).all(dim=-1)
+  inside = ((position >= origins + bounds[0]) & (position <= origins + bounds[1])).all(dim=-1)
+  if hasattr(env, "_classroom_ball_target_reached"):
+    inside = inside | ~_ball_target_reached(env, position)
+  return inside & torch.isfinite(position).all(dim=-1)
 
 
 def hide_outside_classroom_ball(env, env_ids=None, ball_name="ball"):
-  """Park invalid balls below the floor, keeping their state bounded until reuse."""
+  """Latch target arrival, then park out-of-room balls until the next throw."""
   if env_ids is None:
     env_ids = torch.arange(env.num_envs, device=env.device)
+  if hasattr(env, "_classroom_ball_target_reached"):
+    position, _ = ball_world_state(env, ball_name)
+    env._classroom_ball_target_reached[env_ids] = _ball_target_reached(env, position)[env_ids]
   hidden = env_ids[~ball_in_play(env, ball_name)[env_ids]]
   if hidden.numel() == 0:
     return
+  if hasattr(env, "_classroom_ball_target_reached"):
+    env._classroom_ball_target_reached[hidden] = True
   ball = env.scene[ball_name]
   pose = env.scene.env_origins.new_zeros(hidden.numel(), 7)
   pose[:, :3] = env.scene.env_origins[hidden] + env._classroom_ball_park_pos

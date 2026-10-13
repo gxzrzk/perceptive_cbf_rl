@@ -20,7 +20,7 @@ from src.tasks.amp_loco.mdp.walk_path import walk_path_query
 from tests.mdp.test_classroom_heading_command import make_command
 
 
-def follower(angles=(0.,), points=((0., 0.), (10., 0.)), dt=.02):
+def follower(angles=(0.,), points=((0., 0.), (10., 0.)), dt=.02, xy=None):
     command, env = make_command(angles)
     env.step_dt = dt
     command.cfg.path_follow = True
@@ -32,6 +32,8 @@ def follower(angles=(0.,), points=((0., 0.), (10., 0.)), dt=.02):
     env._walk_path_epoch = torch.ones(len(angles), dtype=torch.long)
     command.robot.data.root_link_lin_vel_b = torch.zeros(len(angles), 3)
     command.cfg.cbf_enabled = False
+    if xy is not None:
+        command.robot.data.root_link_pos_w[:, :2] = torch.tensor(xy)
     command._update_command()  # reference at the start of the first physics step
     return command, env
 
@@ -104,10 +106,8 @@ def test_whole_navigation_reward_and_component_metrics_freeze_per_threat_env(mod
 
 @pytest.mark.parametrize('mode', ['forward', 'turn', 'join'])
 def test_threat_motion_is_not_paid_after_navigation_reward_resumes(mode):
-    command, env = follower((120.,) if mode == 'turn' else (0.,))
-    if mode == 'join':
-        advance(command, env, xy=[[0., .5]])
-        reward(env, deviation_weight=0.)
+    command, env = follower((120.,) if mode == 'turn' else (0.,),
+                            xy=[0., .5] if mode == 'join' else None)
     command._dodge_threat[:] = True
     for step in range(2):
         if mode == 'forward':

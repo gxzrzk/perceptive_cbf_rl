@@ -202,12 +202,12 @@ def test_phase_cycling_keeps_watchdog_and_reflects_join_penalty_discount(configu
             total += classroom_follow_state(command).reward_components['join'].item()
     state = classroom_follow_state(command)
     assert state.age >= 1. and state.recovery_age >= 1.
-    # Discounted outward costs allow net join credit; phase changes still
-    # cannot restart grace or the recovery watchdog.
-    if configured:
-        assert total > 0.
-    else:
-        assert total <= 1e-5
+    # Closings repay self-caused openings even with discounted penalties;
+    # phase changes cannot restart grace or the recovery watchdog.
+    q = params.get('progress_penalty_scale', 1.)
+    k_join = params.get('k_join', 2.)
+    assert total < 0.
+    assert total == pytest.approx(-30 * q * k_join * .3 / command.cfg.navigation_d_ref, abs=1e-4)
 
 
 @pytest.mark.parametrize('configured', [False, True])
@@ -234,7 +234,10 @@ def test_repeated_turns_and_phase_switches_eventually_pay_stall(configured):
         reward(env, **params)
         turn_sum += classroom_follow_state(command).reward_components['turn'].item()
     state = classroom_follow_state(command)
-    expected_turn_sum = 300 * 6 * 56 / 180 * .5 if configured else 0.
+    q = params.get('progress_penalty_scale', 1.)
+    k_theta = params.get('k_theta', 2.)
+    expected_turn_sum = k_theta * 56 / 180 * (1 - 300 * q)
+    assert turn_sum < 0.
     assert turn_sum == pytest.approx(expected_turn_sum, abs=1e-4)
     assert state.recovery_stall.item()
     assert state.reward_components['recovery_stall'].item() < 0
@@ -293,11 +296,13 @@ def test_sharp_arc_respects_yaw_rate_and_linear_speed_limits():
     from src.tasks.amp_loco.mdp.walk_path import walk_path_query
     route, count = round_classroom_route(torch.tensor([[[0., 0.], [5., 0.], [5., 4.]]]), radius=.2)
     command, env = follower(points=route[0, :count[0]].tolist())
+    # Keep the yaw-rate cap active at 0.8 rad/s rather than curvature slowdown.
+    command.cfg.curvature_alpha = .3
     point, yaw = walk_path_query(env, torch.tensor([0]), torch.tensor([4.8 + math.pi * .2 / 4]))
     advance(command, env, xy=point.tolist(), angles=[-math.degrees(yaw.item())])
     state = classroom_follow_state(command)
     assert state.curvature.abs().item() > 4.9
-    nominal = .6 * state.theta.cos().clamp_min(0) / (1 + .6 * state.curvature.abs())
+    nominal = .6 * state.theta.cos().clamp_min(0) / (1 + .3 * state.curvature.abs())
     assert nominal > command.cfg.max_ang_vel_z / state.curvature.abs()
     assert state.v_cmd * state.curvature.abs() <= command.cfg.max_ang_vel_z + 1e-6
     command.cfg.max_lin_vel_x = .05

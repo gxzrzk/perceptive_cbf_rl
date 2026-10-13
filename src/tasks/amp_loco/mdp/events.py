@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 from src.tasks.amp_loco.ampmotion_loader import MotionLoader
+from src.tasks.amp_loco.mdp.ball_region import reset_ball_target_gate, set_ball_throw_target
 from src.tasks.amp_loco.mdp.terminations import DelayedTerminationManager
 from src.tasks.amp_loco.mdp.walk_path import generate_walk_path, walk_path_query
 
@@ -337,6 +338,7 @@ def reset_dodge_state(
     if len(env_ids) == 0:
         return
 
+    reset_ball_target_gate(env, env_ids)
     counter = getattr(env, _DODGE_DWELL_ATTR, None)
     if counter is None or counter.shape[0] != env.num_envs:
         counter = torch.zeros(env.num_envs, dtype=torch.long, device=env.device)
@@ -621,6 +623,7 @@ def throw_ball_on_dwell(
             target_xy = target_xy + aim_noise_scale * torch.randn_like(target_xy)
         target = torch.cat([target_xy, _uniform(*target_z_range).unsqueeze(-1)], dim=-1)
         vel = solve_ballistic_velocity(start, target, speed, gravity=gravity)
+        set_ball_throw_target(env, throw_ids, start[:, :2], target_xy)
         quat_identity = torch.zeros(n, 4, device=device)
         quat_identity[:, 0] = 1.0
         ball.write_root_link_pose_to_sim(
@@ -729,6 +732,7 @@ def throw_ball_on_dwell(
     vz_high = (z_target - start[:, 2]) / t_flight + 0.5 * gravity * t_flight
     vel[:, 2] = torch.where(high, vz_high, torch.zeros_like(vz_high))
 
+    set_ball_throw_target(env, throw_ids, start[:, :2], target_xy)
     quat_identity = torch.zeros(n, 4, device=device)
     quat_identity[:, 0] = 1.0
     ball.write_root_link_pose_to_sim(

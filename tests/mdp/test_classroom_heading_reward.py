@@ -69,9 +69,10 @@ def test_current_bearing_controls_turn_direction_not_cached_command(term):
     assert command.command[0, 2] > 0.
     # Change the current bearing without refreshing the cached command.
     command.goal_pos_w[0] = torch.tensor([-1., -1.])
-    env.scene["robot"].data.root_link_ang_vel_w[0, 2] = -.5
+    limit = command.cfg.max_ang_vel_z
+    env.scene["robot"].data.root_link_ang_vel_w[0, 2] = -limit
     assert term.func(env, **term.params).item() == pytest.approx(1.)
-    env.scene["robot"].data.root_link_ang_vel_w[0, 2] = .5
+    env.scene["robot"].data.root_link_ang_vel_w[0, 2] = limit
     assert term.func(env, **term.params).item() == -1.
 
 
@@ -99,8 +100,9 @@ def test_turn_target_respects_controller_gain_and_speed_limit(term):
 
 def test_root_world_z_rate_and_real_reward_scaling(term):
     command, env = make_command([90., 90., 90.])
+    limit = command.cfg.max_ang_vel_z
     env.scene["robot"].data.root_link_ang_vel_w[:] = torch.tensor([
-        [3., -2., .5], [0., 0., 0.], [0., 0., -.5]
+        [3., -2., limit], [0., 0., 0.], [0., 0., -limit]
     ])
     manager = RewardManager({"heading": term}, env, scale_by_dt=True)
     task = manager.compute(dt=env.step_dt)

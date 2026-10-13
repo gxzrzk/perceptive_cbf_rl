@@ -110,5 +110,30 @@ def test_ball_passes_scene_but_robot_contact_terminates():
         hide_outside_classroom_ball(env)
         assert ball_in_play(env).all()
         assert dodge_ball_state_b(env).abs().sum(dim=1).gt(0).all()
+        # A real throw from outside the room must remain visible until its final
+        # led/noisy aim is reached, including when the ball is above the roof.
+        env._dodge_throw_once = True
+        throw.func(env, None, **{**throw.params, 'dist_range': (30., 30.),
+                                'omnidirectional': False, 'angle_deg': 0.})
+        hide_outside_classroom_ball(env)
+        assert ball_in_play(env).all()
+        assert not env._classroom_ball_target_reached.any()
+        adr = ball.data.indexing.free_joint_q_adr[:3]
+        start = env.sim.data.qpos[:, adr].clone()
+        target_xy = env._classroom_ball_target_xy.clone()
+        pose[:, :2] = start[:, :2] + .99 * (target_xy - start[:, :2])
+        pose[:, 2] = CLASSROOM_BALL_BOUNDS[1][2] + 1.
+        ball.write_root_link_pose_to_sim(pose)
+        hide_outside_classroom_ball(env)
+        assert ball_in_play(env).all()
+        assert dodge_ball_state_b(env).abs().sum(dim=1).gt(0).all()
+        pose[:, :2] = start[:, :2] + 1.01 * (target_xy - start[:, :2])
+        ball.write_root_link_pose_to_sim(pose)
+        hide_outside_classroom_ball(env)
+        assert env._classroom_ball_target_reached.all()
+        assert not ball_in_play(env).any()
+        assert not dodge_ball_state_b(env).any()
+        assert torch.allclose(env.sim.data.qpos[:, adr],
+                              pose.new_tensor(CLASSROOM_BALL_PARK_POS).expand(2, 3))
     finally:
         env.close()

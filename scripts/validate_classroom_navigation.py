@@ -235,9 +235,10 @@ def main():
     assert summary['off_path_aligned']['components']['reward_join'] > 0
     assert summary['still']['total'] < 0
     assert summary['round_trip']['total'] <= 1e-5
-    assert abs(summary['repeated_turn']['components']['reward_turn']) < 1e-4
+    assert summary['repeated_turn']['components']['reward_turn'] < 0
     assert summary['repeated_turn']['components']['reward_recovery_stall'] < 0
     assert summary['phase_cycle']['total'] < 0
+    assert summary['phase_cycle']['components']['reward_join'] < 0
     assert summary['continuous_extension']['components']['reward_forward'] > 0
     assert summary['safe_timeout']['components']['reward_safe_completion'] == 10.
     args.output_dir.mkdir(parents=True, exist_ok=True)

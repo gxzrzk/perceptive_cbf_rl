@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import torch
 from .ball_region import ball_in_play
+from .curriculums import classroom_training_iteration
 from mjlab.utils.lab_api.math import wrap_to_pi
 
 from .walk_path import walk_path_query
@@ -98,6 +99,8 @@ def classroom_follow_state(command):
       recovery_age=zero.clone(), v_cmd=zero.clone(), command_speed=zero.clone(),
       target_reachable=torch.ones_like(heading, dtype=torch.bool),
       filtered_velocity=xy.new_zeros(len(xy), 2), s_frontier=zero.clone(),
+      turn_bank=zero.clone(), join_bank=zero.clone(),
+      turn_pay=zero.clone(), join_pay=zero.clone(),
       history=xy.new_zeros(len(xy), window, 9), cumulative=xy.new_zeros(len(xy), 9),
     )
     command._classroom_follow_state = state
@@ -229,6 +232,19 @@ def classroom_follow_state(command):
   novel_s = torch.minimum(novel_s, delta_s.clamp_min(0))
   frontier = torch.maximum(frontier, command._path_s)
   safe = ~(command._dodge_threat & ball_in_play(command._env, command.cfg.ball_name))
+  # Self-caused openings must be closed before further improvement is paid.
+  # Threat-time closings still repay debt, but openings incur no new debt.
+  zeros = torch.zeros_like(heading)
+  prev_turn_bank = torch.where(new, zeros, state.turn_bank)
+  prev_join_bank = torch.where(new, zeros, state.join_bank)
+  turn_close = turn_delta.clamp_min(0)
+  turn_open = (-turn_delta).clamp_min(0)
+  join_close = join_credit_delta.clamp_min(0)
+  join_open = (-join_credit_delta).clamp_min(0)
+  turn_pay = (turn_close - prev_turn_bank).clamp_min(0)
+  join_pay = (join_close - prev_join_bank).clamp_min(0)
+  turn_bank = (prev_turn_bank - turn_close).clamp_min(0) + torch.where(safe, turn_open, zeros)
+  join_bank = (prev_join_bank - join_close).clamp_min(0) + torch.where(safe, join_open, zeros)
   eligible = safe & ~new
   active_turn = eligible & step_aligning
   active_join = eligible & ~step_aligning & step_joining
@@ -263,6 +279,7 @@ def classroom_follow_state(command):
     aligning=aligning, step_aligning=step_aligning,
     segment_start=start, segment_end=end, distance=distance, signed_distance=signed_distance,
     turn_delta=turn_delta, join_delta=join_delta, join_credit_delta=join_credit_delta,
+    turn_bank=turn_bank, join_bank=join_bank, turn_pay=turn_pay, join_pay=join_pay,
     outward_delta=outward_delta,
     curvature=curvature, v_cmd=v_cmd, command_speed=command_speed,
     speed=speed, novel_speed=novel_s / dt, s_frontier=frontier,
@@ -307,10 +324,11 @@ def classroom_path_follow_reward(
 ):
   """Reward rate, entirely paused during an in-room incoming-ball threat.
 
-  Keep updating geometry and the paid-distance frontier while paused so no
-  displacement or turn reward accumulates for payment when the threat clears.
-  progress_penalty_scale discounts only negative turn/join/retreat components;
-  positive progress and all other costs keep their original strength.
+  Closings pay only the amount beyond each unpaid-opening ledger; openings are
+  charged at progress_penalty_scale, which also discounts retreat costs.
+  Geometry, the paid-distance frontier and ledgers keep updating while paused:
+  closings repay debt, threat-time openings incur none, and no motion is saved
+  for payment when the threat clears. All other costs keep their strength.
   """
   if (min(k_theta, k_join, k_p, backward_weight, lateral_weight, deviation_weight,
           stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight
@@ -328,7 +346,7 @@ def classroom_path_follow_reward(
   safe = ~(command._dodge_threat & ball_in_play(env, command.cfg.ball_name))
   # Stop both sides of join accounting at d_in. Otherwise an inward step that
   # overshoots the join threshold could earn unrepaid credit inside the gait band.
-  positive_join = g * state.join_credit_delta.clamp_min(0) * join
+  positive_join = g * state.join_pay * join
   negative_join = (-state.join_credit_delta).clamp_min(0)
   velocity = state.filtered_velocity
   backward = ((-velocity[:, 0] - backward_limit).clamp_min(0) / cfg.path_v_ref).square().clamp(max=movement_cost_cap)
@@ -336,11 +354,12 @@ def classroom_path_follow_reward(
   lateral *= torch.where(state.step_aligning, align_lateral_scale, 1.)
   deviation = (state.distance / deviation_std).square().clamp(max=deviation_cost_cap)
   deviation *= torch.where(state.step_joining, join_deviation_scale, 1.)
+  turn_open = (-state.turn_delta).clamp_min(0)
   parts = {
-    "turn": k_theta * state.turn_delta / torch.pi,
-    "join": k_join * (positive_join - negative_join) / cfg.navigation_d_ref,
+    "turn": k_theta * (state.turn_pay - progress_penalty_scale * turn_open) / torch.pi,
+    "join": k_join * (positive_join - progress_penalty_scale * negative_join) / cfg.navigation_d_ref,
     "forward": dt * k_p * g * (state.novel_speed / cfg.path_v_ref).clamp(0, 1) * follow,
-    "retreat": -dt * k_b * (-state.speed / cfg.path_v_ref).clamp(0, 1),
+    "retreat": -progress_penalty_scale * dt * k_b * (-state.speed / cfg.path_v_ref).clamp(0, 1),
     "body_backward": -dt * backward_weight * backward,
     "lateral": -dt * lateral_weight * lateral,
     "deviation": -dt * deviation_weight * deviation,
@@ -349,8 +368,6 @@ def classroom_path_follow_reward(
     "follow_stall": -dt * stall_weight * state.follow_stall.float(),
     "recovery_stall": -dt * recovery_stall_weight * state.recovery_stall.float(),
   }
-  for name in ("turn", "join", "retreat"):
-    parts[name] = torch.where(parts[name] < 0, parts[name] * progress_penalty_scale, parts[name])
   # Gate every component, including differences and retreat/deviation costs.
   # Store the gated values so reward-component metrics also remain zero.
   parts = {name: torch.where(safe, value, 0.0) for name, value in parts.items()}
@@ -385,13 +402,25 @@ def classroom_navigation_metric(env, key, command_name="twist"):
   return getattr(state, key).float()
 
 
-def classroom_failure_cost(env, base_cost=10., remaining_rate=4.):
-  """One-shot failure cost plus remaining navigation-cost budget.
+def classroom_failure_cost(
+  env, base_cost=10., remaining_rate=4., initial_remaining_rate=None,
+  warmup_iterations=1000, ramp_iterations=5000,
+):
+  """One-shot failure cost with an optional iteration-based remaining-rate ramp.
 
-  Makes deliberately falling to avoid bounded ongoing path penalties costly.
+  Hold the initial rate during warmup, then linearly reach ``remaining_rate``.
+  Without an initial rate, keep the supplied remaining rate constant.
   Ball hits retain the existing no-spike treatment; simultaneous falls still pay.
   Like success, this event compensates the manager's dt scaling.
   """
+  if initial_remaining_rate is not None:
+    if (warmup_iterations < 0 or ramp_iterations <= 0
+        or not all(math.isfinite(v) for v in (initial_remaining_rate, remaining_rate))
+        or not 0 <= initial_remaining_rate <= remaining_rate):
+      raise ValueError("Invalid classroom failure rate schedule parameters")
+    iteration = classroom_training_iteration(env)
+    fraction = min(max((iteration - warmup_iterations) / ramp_iterations, 0.), 1.)
+    remaining_rate = initial_remaining_rate + fraction * (remaining_rate - initial_remaining_rate)
   manager = env.termination_manager
   failure = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
   for name in manager.active_terms:

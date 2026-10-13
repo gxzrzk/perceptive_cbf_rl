@@ -360,45 +360,6 @@ def test_walk_path_progress_when_safe_gated():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
-def test_walk_path_progress_when_safe_idle_cost():
-    """Idle costs are independent of lookahead distance; forward motion pays."""
-    import src.tasks.amp_loco.mdp as mdp
-
-    env = _build_wallwalk_env()
-    robot = env.scene["robot"]
-    cmd = env.command_manager.get_term("twist")
-    env.command_manager.compute(dt=env.step_dt)
-    assert not cmd._dodge_threat.any()
-
-    # Standing still pays a fixed cost, independent of the moving goal.
-    r_stand = mdp.walk_path_progress_when_safe(env, stillness_penalty=0.6)
-    expected = -0.6 * cmd._walk_forward_scale
-    assert torch.allclose(r_stand, expected, atol=0.1), (
-        f"standing should pay the idle cost, got {r_stand.min():.3f} vs {expected.min():.3f}"
-    )
-
-    # Teleport 0.5 m forward: rate caps at v_max, with no distance cost.
-    ar = torch.arange(env.num_envs, device=env.device)
-    target_xy, _ = mdp.walk_path_query(env, ar, cmd._path_s + 0.5)
-    pose = robot.data.root_link_pose_w.clone()
-    pose[:, :2] = target_xy
-    robot.write_root_link_pose_to_sim(pose)
-    _refresh(env, robot)
-    env.command_manager.compute(dt=env.step_dt)
-    r_move = mdp.walk_path_progress_when_safe(env, v_max=1.5, stillness_penalty=0.6)
-    expected_move = torch.full_like(r_move, 1.5)
-    assert torch.allclose(r_move, expected_move, atol=0.1), (
-        f"forward progress should pay, got {r_move.min():.3f} vs {expected_move.min():.3f}"
-    )
-
-    # Threat gates the combined term to exactly 0.
-    cmd._dodge_threat[:] = True
-    assert torch.all(
-        mdp.walk_path_progress_when_safe(env, stillness_penalty=0.6) == 0.0
-    )
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs GPU sim")
 def test_walk_path_stillness_when_safe_gated():
     """walk_path_stillness_when_safe (cost): ~1 when parked on the path with no
     threat, decays after a forward teleport, and exactly 0 under threat."""

@@ -379,8 +379,6 @@ def walk_path_progress_when_safe(
   command_name: str = "twist",
   v_max: float = 1.5,
   clip_lo: float = 2.0,
-  stillness_penalty: float = 0.0,
-  stillness_threshold: float = 0.02,
 ) -> torch.Tensor:
   """Reward changes in signed path distance from the episode's spawn when safe.
 
@@ -390,12 +388,6 @@ def walk_path_progress_when_safe(
   rate, and uniform forward motion earns a constant reward per step. ``v_max``
   and ``clip_lo`` bound the forward reward and backward cost respectively.
 
-  With ``stillness_penalty > 0``, rates within ``stillness_threshold`` m/s of
-  zero instead pay ``-stillness_penalty * forward_scale``. The heading gate
-  waives this cost for commanded turns, while projected backward motion remains
-  negative even during a turn. The deadband rejects tiny projection jitter.
-  Default penalty 0 preserves WallWalk's pure signed-rate behavior.
-
   An incoming ball threat gates the entire term to zero, including backward
   evasions. Resetting the path resets its arc-length coordinate and delta.
   """
@@ -403,11 +395,6 @@ def walk_path_progress_when_safe(
   threat = command._dodge_threat.float()  # (N,) 1 while a ball is airborne + approaching
   rate = command._path_s_delta / env.step_dt
   pay = rate.clamp(min=-clip_lo, max=v_max)
-  if stillness_penalty > 0.0:
-    forward_scale = getattr(command, "_walk_forward_scale", 1.0)
-    pay = torch.where(
-      rate.abs() <= stillness_threshold, -stillness_penalty * forward_scale, pay
-    )
   return (1.0 - threat) * pay
 
 
@@ -418,8 +405,7 @@ def walk_path_stillness_when_safe(
 ) -> torch.Tensor:
   """Threat-gated STILLNESS COST: penalize NOT moving along the path when safe.
 
-  ``c = (1 - threat) * forward_scale * exp(-rate^2 / rate_scale^2)``;
-  ``forward_scale`` defaults to 1, or the turn-before-walk heading gate. ``rate`` is the
+  ``c = (1 - threat) * exp(-rate^2 / rate_scale^2)``; ``rate`` is the
   arc-length progress rate (m/s). Equals 1 for a robot parked on the path between
   throws, ~0.37 at ``rate_scale`` (0.4 m/s), ~0 at 2*scale. Return as a COST (use
   a NEGATIVE weight).
@@ -435,10 +421,7 @@ def walk_path_stillness_when_safe(
   command = env.command_manager.get_term(command_name)
   threat = command._dodge_threat.float()
   rate = command._path_s_delta / env.step_dt
-  # Classroom navigation deliberately pauses translation while turning. Apply
-  # the same continuous heading gate so that following that command is not idle.
-  forward_scale = getattr(command, "_walk_forward_scale", 1.0)
-  return (1.0 - threat) * forward_scale * torch.exp(-torch.square(rate) / rate_scale**2)
+  return (1.0 - threat) * torch.exp(-torch.square(rate) / rate_scale**2)
 
 
 

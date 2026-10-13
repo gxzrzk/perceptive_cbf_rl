@@ -36,6 +36,8 @@ def make_command(angles, classroom_follow=True):
     cfg = g1_amp_dodge_mimickit_classroom_flat_env_cfg().commands['twist']
     cfg.path_follow = False
     cfg.classroom_follow = classroom_follow
+    # turn_before_walk is only valid with classroom_follow (constructor check).
+    cfg.turn_before_walk = classroom_follow
     cfg.forward_offset = 0.
     # Formula tests remove command ramp/filter; dedicated navigation tests
     # exercise the deployed G1 defaults.
@@ -49,7 +51,7 @@ def make_command(angles, classroom_follow=True):
 
 
 @pytest.mark.parametrize('cbf_enabled', [False, True])
-def test_turn_then_cosine_forward_and_matching_stillness(cbf_enabled):
+def test_turn_then_cosine_forward(cbf_enabled):
     command, env = make_command([180., 120., 90., 75., 60., 45., 30., 0., -60., -120.])
     command.cfg.cbf_enabled = cbf_enabled
     command._update_command()
@@ -63,11 +65,6 @@ def test_turn_then_cosine_forward_and_matching_stillness(cbf_enabled):
     assert vx[9] == 0 and torch.all(vy == 0) and torch.all(vx >= 0)
     assert torch.all(wz[1:7] > 0) and torch.all(wz[8:] < 0) and wz[7] == 0
     assert torch.allclose(command.vel_command_nominal_b, command.command)
-    cost = walk_path_stillness_when_safe(env)
-    assert torch.allclose(cost[:3], torch.zeros(3), atol=1e-6)
-    assert cost[4].item() == pytest.approx(.5, abs=1e-6)
-    assert cost[6].item() == pytest.approx(3 ** .5 / 2, abs=1e-6)
-    assert cost[7].item() == pytest.approx(1.)
 
 
 @pytest.mark.parametrize('filter_command', [False, True])

@@ -1,4 +1,4 @@
-"""Spawn-relative path rewards across forward, idle, retreat, turn and reset states."""
+"""Spawn-relative path rewards across forward, idle, retreat and reset states."""
 from types import SimpleNamespace as NS
 
 import pytest
@@ -21,7 +21,6 @@ def term():
     # Retain coverage of the legacy helper used by WallWalk.
     return RewardTermCfg(func=walk_path_progress_when_safe, weight=2., params={
         "command_name": "twist", "v_max": .75,
-        "stillness_penalty": .6, "stillness_threshold": .02,
     })
 
 
@@ -31,7 +30,6 @@ def progress_command(points=None):
     command = make_command(points, points[0])
     command.cfg.path_allow_backtracking = True
     command._dodge_threat = torch.zeros(1, dtype=torch.bool)
-    command._walk_forward_scale = torch.ones(1)
     env = command._env
     env.step_dt = .02
     env.command_manager = NS(get_term=lambda _: command)
@@ -43,18 +41,18 @@ def move(command, xy):
     DodgeGoToGoalCommand._update_path_goal(command)
 
 
-def test_uniform_forward_rewards_and_idle_or_retreat_costs(term):
+def test_uniform_forward_rewards_and_retreat_costs(term):
     command, env = progress_command()
     # Spawn has s=0 even though its world coordinates are nonzero.
     move(command, (10., -3.))
     assert command._path_s.item() == 0.
-    assert term.func(env, **term.params).item() == pytest.approx(-.6)
+    assert term.func(env, **term.params).item() == 0.
     for step in range(1, 5):
         move(command, (10. + step * .012, -3.))
         assert term.func(env, **term.params).item() == pytest.approx(.6, abs=1e-4)
-    # No progress, even while moving laterally, pays the fixed idle cost.
+    # No progress, even while moving laterally, pays nothing.
     move(command, (10.048, -2.5))
-    assert term.func(env, **term.params).item() == pytest.approx(-.6)
+    assert term.func(env, **term.params).item() == 0.
     move(command, (10.042, -2.5))
     assert term.func(env, **term.params).item() == pytest.approx(-.3, abs=1e-4)
 
@@ -85,15 +83,12 @@ def test_retreat_through_corner_and_behind_spawn(term):
     assert term.func(env, **term.params).item() == pytest.approx(-.3, abs=1e-4)
 
 
-def test_turn_exemption_and_threat_gate(term):
+def test_threat_gate_and_retreat_not_waived(term):
     command, env = progress_command()
     move(command, (10., -3.))
-    for scale in (0., .5, 1.):
-        command._walk_forward_scale[:] = scale
-        assert term.func(env, **term.params).item() == pytest.approx(-.6 * scale)
-    command._walk_forward_scale.zero_()
+    assert term.func(env, **term.params).item() == 0.
     move(command, (9.994, -3.))
-    assert term.func(env, **term.params).item() < 0  # Turning does not waive retreat.
+    assert term.func(env, **term.params).item() < 0
     command._dodge_threat[:] = True
     for xy in ((10.006, -3.), (10.006, -3.), (10., -3.)):
         move(command, xy)
@@ -101,10 +96,10 @@ def test_turn_exemption_and_threat_gate(term):
 
 
 @pytest.mark.parametrize("rate,expected", [
-    (-10., -2.), (-.3, -.3), (-.01, -.6), (0., -.6), (.01, -.6),
+    (-10., -2.), (-.3, -.3), (-.01, -.01), (0., 0.), (.01, .01),
     (.03, .03), (.6, .6), (10., .75),
 ])
-def test_idle_deadband_and_rate_caps(term, rate, expected):
+def test_signed_rate_clamps(term, rate, expected):
     command, env = progress_command()
     command._path_s_delta = torch.tensor([rate * env.step_dt])
     assert term.func(env, **term.params).item() == pytest.approx(expected)
@@ -118,7 +113,7 @@ def test_new_spawn_resets_progress_without_reward_spike(term):
     move(command, (110., 47.))
     assert command._path_s.item() == 0.
     assert command._path_s_delta.item() == 0.
-    assert term.func(env, **term.params).item() == pytest.approx(-.6)
+    assert term.func(env, **term.params).item() == 0.
     move(command, (110.012, 47.))
     assert term.func(env, **term.params).item() == pytest.approx(.6, abs=2e-4)
 
@@ -164,7 +159,7 @@ def test_classroom_reward_scaling_and_wallwalk_defaults(term):
     assert task_reward.item() == pytest.approx(.024, abs=1e-5)
     assert (.5 * task_reward).item() == pytest.approx(.012, abs=1e-5)
     move(command, (10.012, -3.))
-    assert (.5 * manager.compute(dt=env.step_dt)).item() == pytest.approx(-.012)
+    assert (.5 * manager.compute(dt=env.step_dt)).item() == 0.
     wallwalk = g1_amp_dodge_mimickit_wallwalk_flat_env_cfg()
     assert not wallwalk.commands["twist"].path_allow_backtracking
     assert wallwalk.rewards["walk_path_progress_when_safe"].params == {"command_name": "twist"}

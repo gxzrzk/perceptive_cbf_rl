@@ -1367,6 +1367,7 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
 
   command = cfg.commands["twist"]
   command.classroom_follow = True
+  command.max_ang_vel_z = 0.8
   command.align_enter_angle = math.radians(follow_param("WALK_ALIGN_ENTER_DEG", 75.0))
   command.align_exit_angle = math.radians(follow_param("WALK_ALIGN_EXIT_DEG", 25.0))
   command.path_v_ref = follow_param("WALK_V_REF", 0.6)
@@ -1429,18 +1430,16 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     func=classroom_safe_completion_reward, weight=1.0,
     params={"bonus": follow_param("WALK_SAFE_COMPLETION_BONUS", 10.0)},
   )
-  # Failure costs exceed the remaining bounded navigation-rate penalty budget;
-  # intentionally falling cannot cheaply erase future navigation costs.
-  rp = cfg.rewards["classroom_path_follow"].params
-  max_navigation_cost = (rp["k_b"] + rp["backward_weight"] * rp["movement_cost_cap"]
-    + rp["lateral_weight"] * rp["movement_cost_cap"]
-    + rp["deviation_weight"] * rp["deviation_cost_cap"]
-    + max(rp["stall_weight"], rp["turn_stall_weight"], rp["join_stall_weight"])
-    + rp["recovery_stall_weight"])
+  # Start with a mild remaining-time cost, then increase it over training.
+  # Reuse the checkpoint-aware classroom iteration counter; play uses the final rate.
   cfg.rewards["is_terminated"] = RewardTermCfg(
     func=classroom_failure_cost, weight=-1., params={
       "base_cost": follow_param("WALK_FAILURE_COST", 10.),
-      "remaining_rate": follow_param("WALK_FAILURE_REMAINING_RATE", max_navigation_cost),
+      "remaining_rate": follow_param("WALK_FAILURE_REMAINING_RATE", 16.),
+      "initial_remaining_rate": (
+        None if play else follow_param("WALK_FAILURE_INITIAL_REMAINING_RATE", 2.)),
+      "warmup_iterations": int(os.environ.get("WALK_FAILURE_WARMUP_ITERS", 1000)),
+      "ramp_iterations": int(os.environ.get("WALK_FAILURE_RAMP_ITERS", 5000)),
     },
   )
   cfg.observations["path_navigation"] = ObservationGroupCfg(
@@ -1448,6 +1447,7 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     concatenate_terms=True, enable_corruption=False, history_length=0,
   )
   for key in ("phase", "theta", "distance", "speed", "command_speed", "recovery_age",
+              "turn_bank", "join_bank",
               "reward_turn", "reward_join", "reward_forward", "reward_retreat",
               "reward_body_backward", "reward_lateral", "reward_deviation",
               "reward_turn_stall", "reward_join_stall", "reward_follow_stall",
@@ -1508,7 +1508,8 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     )
     for collision in cfg.scene.entities["robot"].collisions
   )
-  # Hide and hold out-of-room balls below the floor, after any launch in this step.
+  # After reaching the saved throw target, hide and hold out-of-room balls below
+  # the floor. Run after launches so every throw first installs its new target.
   cfg.events["hide_outside_classroom_ball"] = EventTermCfg(
     func=hide_outside_classroom_ball, mode="step")
   hidden_ball_pos = CLASSROOM_BALL_PARK_POS
