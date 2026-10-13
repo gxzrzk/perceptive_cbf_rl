@@ -181,8 +181,8 @@ _WALLWALK_RESET_DIR = os.path.normpath(
 # RSI motion dir for the CLASSROOM task: ``amp_classroom`` = the same 27-clip pruned
 # amp_dodge subset PLUS all 17 WalkandRun locomotion clips PLUS the 20 zxg_motion
 # slow-walk clips (0.15-0.75 m/s: slow/cautious/normal forward, slow backward/sideway,
-# slow arcs, step-rotate idle; see zxg_motion/README.md), symlinked from amp/WalkandRun
-# and the repo-root zxg_motion/npz. The zxg set adds 4-8x more frames per gait class at
+# slow arcs, step-rotate idle; see src/assets/motions/g1/zxg_motion/README.md), symlinked from amp/WalkandRun
+# and src/assets/motions/g1/zxg_motion/npz. The zxg set adds 4-8x more frames per gait class at
 # classroom-relevant speeds (the 0.6 m/s cruise and sub-0.4 m/s aisle maneuvers).
 # FK-verified against this repo's G1 spec (2026-10-12).
 _CLASSROOM_RESET_DIR = os.path.normpath(

@@ -66,20 +66,16 @@
 
 ## 3. 目录与软链接
 
-* **主目录**：`zxg_motion/`
+* **主目录**：`src/assets/motions/g1/zxg_motion/`（与 WalkandRun、amp_dodge 等原代码库动作数据同级）
   * `csv/`：共 20 个 120Hz 原始 CSV 文件。
   * `npz/`：共 20 个 50Hz 动力学导出的 AMP 标准文件。
-* **引擎资产软链**：`src/assets/motions/g1/zxg_motion/`（指向 `zxg_motion/npz/*.npz`）。
+* **classroom 任务引用**：`src/assets/motions/g1/amp_classroom/` 中的 20 个软链接（`../zxg_motion/npz/*.npz`），与 WalkandRun、amp_dodge 的软链接混合组成 64 个片段的数据集；配置见 `goto_rl_cfg.py` 的 `_CLASSROOM_MOTION_DIR` 与 `dodge_env_cfgs.py` 的 `_CLASSROOM_RESET_DIR`。
 
 ---
 
 ## 4. 训练使用方式
 
-直接在启动命令中传入参数：
+classroom 训练默认通过 `_CLASSROOM_MOTION_DIR`（`amp_classroom/`）加载本库，无需额外参数。如需单独指定：
 ```bash
-./train_classroom.sh --agent.amp-motion-files=zxg_motion/npz
-```
-或者使用绝对路径：
-```bash
-./train_classroom.sh --agent.amp-motion-files=/home/zxg/perceptive_cbf_rl/src/assets/motions/g1/zxg_motion
+./train_classroom.sh --agent.amp-motion-files=src/assets/motions/g1/zxg_motion/npz
 ```

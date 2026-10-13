@@ -42,7 +42,7 @@ _WALLWALK_MOTION_DIR = os.path.normpath(
 
 # Classroom AMP discriminator dataset: the 27-clip pruned amp_dodge subset PLUS all
 # 17 WalkandRun locomotion clips PLUS the 20 zxg_motion slow-walk clips (64 total;
-# see zxg_motion/README.md). The matching env cfg resets (RSI) from the same dir
+# see src/assets/motions/g1/zxg_motion/README.md). The matching env cfg resets (RSI) from the same dir
 # (_CLASSROOM_RESET_DIR in dodge_env_cfgs).
 _CLASSROOM_MOTION_DIR = os.path.normpath(
   os.path.join(
