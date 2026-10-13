@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import mujoco
 
 from mjlab.actuator import Actuator, ActuatorCmd, BuiltinPositionActuatorCfg
+from mjlab.actuator.actuator import TransmissionType
 from mjlab.utils.spec import create_position_actuator
 
 if TYPE_CHECKING:
@@ -103,10 +104,35 @@ class UnitreeActuator(Actuator):
         )
 
         # BuiltinPositionActuator expects a position control signal.
-        kp = torch.as_tensor(self.cfg.stiffness, dtype=cmd.pos.dtype, device=cmd.pos.device)
-        kd = torch.as_tensor(self.cfg.damping, dtype=cmd.pos.dtype, device=cmd.pos.device)
-        kp = torch.clamp(kp, min=1e-6)
-        return cmd.pos + (effort + kd * cmd.vel) / kp
+        # These config values are scalars. Tensor arithmetic already casts scalar
+        # operands to the working dtype, without allocating/copying CUDA tensors
+        # for every actuator group at every physics substep.
+        kp = max(self.cfg.stiffness, 1e-6)
+        return cmd.pos + (effort + self.cfg.damping * cmd.vel) / kp
+
+    def get_command(self, data) -> ActuatorCmd:
+        if self.transmission_type != TransmissionType.JOINT:
+            return super().get_command(data)
+        # EntityData.joint_pos/vel first gather every robot joint. Cache this
+        # group's global addresses on the working device and gather only its
+        # joints directly from the live sim buffers.
+        if getattr(self, "_command_indexing", None) is not data.indexing:
+            self._command_q_adr = torch.as_tensor(
+                data.indexing.joint_q_adr[self._target_ids_list],
+                dtype=torch.long, device=data.device,
+            )
+            self._command_v_adr = torch.as_tensor(
+                data.indexing.joint_v_adr[self._target_ids_list],
+                dtype=torch.long, device=data.device,
+            )
+            self._command_indexing = data.indexing
+        return ActuatorCmd(
+            position_target=data.joint_pos_target[:, self.target_ids],
+            velocity_target=data.joint_vel_target[:, self.target_ids],
+            effort_target=data.joint_effort_target[:, self.target_ids],
+            pos=data.data.qpos[:, self._command_q_adr],
+            vel=data.data.qvel[:, self._command_v_adr],
+        )
 
     def _clip_effort(self, effort: torch.Tensor) -> torch.Tensor:
         # check if the effort is the same direction as the joint velocity
@@ -114,12 +140,7 @@ class UnitreeActuator(Actuator):
         max_effort = torch.where(same_direction, self._effort_y1, self._effort_y2)
 
         if self.cfg.effort_limit is not None:
-            limit = torch.as_tensor(
-                self.cfg.effort_limit,
-                dtype=max_effort.dtype,
-                device=max_effort.device,
-            )
-            max_effort = torch.minimum(max_effort, limit)
+            max_effort = max_effort.clamp(max=self.cfg.effort_limit)
 
         # check if the joint velocity is less than the max speed at full torque
         max_effort = torch.where(

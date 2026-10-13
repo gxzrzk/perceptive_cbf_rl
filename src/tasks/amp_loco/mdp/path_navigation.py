@@ -83,11 +83,15 @@ def _join_target(command, xy, station, segment_end_s):
 
 def classroom_follow_state(command):
   env, cfg = command._env, command.cfg
+  step, dt = env.common_step_counter, env.step_dt
+  state = getattr(command, "_classroom_follow_state", None)
+  route_version = getattr(env, "_classroom_route_version", None)
+  if (state is not None and state.step == step and route_version is not None
+      and getattr(state, "route_version", None) == route_version):
+    return state
   heading = command.robot.data.heading_w
   xy = command.robot.data.root_link_pos_w[:, :2]
   epoch = getattr(env, "_walk_path_epoch", torch.zeros_like(heading, dtype=torch.long))
-  step, dt = env.common_step_counter, env.step_dt
-  state = getattr(command, "_classroom_follow_state", None)
   if state is None:
     zero = torch.zeros_like(heading)
     window = max(1, math.ceil(cfg.stall_duration / dt))
@@ -105,15 +109,18 @@ def classroom_follow_state(command):
     )
     command._classroom_follow_state = state
   new = state.epoch != epoch
-  update = torch.ones_like(new) if state.step != step else new
-  if not update.any():
+  full_update = state.step != step
+  update = torch.ones_like(new) if full_update else new
+  if not full_update and not new.any():
+    state.route_version = route_version
     return state
 
   path_active = cfg.path_follow and hasattr(env, "_walk_path_pts")
   if path_active:
     # Keep non-reset environments' rewards/references when only a subset resets.
-    saved = {name: getattr(command, name).clone() for name in (
-      "_path_s", "_path_s_delta", "_path_seg_idx", "_path_lat_err", "goal_pos_w")}
+    saved = {} if full_update else {
+      name: getattr(command, name).clone() for name in (
+        "_path_s", "_path_s_delta", "_path_seg_idx", "_path_lat_err", "goal_pos_w")}
     command._update_path_goal()
     for name, old in saved.items():
       value = getattr(command, name)
@@ -255,7 +262,7 @@ def classroom_follow_state(command):
     cfg.follow_progress_fraction * state.command_speed * dt * active_follow,
     dt * active_turn, dt * active_join, dt * active_follow), -1)
   cumulative = torch.where(new[:, None], 0., state.cumulative) + increments
-  state.history[new] = 0.
+  state.history.masked_fill_(new[:, None, None], 0.)
   index = step % state.history.shape[1]
   window_progress = cumulative - state.history[:, index]
   state.history[:, index] = torch.where(update[:, None], cumulative, state.history[:, index])
@@ -287,10 +294,18 @@ def classroom_follow_state(command):
     turn_stall=turn_stall, join_stall=join_stall, follow_stall=follow_stall,
     recovery_stall=recovery_stall)
   for name, value in values.items():
-    old = getattr(state, name, torch.zeros_like(value))
-    mask = update[:, None] if value.ndim == 2 else update
-    setattr(state, name, torch.where(mask, value, old).clone())
+    if full_update:
+      # Snapshot views into simulation data, without constructing unused zeros
+      # and applying an all-true mask for each of the state fields.
+      setattr(state, name, value.clone())
+    else:
+      old = getattr(state, name, None)
+      if old is None:
+        old = torch.zeros_like(value)
+      mask = update[:, None] if value.ndim == 2 else update
+      setattr(state, name, torch.where(mask, value, old))
   state.epoch, state.step = epoch.clone(), step
+  state.route_version = getattr(env, "_classroom_route_version", None)
   return state
 
 

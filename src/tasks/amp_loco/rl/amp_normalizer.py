@@ -37,11 +37,21 @@ class RunningMeanStd:
     self.count = float(epsilon)
 
   @torch.no_grad()
-  def update(self, arr: torch.Tensor) -> None:
+  def update(self, arr: torch.Tensor, *, distributed: bool = False) -> None:
+    """Fit raw observations; distributed AMP batches have equal sizes per rank."""
     arr = arr.to(self.mean.device, torch.float64)
-    batch_mean = arr.mean(dim=0)
-    batch_var = arr.var(dim=0, unbiased=False)
+    batch_var, batch_mean = torch.var_mean(arr, dim=0, unbiased=False)
     batch_count = arr.shape[0]
+    if distributed:
+      # Reduce sufficient statistics together, keeping every worker's running
+      # mean/variance identical without copying observations through the host.
+      moments = torch.stack((batch_mean, batch_var + batch_mean.square()))
+      torch.distributed.all_reduce(moments, op=torch.distributed.ReduceOp.SUM)
+      world_size = torch.distributed.get_world_size()
+      moments /= world_size
+      batch_mean = moments[0]
+      batch_var = (moments[1] - batch_mean.square()).clamp_min(0)
+      batch_count *= world_size
     self.update_from_moments(batch_mean, batch_var, batch_count)
 
   def update_from_moments(
@@ -81,6 +91,15 @@ class Normalizer(RunningMeanStd):
     self.clip_obs = clip_obs
     self._mean_f32: torch.Tensor | None = None
     self._std_f32: torch.Tensor | None = None
+
+  def to(self, device: str | torch.device) -> "Normalizer":
+    """Move checkpoint statistics to the worker's device and drop stale caches."""
+    self.device = torch.device(device)
+    self.mean = self.mean.to(self.device)
+    self.var = self.var.to(self.device)
+    self._mean_f32 = None
+    self._std_f32 = None
+    return self
 
   def _refresh_cache(self, device: torch.device) -> None:
     # Cache float32 mean/std on the working device; rebuilt each update via

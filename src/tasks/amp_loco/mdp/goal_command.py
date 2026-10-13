@@ -483,7 +483,7 @@ class DodgeGoToGoalCommand(GoToGoalCommand):
     total = cum[ar, count - 1]
     horizon = self._path_s + self.cfg.path_lookahead + self.cfg.path_wall_ahead
     need = total < horizon
-    if need.any() and not getattr(self.cfg, "classroom_follow", False):
+    if not getattr(self.cfg, "classroom_follow", False) and need.any():
       extend_walk_path(env, ar[need], horizon[need] + 20.0)
 
     goal_xy, _ = walk_path_query(env, ar, self._path_s + self.cfg.path_lookahead)

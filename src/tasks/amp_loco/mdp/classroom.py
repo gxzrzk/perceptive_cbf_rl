@@ -100,6 +100,10 @@ def _write_classroom_route(env, env_ids, raw):
   env._walk_path_cumlen[env_ids] = cumulative[:, -1:]
   env._walk_path_cumlen[env_ids, :rounded.shape[1]] = cumulative
   env._walk_path_n[env_ids] = counts
+  # CPU generation counter lets same-step navigation readers detect unchanged
+  # paths without synchronizing a GPU epoch comparison. Includes partial reset
+  # and extension; hand-built paths without this marker retain the epoch check.
+  env._classroom_route_version = getattr(env, "_classroom_route_version", 0) + 1
 
 
 def extend_classroom_route(env, env_ids, min_total_len):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 import tyro
+import torch
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
@@ -48,9 +49,13 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   else:
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     rank = int(os.environ.get("RANK", "0"))
-    # Set EGL device to match the CUDA device.
-    os.environ["MUJOCO_EGL_DEVICE_ID"] = str(local_rank)
+    # EGL enumerates physical devices, independently of CUDA_VISIBLE_DEVICES.
+    visible_devices = cuda_visible.split(",")
+    if visible_devices[local_rank].strip().isdigit():
+      os.environ["MUJOCO_EGL_DEVICE_ID"] = visible_devices[local_rank].strip()
     device = f"cuda:{local_rank}"
+    # Set the default device before simulation/rendering creates CUDA contexts.
+    torch.cuda.set_device(local_rank)
     # Set seed to have diversity in different processes.
     seed = cfg.agent.seed + local_rank
 
@@ -89,8 +94,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
 
+  record_video = cfg.video and rank == 0
   env = ManagerBasedRlEnv(
-    cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
+    cfg=cfg.env, device=device, render_mode="rgb_array" if record_video else None
   )
 
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
@@ -103,7 +109,7 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
       )
 
   # Only record videos on rank 0 to avoid multiple workers writing to the same files.
-  if cfg.video and rank == 0:
+  if record_video:
     env = VideoRecorder(
       env,
       video_folder=Path(log_dir) / "videos" / "train",
@@ -133,7 +139,11 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   # Only write config files from rank 0 to avoid race conditions.
   if rank == 0:
     dump_yaml(log_dir / "params" / "env.yaml", env_cfg)
-    dump_yaml(log_dir / "params" / "agent.yaml", agent_cfg)
+    # Algorithm construction consumes class names and AMP fields from agent_cfg.
+    # Persist the complete input config so the run's AMP settings remain auditable.
+    dump_yaml(log_dir / "params" / "agent.yaml", {
+      **asdict(cfg.agent), "multi_gpu": runner.cfg.get("multi_gpu"),
+    })
 
   runner.learn(
     num_learning_iterations=cfg.agent.max_iterations, init_at_random_ep_len=True
@@ -188,7 +198,10 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
       hostnames=["localhost"],
       workers_per_host=num_gpus,
       backend=None,  # Let rsl_rl handle process group initialization.
-      copy_env_vars=torchrunx.DEFAULT_ENV_VARS_FOR_COPY + ("MUJOCO*",),
+      copy_env_vars=torchrunx.DEFAULT_ENV_VARS_FOR_COPY + (
+        "MUJOCO*", "WARP*", "TMPDIR", "TMP", "TEMP", "WANDB*",
+        "OMP*", "MKL*", "OPENBLAS*", "LD_LIBRARY_PATH",
+      ),
     ).run(run_train, task_id, args, log_dir)
 
 

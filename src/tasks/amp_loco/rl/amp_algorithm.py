@@ -8,7 +8,8 @@ Subclasses stock rsl_rl ``PPO`` (no longer a vendored fork) and adds:
 The env publishes an ``"amp"`` observation group in its TensorDict; ``AmpPPO``
 reads that key inside ``act()`` and ``process_env_step()``, so the rollout loop
 in stock ``OnPolicyRunner`` (inherited by ``MjlabOnPolicyRunner``) needs no
-override. No RND, no symmetry, no multi-GPU AMP path.
+override. Distributed training also synchronizes the discriminator and AMP
+normalizer. No RND or symmetry extensions.
 """
 
 from __future__ import annotations
@@ -91,6 +92,34 @@ class AmpPPO(PPO):
     # (amp_obs_t, amp_obs_{t+1}) for the discriminator.
     self._prev_amp_obs: torch.Tensor | None = None
 
+  def broadcast_parameters(self) -> None:
+    """Start every worker with the same policy, discriminator and AMP stats."""
+    super().broadcast_parameters()
+    for tensor in self.discriminator.state_dict().values():
+      torch.distributed.broadcast(tensor, src=0)
+    if self.amp_normalizer is not None:
+      self.amp_normalizer.to(self.device)
+      torch.distributed.broadcast(self.amp_normalizer.mean, src=0)
+      torch.distributed.broadcast(self.amp_normalizer.var, src=0)
+      count = torch.tensor(
+        self.amp_normalizer.count, dtype=torch.float64, device=self.device
+      )
+      torch.distributed.broadcast(count, src=0)
+      self.amp_normalizer.count = count.item()
+      self.amp_normalizer._mean_f32 = None
+
+  def reduce_parameters(self) -> None:
+    """Average all optimizer gradients, including AMP, in one collective."""
+    params = [p for group in self.optimizer.param_groups for p in group["params"]
+              if p.grad is not None]
+    gradients = torch.cat([p.grad.flatten() for p in params])
+    torch.distributed.all_reduce(gradients, op=torch.distributed.ReduceOp.SUM)
+    gradients /= self.gpu_world_size
+    offset = 0
+    for param in params:
+      param.grad.copy_(gradients[offset:offset + param.numel()].view_as(param))
+      offset += param.numel()
+
   # ---------------------------------------------------------------------------
   # Rollout hooks
 
@@ -113,10 +142,9 @@ class AmpPPO(PPO):
     # approximation of the terminal frame for envs that just reset.
     if self._prev_amp_obs is None:
       raise RuntimeError("process_env_step called before act() captured amp obs.")
-    next_amp_with_term = next_amp_obs.clone()
-    reset_ids = (dones > 0).nonzero(as_tuple=False).flatten()
-    if reset_ids.numel():
-      next_amp_with_term[reset_ids] = self._prev_amp_obs[reset_ids]
+    next_amp_with_term = torch.where(
+      (dones > 0).to(self.device).unsqueeze(-1), self._prev_amp_obs, next_amp_obs
+    )
 
     # Replace task reward with discriminator-scored reward (the discriminator
     # internally lerps with task reward if `task_reward_lerp > 0`).
@@ -160,6 +188,7 @@ class AmpPPO(PPO):
       )
     if "amp_normalizer" in loaded_dict and loaded_dict["amp_normalizer"] is not None:
       self.amp_normalizer = loaded_dict["amp_normalizer"]
+      self.amp_normalizer.to(self.device)
     return load_iteration
 
   # ---------------------------------------------------------------------------
@@ -313,10 +342,12 @@ class AmpPPO(PPO):
       self.optimizer.step()
 
       if self.amp_normalizer is not None:
-        # Stats live on-device; pass the detached tensors directly (no .cpu()/.numpy()
-        # host round-trip, which was the dominant per-minibatch sync stall).
-        self.amp_normalizer.update(policy_state.detach())
-        self.amp_normalizer.update(expert_state.detach())
+        # Fit raw observations, not the already normalized/clipped loss inputs.
+        # Pool policy/expert stats in one update and one distributed collective.
+        self.amp_normalizer.update(
+          torch.cat((sample_amp_policy[0], sample_amp_expert[0])).detach(),
+          distributed=self.is_multi_gpu,
+        )
 
       mean_value_loss += value_loss.detach()
       mean_surrogate_loss += surrogate_loss.detach()

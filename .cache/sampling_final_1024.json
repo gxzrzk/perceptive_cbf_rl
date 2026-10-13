@@ -1,0 +1,816 @@
+{
+  "num_envs": 1024,
+  "steps": 240,
+  "warmup": 48,
+  "checkpoint": "logs/rsl_rl/state_classroom/2026-10-14_00-18-58/model_3000.pt",
+  "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+  "video": false,
+  "nan_check": true,
+  "episode_log": true,
+  "seconds": 8.444365236908197,
+  "ms_per_step": 35.184855153784156,
+  "env_steps_per_second": 29103.430880256674,
+  "episode_ends": 40,
+  "python_profile": [
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/scripts/profile_classroom_sampling.py",
+      "line": 71,
+      "function": "run_steps",
+      "calls": 1,
+      "self_seconds": 0.000246999,
+      "cumulative_seconds": 4.737060375
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/scripts/profile_classroom_sampling.py",
+      "line": 59,
+      "function": "sample",
+      "calls": 96,
+      "self_seconds": 0.001135404,
+      "cumulative_seconds": 4.73677372
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/rl/vecenv_wrapper.py",
+      "line": 72,
+      "function": "step",
+      "calls": 96,
+      "self_seconds": 0.001337148,
+      "cumulative_seconds": 4.537933934000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/envs/manager_based_rl_env.py",
+      "line": 378,
+      "function": "step",
+      "calls": 96,
+      "self_seconds": 0.0057077180000000005,
+      "cumulative_seconds": 4.531382272
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/path_navigation.py",
+      "line": 84,
+      "function": "classroom_follow_state",
+      "calls": 2304,
+      "self_seconds": 0.214000771,
+      "cumulative_seconds": 1.270294465
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/command_manager.py",
+      "line": 249,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.000255346,
+      "cumulative_seconds": 0.915848725
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/command_manager.py",
+      "line": 109,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.0025843010000000002,
+      "cumulative_seconds": 0.9155769600000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/termination_manager.py",
+      "line": 102,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.011616912,
+      "cumulative_seconds": 0.863258178
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/scene/scene.py",
+      "line": 202,
+      "function": "write_data_to_sim",
+      "calls": 446,
+      "self_seconds": 0.004074526,
+      "cumulative_seconds": 0.816161427
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/entity.py",
+      "line": 852,
+      "function": "write_data_to_sim",
+      "calls": 16502,
+      "self_seconds": 0.004985871,
+      "cumulative_seconds": 0.8120361460000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/entity.py",
+      "line": 1268,
+      "function": "_apply_actuator_controls",
+      "calls": 16502,
+      "self_seconds": 0.025943004000000002,
+      "cumulative_seconds": 0.807050275
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/goal_command.py",
+      "line": 534,
+      "function": "_update_command",
+      "calls": 96,
+      "self_seconds": 0.033372646,
+      "cumulative_seconds": 0.719802956
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/path_navigation.py",
+      "line": 312,
+      "function": "classroom_navigation_update",
+      "calls": 96,
+      "self_seconds": 0.0063645690000000005,
+      "cumulative_seconds": 0.719476921
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/event_manager.py",
+      "line": 236,
+      "function": "apply",
+      "calls": 254,
+      "self_seconds": 0.017795159,
+      "cumulative_seconds": 0.633316819
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/goal_command.py",
+      "line": 380,
+      "function": "_update_path_goal",
+      "calls": 158,
+      "self_seconds": 0.13102639800000002,
+      "cumulative_seconds": 0.529168686
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/assets/robots/unitree_g1/unitree_actuators.py",
+      "line": 90,
+      "function": "compute",
+      "calls": 2676,
+      "self_seconds": 0.21646625700000002,
+      "cumulative_seconds": 0.49442739
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/observation_manager.py",
+      "line": 305,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.0006577810000000001,
+      "cumulative_seconds": 0.465235096
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/observation_history_ordering.py",
+      "line": 90,
+      "function": "compute_group",
+      "calls": 480,
+      "self_seconds": 0.002871105,
+      "cumulative_seconds": 0.46457731500000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/observation_manager.py",
+      "line": 320,
+      "function": "compute_group",
+      "calls": 480,
+      "self_seconds": 0.019883734,
+      "cumulative_seconds": 0.46152203700000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/reward_manager.py",
+      "line": 116,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.053655510000000003,
+      "cumulative_seconds": 0.453525964
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/envs/manager_based_rl_env.py",
+      "line": 553,
+      "function": "_reset_idx",
+      "calls": 62,
+      "self_seconds": 0.0030414030000000002,
+      "cumulative_seconds": 0.44611929800000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/classroom.py",
+      "line": 109,
+      "function": "extend_classroom_route",
+      "calls": 158,
+      "self_seconds": 0.082049909,
+      "cumulative_seconds": 0.286139127
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/assets/robots/unitree_g1/unitree_actuators.py",
+      "line": 137,
+      "function": "_clip_effort",
+      "calls": 2676,
+      "self_seconds": 0.07199925900000001,
+      "cumulative_seconds": 0.26471746100000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/events.py",
+      "line": 399,
+      "function": "throw_ball_on_dwell",
+      "calls": 96,
+      "self_seconds": 0.178887865,
+      "cumulative_seconds": 0.25567964400000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/walk_path.py",
+      "line": 216,
+      "function": "walk_path_query",
+      "calls": 948,
+      "self_seconds": 0.140537176,
+      "cumulative_seconds": 0.216553084
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sim/sim_data.py",
+      "line": 63,
+      "function": "__getitem__",
+      "calls": 33668,
+      "self_seconds": 0.21100157,
+      "cumulative_seconds": 0.21100157
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sim/sim_data.py",
+      "line": 67,
+      "function": "__setitem__",
+      "calls": 3878,
+      "self_seconds": 0.074015547,
+      "cumulative_seconds": 0.21048533100000003
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/path_navigation.py",
+      "line": 39,
+      "function": "_join_target",
+      "calls": 158,
+      "self_seconds": 0.032640815000000004,
+      "cumulative_seconds": 0.18738521700000002
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'nonzero' of 'torch._C.TensorBase' objects>",
+      "calls": 576,
+      "self_seconds": 0.17309396800000001,
+      "cumulative_seconds": 0.17309396800000001
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method torch.where>",
+      "calls": 24054,
+      "self_seconds": 0.164162934,
+      "cumulative_seconds": 0.164162934
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 191,
+      "function": "write_ctrl",
+      "calls": 2676,
+      "self_seconds": 0.026218372,
+      "cumulative_seconds": 0.160769456
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/classroom.py",
+      "line": 33,
+      "function": "reset_classroom_robot",
+      "calls": 62,
+      "self_seconds": 0.026837079000000003,
+      "cumulative_seconds": 0.14504697500000002
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/ball_region.py",
+      "line": 49,
+      "function": "ball_in_play",
+      "calls": 830,
+      "self_seconds": 0.045818734,
+      "cumulative_seconds": 0.141555966
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/assets/robots/unitree_g1/unitree_actuators.py",
+      "line": 151,
+      "function": "_compute_effort_limit",
+      "calls": 2676,
+      "self_seconds": 0.07990301400000001,
+      "cumulative_seconds": 0.12010584
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method torch.cat>",
+      "calls": 17526,
+      "self_seconds": 0.11768871800000001,
+      "cumulative_seconds": 0.11768871800000001
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method torch.tensor>",
+      "calls": 784,
+      "self_seconds": 0.11666748,
+      "cumulative_seconds": 0.11666748
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/assets/robots/unitree_g1/unitree_actuators.py",
+      "line": 113,
+      "function": "get_command",
+      "calls": 2676,
+      "self_seconds": 0.072755265,
+      "cumulative_seconds": 0.11571502600000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/scene/scene.py",
+      "line": 196,
+      "function": "update",
+      "calls": 384,
+      "self_seconds": 0.00725034,
+      "cumulative_seconds": 0.10893090000000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/classroom.py",
+      "line": 81,
+      "function": "_write_classroom_route",
+      "calls": 124,
+      "self_seconds": 0.013325987000000001,
+      "cumulative_seconds": 0.104525539
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/rewards.py",
+      "line": 714,
+      "function": "wall_link_cbf_reward",
+      "calls": 96,
+      "self_seconds": 0.01739011,
+      "cumulative_seconds": 0.103872262
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/rl/amp_algorithm.py",
+      "line": 132,
+      "function": "process_env_step",
+      "calls": 96,
+      "self_seconds": 0.002044545,
+      "cumulative_seconds": 0.10295894700000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sensor/contact_sensor.py",
+      "line": 367,
+      "function": "update",
+      "calls": 14208,
+      "self_seconds": 0.006587802,
+      "cumulative_seconds": 0.09571808600000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/cuda/_utils.py",
+      "line": 344,
+      "function": "_get_device_index",
+      "calls": 7757,
+      "self_seconds": 0.011020256,
+      "cumulative_seconds": 0.087163945
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/terminations.py",
+      "line": 117,
+      "function": "wall_contact",
+      "calls": 96,
+      "self_seconds": 0.035059854,
+      "cumulative_seconds": 0.08606984000000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/classroom.py",
+      "line": 193,
+      "function": "round_classroom_route",
+      "calls": 124,
+      "self_seconds": 0.047563859,
+      "cumulative_seconds": 0.085328076
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 244,
+      "function": "root_link_pose_w",
+      "calls": 5939,
+      "self_seconds": 0.017174492,
+      "cumulative_seconds": 0.08514047000000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/entity.py",
+      "line": 907,
+      "function": "write_root_link_velocity_to_sim",
+      "calls": 463,
+      "self_seconds": 0.0012479540000000001,
+      "cumulative_seconds": 0.079466903
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sensor/contact_sensor.py",
+      "line": 396,
+      "function": "_extract_sensor_data",
+      "calls": 4320,
+      "self_seconds": 0.019656926,
+      "cumulative_seconds": 0.079362867
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 447,
+      "function": "root_link_pos_w",
+      "calls": 4770,
+      "self_seconds": 0.012915395000000001,
+      "cumulative_seconds": 0.07839136000000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 105,
+      "function": "write_root_velocity",
+      "calls": 463,
+      "self_seconds": 0.034258005,
+      "cumulative_seconds": 0.07821894900000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 284,
+      "function": "body_link_pose_w",
+      "calls": 2208,
+      "self_seconds": 0.005967,
+      "cumulative_seconds": 0.07502265600000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/_utils.py",
+      "line": 831,
+      "function": "_get_device_index",
+      "calls": 7757,
+      "self_seconds": 0.008416538000000001,
+      "cumulative_seconds": 0.07307633300000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/path_navigation.py",
+      "line": 332,
+      "function": "classroom_path_follow_reward",
+      "calls": 96,
+      "self_seconds": 0.026083243000000002,
+      "cumulative_seconds": 0.072412209
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/observations.py",
+      "line": 50,
+      "function": "robot_body_ori_b",
+      "calls": 192,
+      "self_seconds": 0.020627898000000002,
+      "cumulative_seconds": 0.070777031
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/ball_region.py",
+      "line": 61,
+      "function": "hide_outside_classroom_ball",
+      "calls": 96,
+      "self_seconds": 0.019982713000000003,
+      "cumulative_seconds": 0.070697594
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/cuda/__init__.py",
+      "line": 661,
+      "function": "__enter__",
+      "calls": 3878,
+      "self_seconds": 0.005535391000000001,
+      "cumulative_seconds": 0.06898370200000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sensor/contact_sensor.py",
+      "line": 441,
+      "function": "_update_air_time_tracking",
+      "calls": 384,
+      "self_seconds": 0.036102038,
+      "cumulative_seconds": 0.065999658
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/observations.py",
+      "line": 28,
+      "function": "robot_body_pos_b",
+      "calls": 192,
+      "self_seconds": 0.012253807,
+      "cumulative_seconds": 0.064112346
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py",
+      "line": 1771,
+      "function": "_wrapped_call_impl",
+      "calls": 2688,
+      "self_seconds": 0.002071532,
+      "cumulative_seconds": 0.06397983900000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/nn/modules/module.py",
+      "line": 1779,
+      "function": "_call_impl",
+      "calls": 2688,
+      "self_seconds": 0.0034070750000000003,
+      "cumulative_seconds": 0.063558736
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/_utils.py",
+      "line": 805,
+      "function": "_get_current_device_index",
+      "calls": 7757,
+      "self_seconds": 0.002994009,
+      "cumulative_seconds": 0.062747089
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/rl/amp_algorithm.py",
+      "line": 126,
+      "function": "act",
+      "calls": 96,
+      "self_seconds": 0.000606782,
+      "cumulative_seconds": 0.062602986
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'clamp' of 'torch._C.TensorBase' objects>",
+      "calls": 11428,
+      "self_seconds": 0.061532509000000006,
+      "cumulative_seconds": 0.061532509000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/rsl_rl/algorithms/ppo.py",
+      "line": 115,
+      "function": "act",
+      "calls": 96,
+      "self_seconds": 0.0009005500000000001,
+      "cumulative_seconds": 0.059933076
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/_utils.py",
+      "line": 789,
+      "function": "_get_device_attr",
+      "calls": 7757,
+      "self_seconds": 0.006728095000000001,
+      "cumulative_seconds": 0.05975308000000001
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/cuda/__init__.py",
+      "line": 690,
+      "function": "stream",
+      "calls": 3878,
+      "self_seconds": 0.0024881820000000002,
+      "cumulative_seconds": 0.058752228000000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sensor/sensor.py",
+      "line": 95,
+      "function": "data",
+      "calls": 3936,
+      "self_seconds": 0.004260715,
+      "cumulative_seconds": 0.058365269000000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/cuda/__init__.py",
+      "line": 1099,
+      "function": "current_stream",
+      "calls": 3878,
+      "self_seconds": 0.007945246000000001,
+      "cumulative_seconds": 0.056817518000000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/functional.py",
+      "line": 1660,
+      "function": "norm",
+      "calls": 4891,
+      "self_seconds": 0.018339406000000003,
+      "cumulative_seconds": 0.056584704000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/command_manager.py",
+      "line": 117,
+      "function": "_resample",
+      "calls": 145,
+      "self_seconds": 0.005624334,
+      "cumulative_seconds": 0.056491824
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/cuda/__init__.py",
+      "line": 647,
+      "function": "__init__",
+      "calls": 3878,
+      "self_seconds": 0.005370846,
+      "cumulative_seconds": 0.056264046000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/utils/buffers/circular_buffer.py",
+      "line": 190,
+      "function": "append",
+      "calls": 1824,
+      "self_seconds": 0.03932428,
+      "cumulative_seconds": 0.054524299000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/rsl_rl/algorithms/ppo.py",
+      "line": 128,
+      "function": "process_env_step",
+      "calls": 96,
+      "self_seconds": 0.0024738580000000002,
+      "cumulative_seconds": 0.054490081
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/sensor/contact_sensor.py",
+      "line": 337,
+      "function": "_compute_data",
+      "calls": 3552,
+      "self_seconds": 0.0023573830000000002,
+      "cumulative_seconds": 0.054018939
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/goal_command.py",
+      "line": 133,
+      "function": "_update_command",
+      "calls": 96,
+      "self_seconds": 0.030696916,
+      "cumulative_seconds": 0.053054264000000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/rewards.py",
+      "line": 787,
+      "function": "<listcomp>",
+      "calls": 96,
+      "self_seconds": 0.002307352,
+      "cumulative_seconds": 0.051159621
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/_tensor.py",
+      "line": 859,
+      "function": "norm",
+      "calls": 4266,
+      "self_seconds": 0.0037531220000000002,
+      "cumulative_seconds": 0.050529326000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/goal_command.py",
+      "line": 360,
+      "function": "_resample_command",
+      "calls": 145,
+      "self_seconds": 0.0006062810000000001,
+      "cumulative_seconds": 0.049274619000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/rsl_rl/models/mlp_model.py",
+      "line": 82,
+      "function": "forward",
+      "calls": 192,
+      "self_seconds": 0.0008382680000000001,
+      "cumulative_seconds": 0.048934660000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/goal_command.py",
+      "line": 111,
+      "function": "_resample_command",
+      "calls": 145,
+      "self_seconds": 0.024541717,
+      "cumulative_seconds": 0.048668338000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/utils/buffers/circular_buffer.py",
+      "line": 161,
+      "function": "buffer",
+      "calls": 1824,
+      "self_seconds": 0.023153180000000002,
+      "cumulative_seconds": 0.048342115000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/rewards.py",
+      "line": 624,
+      "function": "dodge_link_cbf_reward",
+      "calls": 96,
+      "self_seconds": 0.007090107000000001,
+      "cumulative_seconds": 0.047805812
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'clone' of 'torch._C.TensorBase' objects>",
+      "calls": 7983,
+      "self_seconds": 0.047783113,
+      "cumulative_seconds": 0.047783113
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'abs' of 'torch._C.TensorBase' objects>",
+      "calls": 9008,
+      "self_seconds": 0.047381068000000005,
+      "cumulative_seconds": 0.047381068000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/envs/mdp/dr/geom.py",
+      "line": 250,
+      "function": "geom_size",
+      "calls": 62,
+      "self_seconds": 0.0008623740000000001,
+      "cumulative_seconds": 0.046775614
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/observations.py",
+      "line": 772,
+      "function": "dodge_ball_state_b",
+      "calls": 96,
+      "self_seconds": 0.015266284000000001,
+      "cumulative_seconds": 0.046479756000000004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 493,
+      "function": "body_link_quat_w",
+      "calls": 1248,
+      "self_seconds": 0.004232086,
+      "cumulative_seconds": 0.045732098000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/ball_region.py",
+      "line": 38,
+      "function": "ball_world_state",
+      "calls": 1022,
+      "self_seconds": 0.009973435000000001,
+      "cumulative_seconds": 0.042592330000000005
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/utils/lab_api/math.py",
+      "line": 832,
+      "function": "subtract_frame_transforms",
+      "calls": 384,
+      "self_seconds": 0.042375069,
+      "cumulative_seconds": 0.042511654
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/classroom.py",
+      "line": 151,
+      "function": "generate_classroom_route",
+      "calls": 62,
+      "self_seconds": 0.024407834000000003,
+      "cumulative_seconds": 0.042469419
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/metrics_manager.py",
+      "line": 107,
+      "function": "reset",
+      "calls": 62,
+      "self_seconds": 0.034646904,
+      "cumulative_seconds": 0.04209475
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 20,
+      "function": "compute_velocity_from_cvel",
+      "calls": 1299,
+      "self_seconds": 0.021069695000000003,
+      "cumulative_seconds": 0.041429451000000006
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 588,
+      "function": "heading_w",
+      "calls": 508,
+      "self_seconds": 0.027731506000000003,
+      "cumulative_seconds": 0.040701104
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/mdp/observations.py",
+      "line": 863,
+      "function": "dodge_obstacle_geometry_b",
+      "calls": 96,
+      "self_seconds": 0.014027111,
+      "cumulative_seconds": 0.040551004
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/src/tasks/amp_loco/rl/amp_discriminator.py",
+      "line": 70,
+      "function": "predict_amp_reward",
+      "calls": 96,
+      "self_seconds": 0.0039003170000000004,
+      "cumulative_seconds": 0.040406021
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<method 'clamp_min' of 'torch._C.TensorBase' objects>",
+      "calls": 8118,
+      "self_seconds": 0.040126597,
+      "cumulative_seconds": 0.040126597
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/torch/_utils.py",
+      "line": 772,
+      "function": "_get_available_device_type",
+      "calls": 7757,
+      "self_seconds": 0.0027670200000000002,
+      "cumulative_seconds": 0.037777943
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/managers/metrics_manager.py",
+      "line": 147,
+      "function": "compute",
+      "calls": 96,
+      "self_seconds": 0.020115994,
+      "cumulative_seconds": 0.037680536
+    },
+    {
+      "file": "/root/autodl-tmp/zxg/perceptive_cbf_rl/.venv/lib/python3.11/site-packages/mjlab/entity/data.py",
+      "line": 488,
+      "function": "body_link_pos_w",
+      "calls": 960,
+      "self_seconds": 0.003503008,
+      "cumulative_seconds": 0.037025652
+    },
+    {
+      "file": "~",
+      "line": 0,
+      "function": "<built-in method torch._C._linalg.linalg_vector_norm>",
+      "calls": 4891,
+      "self_seconds": 0.03644373,
+      "cumulative_seconds": 0.03644373
+    }
+  ]
+}

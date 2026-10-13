@@ -219,13 +219,18 @@ def test_body_backward_lateral_and_deviation_are_costs():
     assert reward(env, k_theta=0., k_join=0.).tolist() == pytest.approx([-.01, -.01])
 
 
-def test_reward_and_command_reads_are_idempotent_and_resets_are_per_env():
+@pytest.mark.parametrize('route_version', [None, 1])
+def test_reward_and_command_reads_are_idempotent_and_resets_are_per_env(route_version):
     command, env = follower((0., 120.))
+    if route_version is not None:
+        env._classroom_route_version = route_version
     advance(command, env, xy=[[.012, 0.], [0., 0.]], angles=[0., 110.])
     first = reward(env).clone()
     command._update_command()
     assert torch.equal(reward(env), first)
     env._walk_path_epoch[1] += 1
+    if route_version is not None:
+        env._classroom_route_version += 1
     command.robot.data.root_link_pos_w[1, 0] = 10.
     command.robot.data.heading_w[1] = 0.
     env._walk_path_pts[1] += torch.tensor([10., 0.])

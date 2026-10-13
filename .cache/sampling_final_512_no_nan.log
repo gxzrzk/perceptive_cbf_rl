@@ -1,0 +1,485 @@
+Setting seed: 42
+Warp 1.15.0 initialized:
+   CUDA Toolkit 12.9, Driver 13.0
+   Devices:
+     "cpu"      : "x86_64"
+     "cuda:0"   : "NVIDIA RTX PRO 6000 Blackwell Server Edition" (95 GiB, sm_120, mempool enabled)
+   Kernel cache:
+     /root/autodl-tmp/zxg/perceptive_cbf_rl/.cache/warp/1.15.0
+Module mujoco_warp._src.smooth c4020f1 load on device 'cuda:0' took 3.32 ms  (cached)
+Module _nxn_broadphase__locals__kernel_cd21dc9b cd21dc9 load on device 'cuda:0' took 0.45 ms  (cached)
+Module _primitive_narrowphase__locals__primitive_narrowphase_a35075ae a35075a load on device 'cuda:0' took 1.16 ms  (cached)
+Module mujoco_warp._src.constraint 36c8060 load on device 'cuda:0' took 0.41 ms  (cached)
+Module _friction_dof__locals__kernel_3de76fad 3de76fa load on device 'cuda:0' took 0.51 ms  (cached)
+Module _limit_slide_hinge__locals__kernel_b25a8d13 b25a8d1 load on device 'cuda:0' took 0.51 ms  (cached)
+Module _efc_contact_init__locals__kernel_6e7f298a 6e7f298 load on device 'cuda:0' took 0.50 ms  (cached)
+Module _efc_contact_jac_sparse__locals__kernel_a80bb5e9 a80bb5e load on device 'cuda:0' took 0.51 ms  (cached)
+Module _efc_contact_update__locals__kernel_2d2d1a29 2d2d1a2 load on device 'cuda:0' took 0.51 ms  (cached)
+Module mujoco_warp._src.forward bfd9fb5 load on device 'cuda:0' took 1.38 ms  (cached)
+Module mujoco_warp._src.passive d8c18c6 load on device 'cuda:0' took 1.44 ms  (cached)
+Module mujoco_warp._src.sensor de892d8 load on device 'cuda:0' took 2.55 ms  (cached)
+Module mujoco_warp._src.forward b068ad6 load on device 'cuda:0' took 1.31 ms  (cached)
+Module _qfrc_smooth__locals__kernel_3ac7164a 3ac7164 load on device 'cuda:0' took 0.41 ms  (cached)
+Module mujoco_warp._src.support ca784c5 load on device 'cuda:0' took 0.43 ms  (cached)
+Module _small_cholesky_factorize_solve_block__locals__kernel_2e80fc98 00039f8 load on device 'cuda:0' took 0.47 ms  (cached)
+Module _tile_cholesky_factorize_solve_block__locals__kernel_6a90e1e3 40a293f load on device 'cuda:0' took 33.58 ms  (cached)
+Module _solve_init_dof__locals__kernel_293c86d1 293c86d load on device 'cuda:0' took 0.41 ms  (cached)
+Module mujoco_warp._src.solver 3a105a0 load on device 'cuda:0' took 1.92 ms  (cached)
+Module _solve_init_jaref_kernel__locals__kernel_f40da821 f40da82 load on device 'cuda:0' took 0.43 ms  (cached)
+Module mul_m_kernel__locals___mul_m_4f80c25f 4f80c25 load on device 'cuda:0' took 0.42 ms  (cached)
+Module _update_constraint_efc__locals__kernel_7b921a6e 7b921a6 load on device 'cuda:0' took 0.65 ms  (cached)
+Module _update_constraint_init_qfrc_constraint_sparse__locals__kernel_65a5704f 65a5704 load on device 'cuda:0' took 0.44 ms  (cached)
+Module _update_gradient_zero_grad_dot__locals__kernel_ca4acd13 ca4acd1 load on device 'cuda:0' took 0.40 ms  (cached)
+Module _update_gradient_grad__locals__kernel_9e296ebd 9e296eb load on device 'cuda:0' took 0.40 ms  (cached)
+Module _update_gradient_init_h_sparse__locals__kernel_864e53b1 864e53b load on device 'cuda:0' took 0.42 ms  (cached)
+Module _JTDAJ_sparse__locals__kernel_66cd2906 66cd290 load on device 'cuda:0' took 0.44 ms  (cached)
+Module _JTDAJ_sparse__locals__kernel_66cd2906 f4ed9da load on device 'cuda:0' took 0.41 ms  (cached)
+Module _update_gradient_cholesky_blocked__locals__kernel_3d04bf37 1772c00 load on device 'cuda:0' took 78.89 ms  (cached)
+Module _linesearch_jv_fused_kernel__locals__kernel_5ee57985 5ee5798 load on device 'cuda:0' took 0.50 ms  (cached)
+Module _linesearch_iterative_kernel__locals__kernel_a612bcb6 3daf78d load on device 'cuda:0' took 0.74 ms  (cached)
+Module _update_constraint_efc__locals__kernel_ddea4c95 ddea4c9 load on device 'cuda:0' took 0.48 ms  (cached)
+Module _update_gradient_zero_grad_dot__locals__kernel_819fe036 819fe03 load on device 'cuda:0' took 0.45 ms  (cached)
+Module _update_gradient_grad__locals__kernel_af49475a af49475 load on device 'cuda:0' took 0.41 ms  (cached)
+Module _update_gradient_h_incremental_sparse__locals__kernel_b9225d2d b9225d2 load on device 'cuda:0' took 0.43 ms  (cached)
+Module _update_gradient_cholesky_blocked_skip_unchanged__locals__kernel_4bdbfec7 014f672 load on device 'cuda:0' took 86.60 ms  (cached)
+Module _contact_sort__locals__contact_sort_f4939e9b 293508e load on device 'cuda:0' took 0.60 ms  (cached)
+Module mujoco_warp._src.derivative 833f5d0 load on device 'cuda:0' took 1.13 ms  (cached)
+Module _next_time_builder__locals___next_time_8c8bbcbc 8c8bbcb load on device 'cuda:0' took 0.47 ms  (cached)
+Module reset_data__locals__reset_xfrc_applied_aec370af aec370a load on device 'cuda:0' took 0.43 ms  (cached)
+Module reset_data__locals__reset_M_96396a8d 96396a8 load on device 'cuda:0' took 0.37 ms  (cached)
+Module reset_data__locals__reset_mocap_b321694c b321694 load on device 'cuda:0' took 0.37 ms  (cached)
+Module reset_data__locals__reset_contact_88cd7446 88cd744 load on device 'cuda:0' took 0.38 ms  (cached)
+Module reset_data__locals__reset_sleep_1c5b28e7 1c5b28e load on device 'cuda:0' took 0.37 ms  (cached)
+Module reset_data__locals__reset_nworld_1ba8fb6e 1ba8fb6 load on device 'cuda:0' took 0.47 ms  (cached)
+
++---------------------------------+
+|         Base Environment        |
++------------------------+--------+
+| Property               | Value  |
++------------------------+--------+
+| Number of environments | 512    |
+| Environment device     | cuda:0 |
+| Environment seed       | 42     |
+| Physics step-size      | 0.005  |
+| Environment step-size  | 0.02   |
++------------------------+--------+
+
+[INFO] <EventManager> contains 4 active terms.
++---------------------------------------+
+| Active Event Terms in Mode: 'startup' |
++-------+-------------------------------+
+| Index | Name                          |
++-------+-------------------------------+
+|   0   | init_motion_loader            |
+|   1   | foot_friction                 |
+|   2   | encoder_bias                  |
+|   3   | base_com                      |
+|   4   | initialize_static_classroom   |
++-------+-------------------------------+
++-------------------------------------+
+| Active Event Terms in Mode: 'reset' |
++--------+----------------------------+
+| Index  | Name                       |
++--------+----------------------------+
+|   0    | reset_from_motion          |
+|   1    | reset_dodge_state          |
+|   2    | randomize_ball_size        |
+|   3    | reset_walk_path            |
++--------+----------------------------+
++----------------------------------------------+
+|    Active Event Terms in Mode: 'interval'    |
++-------+------------+-------------------------+
+| Index | Name       | Interval time range (s) |
++-------+------------+-------------------------+
+|   0   | push_robot |        (1.0, 3.0)       |
++-------+------------+-------------------------+
++-----------------------------------------+
+|    Active Event Terms in Mode: 'step'   |
++-------+---------------------------------+
+| Index | Name                            |
++-------+---------------------------------+
+|   0   | classroom_throw_interval_update |
+|   1   | throw_ball_on_dwell             |
+|   2   | hide_outside_classroom_ball     |
++-------+---------------------------------+
++-----------------------------+
+| Domain Randomization Fields |
++-------+---------------------+
+| Index | Field Name          |
++-------+---------------------+
+|   0   | geom_friction       |
+|   1   | body_ipos           |
+|   2   | body_subtreemass    |
+|   3   | dof_invweight0      |
+|   4   | body_invweight0     |
+|   5   | tendon_length0      |
+|   6   | tendon_invweight0   |
+|   7   | actuator_acc0       |
+|   8   | geom_size           |
+|   9   | geom_rbound         |
+|   10  | geom_aabb           |
++-------+---------------------+
+
+Module repeat_array_kernel_f3ffbc3f f56645b load on device 'cuda:0' took 0.51 ms  (cached)
+Module repeat_array_kernel_f3ffbc3f 43f7a6f load on device 'cuda:0' took 0.47 ms  (cached)
+Module repeat_array_kernel_f3ffbc3f a5b1dbd load on device 'cuda:0' took 0.50 ms  (cached)
+Module _nxn_broadphase__locals__kernel_a5b5e632 a5b5e63 load on device 'cuda:0' took 0.51 ms  (cached)
+[INFO] <CommandManager> contains 1 active terms.
++--------------------------------------+
+|         Active Command Terms         |
++-------+-------+----------------------+
+| Index | Name  |         Type         |
++-------+-------+----------------------+
+|   0   | twist | DodgeGoToGoalCommand |
++-------+-------+----------------------+
+
+[INFO] <ActionManager> contains 1 active terms.
++---------------------------------+
+| Active Action Terms (shape: 29) |
++-------+-----------+-------------+
+| Index | Name      |   Dimension |
++-------+-----------+-------------+
+|   0   | joint_pos |          29 |
++-------+-----------+-------------+
+
+[INFO] <ObservationManager> contains 5 groups.
++------------------------------------------------------------+
+| Active Observation Terms in Group: 'actor' (shape: (384,)) |
++--------+------------------------+--------------------------+
+| Index  | Name                   |          Shape           |
++--------+------------------------+--------------------------+
+|   0    | base_ang_vel           |     (12,)  ← 4×(3,)      |
+|   1    | projected_gravity      |     (12,)  ← 4×(3,)      |
+|   2    | command                |     (12,)  ← 4×(3,)      |
+|   3    | joint_pos              |    (116,)  ← 4×(29,)     |
+|   4    | joint_vel              |    (116,)  ← 4×(29,)     |
+|   5    | actions                |    (116,)  ← 4×(29,)     |
++--------+------------------------+--------------------------+
++-------------------------------------------------------------+
+| Active Observation Terms in Group: 'critic' (shape: (864,)) |
++--------+-------------------------+--------------------------+
+| Index  | Name                    |          Shape           |
++--------+-------------------------+--------------------------+
+|   0    | base_ang_vel            |     (12,)  ← 4×(3,)      |
+|   1    | projected_gravity       |     (12,)  ← 4×(3,)      |
+|   2    | command                 |     (12,)  ← 4×(3,)      |
+|   3    | joint_pos               |    (116,)  ← 4×(29,)     |
+|   4    | joint_vel               |    (116,)  ← 4×(29,)     |
+|   5    | actions                 |    (116,)  ← 4×(29,)     |
+|   6    | base_lin_vel            |     (12,)  ← 4×(3,)      |
+|   7    | body_pos_b              |    (156,)  ← 4×(39,)     |
+|   8    | body_ori_b              |    (312,)  ← 4×(78,)     |
++--------+-------------------------+--------------------------+
++----------------------------------------------------------+
+| Active Observation Terms in Group: 'amp' (shape: (195,)) |
++---------+----------------------+-------------------------+
+|  Index  | Name                 |          Shape          |
++---------+----------------------+-------------------------+
+|    0    | body_pos_b           |     (39,)  ← 1×(39,)    |
+|    1    | body_ori_b           |     (78,)  ← 1×(78,)    |
+|    2    | body_lin_vel_b       |     (39,)  ← 1×(39,)    |
+|    3    | body_ang_vel_b       |     (39,)  ← 1×(39,)    |
++---------+----------------------+-------------------------+
++----------------------------------------------------------------+
+| Active Observation Terms in Group: 'ball_state' (shape: (78,)) |
++----------------+------------------------------+----------------+
+|     Index      | Name                         |     Shape      |
++----------------+------------------------------+----------------+
+|       0        | ball_state                   |      (6,)      |
+|       1        | wall_state                   |     (72,)      |
++----------------+------------------------------+----------------+
++---------------------------------------------------------------------+
+| Active Observation Terms in Group: 'path_navigation' (shape: (14,)) |
++-----------------+--------------------------------+------------------+
+|      Index      | Name                           |      Shape       |
++-----------------+--------------------------------+------------------+
+|        0        | navigation                     |      (14,)       |
++-----------------+--------------------------------+------------------+
+
+[INFO] <TerminationManager> contains 7 active terms.
++--------------------------------------+
+|       Active Termination Terms       |
++-------+-------------------+----------+
+| Index | Name              | Time Out |
++-------+-------------------+----------+
+|   0   | time_out          |   True   |
+|   1   | bad_orientation   |  False   |
+|   2   | bad_base_height   |  False   |
+|   3   | collapsed_crouch  |  False   |
+|   4   | ball_hit          |  False   |
+|   5   | wall_hit          |  False   |
+|   6   | navigation_update |  False   |
++-------+-------------------+----------+
+
+[INFO] <RewardManager> contains 15 active terms.
++--------------------------------------------------+
+|               Active Reward Terms                |
++-------+-------------------------------+----------+
+| Index | Name                          |   Weight |
++-------+-------------------------------+----------+
+|   0   | track_anchor_linear_velocity  |      1.0 |
+|   1   | track_anchor_angular_velocity |      0.5 |
+|   2   | body_ang_vel_xy_l2            |      0.5 |
+|   3   | is_terminated                 |     -1.0 |
+|   4   | joint_acc_l2                  | -2.5e-07 |
+|   5   | joint_pos_limits              |    -10.0 |
+|   6   | action_rate_l2                |    -0.01 |
+|   7   | foot_slip                     |    -0.25 |
+|   8   | self_collisions               |     -0.1 |
+|   9   | mimickit_dodge                |      1.0 |
+|   10  | dodge_link_cbf                |     0.27 |
+|   11  | dodge_sidestep                |      0.0 |
+|   12  | wall_link_cbf                 |      0.3 |
+|   13  | classroom_path_follow         |      1.0 |
+|   14  | classroom_safe_completion     |      1.0 |
++-------+-------------------------------+----------+
+
+[INFO] <CurriculumManager> contains 2 active terms.
++----------------------------------+
+|     Active Curriculum Terms      |
++-------+--------------------------+
+| Index | Name                     |
++-------+--------------------------+
+|   0   | goal_radius              |
+|   1   | classroom_throw_interval |
++-------+--------------------------+
+
+[INFO] <MetricsManager> contains 21 active terms.
++------------------------------------------+
+|           Active Metrics Terms           |
++-------+----------------------------------+
+| Index | Name                             |
++-------+----------------------------------+
+|   0   | mean_action_acc                  |
+|   1   | mean_delay_steps                 |
+|   2   | navigation/phase                 |
+|   3   | navigation/theta                 |
+|   4   | navigation/distance              |
+|   5   | navigation/speed                 |
+|   6   | navigation/command_speed         |
+|   7   | navigation/recovery_age          |
+|   8   | navigation/turn_bank             |
+|   9   | navigation/join_bank             |
+|   10  | navigation/reward_turn           |
+|   11  | navigation/reward_join           |
+|   12  | navigation/reward_forward        |
+|   13  | navigation/reward_retreat        |
+|   14  | navigation/reward_body_backward  |
+|   15  | navigation/reward_lateral        |
+|   16  | navigation/reward_deviation      |
+|   17  | navigation/reward_turn_stall     |
+|   18  | navigation/reward_join_stall     |
+|   19  | navigation/reward_follow_stall   |
+|   20  | navigation/reward_recovery_stall |
++-------+----------------------------------+
+
+[INFO] <NullRecorderManager> (inactive)
+[MotionResetManager] Loaded 64 clips, 33634 frames from /root/autodl-tmp/zxg/perceptive_cbf_rl/src/assets/motions/g1/amp_classroom
+Module mujoco_warp._src.io 466491b load on device 'cuda:0' took 2.11 ms  (cached)
+Module _small_cholesky_factorize_block__locals__kernel_e31ae7f6 bed69c6 load on device 'cuda:0' took 0.53 ms  (cached)
+Module _tile_cholesky_factorize_block__locals__kernel_19fc5f1b 2df9bf3 load on device 'cuda:0' took 26.93 ms  (cached)
+Module _small_cholesky_solve_block__locals__kernel_2df83fc3 186adb8 load on device 'cuda:0' took 0.46 ms  (cached)
+Module _tile_cholesky_solve_block__locals__kernel_c8336212 4cdd7dc load on device 'cuda:0' took 26.05 ms  (cached)
+--------------------------------------------------------------------------------
+Resolved observation sets: 
+	 actor :  ('actor', 'ball_state', 'path_navigation')
+	 critic :  ('critic', 'ball_state', 'path_navigation')
+--------------------------------------------------------------------------------
+Actor Model: MLPModel(
+  (obs_normalizer): EmpiricalNormalization()
+  (distribution): GaussianDistribution()
+  (mlp): MLP(
+    (0): Linear(in_features=476, out_features=512, bias=True)
+    (1): ELU(alpha=1.0)
+    (2): Linear(in_features=512, out_features=256, bias=True)
+    (3): ELU(alpha=1.0)
+    (4): Linear(in_features=256, out_features=128, bias=True)
+    (5): ELU(alpha=1.0)
+    (6): Linear(in_features=128, out_features=29, bias=True)
+  )
+)
+Critic Model: MLPModel(
+  (obs_normalizer): EmpiricalNormalization()
+  (mlp): MLP(
+    (0): Linear(in_features=956, out_features=512, bias=True)
+    (1): ELU(alpha=1.0)
+    (2): Linear(in_features=512, out_features=256, bias=True)
+    (3): ELU(alpha=1.0)
+    (4): Linear(in_features=256, out_features=128, bias=True)
+    (5): ELU(alpha=1.0)
+    (6): Linear(in_features=128, out_features=1, bias=True)
+  )
+)
+Processing motion 1/64: arc_jog_left_loop_002__A029
+Preloading AMP data for arc_jog_left_loop_002__A029:   0%|          | 0/345 [00:00<?, ?it/s]Preloading AMP data for arc_jog_left_loop_002__A029:   1%|          | 2/345 [00:00<00:55,  6.18it/s]Preloading AMP data for arc_jog_left_loop_002__A029:  77%|███████▋  | 264/345 [00:00<00:00, 806.31it/s]Preloading AMP data for arc_jog_left_loop_002__A029: 100%|██████████| 345/345 [00:00<00:00, 757.98it/s]
+Processing motion 2/64: arc_walk_left_loop_001__A029
+Preloading AMP data for arc_walk_left_loop_001__A029:   0%|          | 0/621 [00:00<?, ?it/s]Preloading AMP data for arc_walk_left_loop_001__A029:  42%|████▏     | 258/621 [00:00<00:00, 2579.39it/s]Preloading AMP data for arc_walk_left_loop_001__A029:  83%|████████▎ | 518/621 [00:00<00:00, 2587.81it/s]Preloading AMP data for arc_walk_left_loop_001__A029: 100%|██████████| 621/621 [00:00<00:00, 2584.44it/s]
+Processing motion 3/64: arc_walk_left_slow_001
+Preloading AMP data for arc_walk_left_slow_001:   0%|          | 0/1987 [00:00<?, ?it/s]Preloading AMP data for arc_walk_left_slow_001:  13%|█▎        | 252/1987 [00:00<00:00, 2518.86it/s]Preloading AMP data for arc_walk_left_slow_001:  26%|██▌       | 519/1987 [00:00<00:00, 2606.92it/s]Preloading AMP data for arc_walk_left_slow_001:  40%|███▉      | 787/1987 [00:00<00:00, 2636.63it/s]Preloading AMP data for arc_walk_left_slow_001:  53%|█████▎    | 1053/1987 [00:00<00:00, 2645.46it/s]Preloading AMP data for arc_walk_left_slow_001:  66%|██████▋   | 1318/1987 [00:00<00:00, 2620.45it/s]Preloading AMP data for arc_walk_left_slow_001:  80%|███████▉  | 1582/1987 [00:00<00:00, 2624.53it/s]Preloading AMP data for arc_walk_left_slow_001:  93%|█████████▎| 1845/1987 [00:00<00:00, 2615.34it/s]Preloading AMP data for arc_walk_left_slow_001: 100%|██████████| 1987/1987 [00:00<00:00, 2616.71it/s]
+Processing motion 4/64: arc_walk_right_slow_001
+Preloading AMP data for arc_walk_right_slow_001:   0%|          | 0/1987 [00:00<?, ?it/s]Preloading AMP data for arc_walk_right_slow_001:  13%|█▎        | 262/1987 [00:00<00:00, 2614.55it/s]Preloading AMP data for arc_walk_right_slow_001:  26%|██▋       | 525/1987 [00:00<00:00, 2621.00it/s]Preloading AMP data for arc_walk_right_slow_001:  40%|███▉      | 788/1987 [00:00<00:00, 2603.24it/s]Preloading AMP data for arc_walk_right_slow_001:  53%|█████▎    | 1051/1987 [00:00<00:00, 2611.98it/s]Preloading AMP data for arc_walk_right_slow_001:  66%|██████▌   | 1313/1987 [00:00<00:00, 2598.42it/s]Preloading AMP data for arc_walk_right_slow_001:  79%|███████▉  | 1573/1987 [00:00<00:00, 2575.08it/s]Preloading AMP data for arc_walk_right_slow_001:  92%|█████████▏| 1837/1987 [00:00<00:00, 2593.80it/s]Preloading AMP data for arc_walk_right_slow_001: 100%|██████████| 1987/1987 [00:00<00:00, 2597.40it/s]
+Processing motion 5/64: ib_dodge_270_R_001__A437
+Preloading AMP data for ib_dodge_270_R_001__A437:   0%|          | 0/194 [00:00<?, ?it/s]Preloading AMP data for ib_dodge_270_R_001__A437: 100%|██████████| 194/194 [00:00<00:00, 2616.66it/s]
+Processing motion 6/64: ib_dodge_270_R_003__A437
+Preloading AMP data for ib_dodge_270_R_003__A437:   0%|          | 0/185 [00:00<?, ?it/s]Preloading AMP data for ib_dodge_270_R_003__A437: 100%|██████████| 185/185 [00:00<00:00, 2553.34it/s]
+Processing motion 7/64: ib_dodge_back_L_001__A437
+Preloading AMP data for ib_dodge_back_L_001__A437:   0%|          | 0/330 [00:00<?, ?it/s]Preloading AMP data for ib_dodge_back_L_001__A437:  80%|███████▉  | 263/330 [00:00<00:00, 2627.85it/s]Preloading AMP data for ib_dodge_back_L_001__A437: 100%|██████████| 330/330 [00:00<00:00, 2620.50it/s]
+Processing motion 8/64: ib_dodge_back_L_002__A437
+Preloading AMP data for ib_dodge_back_L_002__A437:   0%|          | 0/193 [00:00<?, ?it/s]Preloading AMP data for ib_dodge_back_L_002__A437: 100%|██████████| 193/193 [00:00<00:00, 2614.04it/s]
+Processing motion 9/64: ib_dodge_down_L_002__A437
+Preloading AMP data for ib_dodge_down_L_002__A437:   0%|          | 0/171 [00:00<?, ?it/s]Preloading AMP data for ib_dodge_down_L_002__A437: 100%|██████████| 171/171 [00:00<00:00, 2598.97it/s]
+Processing motion 10/64: idle_turn_270_001__A048
+Preloading AMP data for idle_turn_270_001__A048:   0%|          | 0/298 [00:00<?, ?it/s]Preloading AMP data for idle_turn_270_001__A048:  86%|████████▌ | 256/298 [00:00<00:00, 2559.53it/s]Preloading AMP data for idle_turn_270_001__A048: 100%|██████████| 298/298 [00:00<00:00, 2531.77it/s]
+Processing motion 11/64: idle_turn_360_001__A047
+Preloading AMP data for idle_turn_360_001__A047:   0%|          | 0/371 [00:00<?, ?it/s]Preloading AMP data for idle_turn_360_001__A047:  64%|██████▍   | 238/371 [00:00<00:00, 2370.47it/s]Preloading AMP data for idle_turn_360_001__A047: 100%|██████████| 371/371 [00:00<00:00, 2352.01it/s]
+Processing motion 12/64: jog_arc_cw_loop_004__A045
+Preloading AMP data for jog_arc_cw_loop_004__A045:   0%|          | 0/443 [00:00<?, ?it/s]Preloading AMP data for jog_arc_cw_loop_004__A045:  53%|█████▎    | 236/443 [00:00<00:00, 2359.01it/s]Preloading AMP data for jog_arc_cw_loop_004__A045: 100%|██████████| 443/443 [00:00<00:00, 2387.19it/s]
+Processing motion 13/64: jog_backward_loop_002__A022
+Preloading AMP data for jog_backward_loop_002__A022:   0%|          | 0/287 [00:00<?, ?it/s]Preloading AMP data for jog_backward_loop_002__A022:  89%|████████▉ | 255/287 [00:00<00:00, 2542.01it/s]Preloading AMP data for jog_backward_loop_002__A022: 100%|██████████| 287/287 [00:00<00:00, 2535.92it/s]
+Processing motion 14/64: jog_backward_loop_003__A023
+Preloading AMP data for jog_backward_loop_003__A023:   0%|          | 0/285 [00:00<?, ?it/s]Preloading AMP data for jog_backward_loop_003__A023:  83%|████████▎ | 236/285 [00:00<00:00, 2356.37it/s]Preloading AMP data for jog_backward_loop_003__A023: 100%|██████████| 285/285 [00:00<00:00, 2341.63it/s]
+Processing motion 15/64: jog_forward_loop_003__A021
+Preloading AMP data for jog_forward_loop_003__A021:   0%|          | 0/401 [00:00<?, ?it/s]Preloading AMP data for jog_forward_loop_003__A021:  59%|█████▉    | 237/401 [00:00<00:00, 2366.48it/s]Preloading AMP data for jog_forward_loop_003__A021: 100%|██████████| 401/401 [00:00<00:00, 2405.04it/s]
+Processing motion 16/64: jog_forward_loop_003__A022
+Preloading AMP data for jog_forward_loop_003__A022:   0%|          | 0/286 [00:00<?, ?it/s]Preloading AMP data for jog_forward_loop_003__A022:  92%|█████████▏| 262/286 [00:00<00:00, 2616.42it/s]Preloading AMP data for jog_forward_loop_003__A022: 100%|██████████| 286/286 [00:00<00:00, 2611.56it/s]
+Processing motion 17/64: jump_backward_001__A033
+Preloading AMP data for jump_backward_001__A033:   0%|          | 0/72 [00:00<?, ?it/s]Preloading AMP data for jump_backward_001__A033: 100%|██████████| 72/72 [00:00<00:00, 2603.54it/s]
+Processing motion 18/64: jump_backward_002__A041
+Preloading AMP data for jump_backward_002__A041:   0%|          | 0/103 [00:00<?, ?it/s]Preloading AMP data for jump_backward_002__A041: 100%|██████████| 103/103 [00:00<00:00, 2564.62it/s]
+Processing motion 19/64: jump_backward_002__A041_M
+Preloading AMP data for jump_backward_002__A041_M:   0%|          | 0/103 [00:00<?, ?it/s]Preloading AMP data for jump_backward_002__A041_M: 100%|██████████| 103/103 [00:00<00:00, 2524.99it/s]
+Processing motion 20/64: jump_backward_002__A042
+Preloading AMP data for jump_backward_002__A042:   0%|          | 0/125 [00:00<?, ?it/s]Preloading AMP data for jump_backward_002__A042: 100%|██████████| 125/125 [00:00<00:00, 2594.80it/s]
+Processing motion 21/64: jump_backward_002__A043
+Preloading AMP data for jump_backward_002__A043:   0%|          | 0/128 [00:00<?, ?it/s]Preloading AMP data for jump_backward_002__A043: 100%|██████████| 128/128 [00:00<00:00, 2606.64it/s]
+Processing motion 22/64: jump_forward_001__A041
+Preloading AMP data for jump_forward_001__A041:   0%|          | 0/119 [00:00<?, ?it/s]Preloading AMP data for jump_forward_001__A041: 100%|██████████| 119/119 [00:00<00:00, 2583.69it/s]
+Processing motion 23/64: jump_forward_001__A041_M
+Preloading AMP data for jump_forward_001__A041_M:   0%|          | 0/119 [00:00<?, ?it/s]Preloading AMP data for jump_forward_001__A041_M: 100%|██████████| 119/119 [00:00<00:00, 2595.13it/s]
+Processing motion 24/64: jump_forward_001__A042
+Preloading AMP data for jump_forward_001__A042:   0%|          | 0/120 [00:00<?, ?it/s]Preloading AMP data for jump_forward_001__A042: 100%|██████████| 120/120 [00:00<00:00, 2567.27it/s]
+Processing motion 25/64: jump_forward_001__A043
+Preloading AMP data for jump_forward_001__A043:   0%|          | 0/125 [00:00<?, ?it/s]Preloading AMP data for jump_forward_001__A043: 100%|██████████| 125/125 [00:00<00:00, 2518.51it/s]
+Processing motion 26/64: jump_left_001__A041
+Preloading AMP data for jump_left_001__A041:   0%|          | 0/98 [00:00<?, ?it/s]Preloading AMP data for jump_left_001__A041: 100%|██████████| 98/98 [00:00<00:00, 2200.45it/s]
+Processing motion 27/64: jump_left_001__A041_M
+Preloading AMP data for jump_left_001__A041_M:   0%|          | 0/98 [00:00<?, ?it/s]Preloading AMP data for jump_left_001__A041_M: 100%|██████████| 98/98 [00:00<00:00, 2292.24it/s]
+Processing motion 28/64: jump_left_001__A042
+Preloading AMP data for jump_left_001__A042:   0%|          | 0/110 [00:00<?, ?it/s]Preloading AMP data for jump_left_001__A042: 100%|██████████| 110/110 [00:00<00:00, 2324.48it/s]
+Processing motion 29/64: jump_left_001__A042_M
+Preloading AMP data for jump_left_001__A042_M:   0%|          | 0/110 [00:00<?, ?it/s]Preloading AMP data for jump_left_001__A042_M: 100%|██████████| 110/110 [00:00<00:00, 2361.22it/s]
+Processing motion 30/64: jump_sideway_045_001__A041
+Preloading AMP data for jump_sideway_045_001__A041:   0%|          | 0/140 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_045_001__A041: 100%|██████████| 140/140 [00:00<00:00, 2393.72it/s]
+Processing motion 31/64: jump_sideway_045_001__A041_M
+Preloading AMP data for jump_sideway_045_001__A041_M:   0%|          | 0/140 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_045_001__A041_M: 100%|██████████| 140/140 [00:00<00:00, 2483.56it/s]
+Processing motion 32/64: jump_sideway_090_001__A021
+Preloading AMP data for jump_sideway_090_001__A021:   0%|          | 0/88 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_090_001__A021: 100%|██████████| 88/88 [00:00<00:00, 2440.29it/s]
+Processing motion 33/64: jump_sideway_090_001__A021_M
+Preloading AMP data for jump_sideway_090_001__A021_M:   0%|          | 0/88 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_090_001__A021_M: 100%|██████████| 88/88 [00:00<00:00, 2602.37it/s]
+Processing motion 34/64: jump_sideway_135_003__A041
+Preloading AMP data for jump_sideway_135_003__A041:   0%|          | 0/101 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_135_003__A041: 100%|██████████| 101/101 [00:00<00:00, 2534.93it/s]
+Processing motion 35/64: jump_sideway_135_003__A041_M
+Preloading AMP data for jump_sideway_135_003__A041_M:   0%|          | 0/103 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_135_003__A041_M: 100%|██████████| 103/103 [00:00<00:00, 2598.25it/s]
+Processing motion 36/64: jump_sideway_135_004__A033
+Preloading AMP data for jump_sideway_135_004__A033:   0%|          | 0/70 [00:00<?, ?it/s]Preloading AMP data for jump_sideway_135_004__A033: 100%|██████████| 70/70 [00:00<00:00, 2626.32it/s]
+Processing motion 37/64: one_leg_idle_R_002__A533
+Preloading AMP data for one_leg_idle_R_002__A533:   0%|          | 0/573 [00:00<?, ?it/s]Preloading AMP data for one_leg_idle_R_002__A533:  46%|████▌     | 265/573 [00:00<00:00, 2643.42it/s]Preloading AMP data for one_leg_idle_R_002__A533:  92%|█████████▏| 530/573 [00:00<00:00, 2508.73it/s]Preloading AMP data for one_leg_idle_R_002__A533: 100%|██████████| 573/573 [00:00<00:00, 2516.18it/s]
+Processing motion 38/64: one_leg_idle_R_002__A533_M
+Preloading AMP data for one_leg_idle_R_002__A533_M:   0%|          | 0/573 [00:00<?, ?it/s]Preloading AMP data for one_leg_idle_R_002__A533_M:  43%|████▎     | 245/573 [00:00<00:00, 2442.21it/s]Preloading AMP data for one_leg_idle_R_002__A533_M:  86%|████████▋ | 495/573 [00:00<00:00, 2475.31it/s]Preloading AMP data for one_leg_idle_R_002__A533_M: 100%|██████████| 573/573 [00:00<00:00, 2448.92it/s]
+Processing motion 39/64: step_rotate_idle_000_002__A026
+Preloading AMP data for step_rotate_idle_000_002__A026:   0%|          | 0/260 [00:00<?, ?it/s]Preloading AMP data for step_rotate_idle_000_002__A026:  96%|█████████▌| 250/260 [00:00<00:00, 2498.95it/s]Preloading AMP data for step_rotate_idle_000_002__A026: 100%|██████████| 260/260 [00:00<00:00, 2486.87it/s]
+Processing motion 40/64: step_rotate_idle_slow_001
+Preloading AMP data for step_rotate_idle_slow_001:   0%|          | 0/391 [00:00<?, ?it/s]Preloading AMP data for step_rotate_idle_slow_001:  64%|██████▍   | 251/391 [00:00<00:00, 2498.95it/s]Preloading AMP data for step_rotate_idle_slow_001: 100%|██████████| 391/391 [00:00<00:00, 2464.63it/s]
+Processing motion 41/64: step_rotate_idle_slow_001_M
+Preloading AMP data for step_rotate_idle_slow_001_M:   0%|          | 0/391 [00:00<?, ?it/s]Preloading AMP data for step_rotate_idle_slow_001_M:  66%|██████▌   | 257/391 [00:00<00:00, 2567.51it/s]Preloading AMP data for step_rotate_idle_slow_001_M: 100%|██████████| 391/391 [00:00<00:00, 2569.78it/s]
+Processing motion 42/64: walk_arc_ccw_slow_001
+Preloading AMP data for walk_arc_ccw_slow_001:   0%|          | 0/814 [00:00<?, ?it/s]Preloading AMP data for walk_arc_ccw_slow_001:  30%|███       | 246/814 [00:00<00:00, 2458.44it/s]Preloading AMP data for walk_arc_ccw_slow_001:  61%|██████    | 495/814 [00:00<00:00, 2474.36it/s]Preloading AMP data for walk_arc_ccw_slow_001:  92%|█████████▏| 747/814 [00:00<00:00, 2490.98it/s]Preloading AMP data for walk_arc_ccw_slow_001: 100%|██████████| 814/814 [00:00<00:00, 2478.51it/s]
+Processing motion 43/64: walk_arc_cw_loop_002__A046
+Preloading AMP data for walk_arc_cw_loop_002__A046:   0%|          | 0/291 [00:00<?, ?it/s]Preloading AMP data for walk_arc_cw_loop_002__A046:  86%|████████▌ | 249/291 [00:00<00:00, 2482.52it/s]Preloading AMP data for walk_arc_cw_loop_002__A046: 100%|██████████| 291/291 [00:00<00:00, 2497.33it/s]
+Processing motion 44/64: walk_arc_cw_slow_001
+Preloading AMP data for walk_arc_cw_slow_001:   0%|          | 0/814 [00:00<?, ?it/s]Preloading AMP data for walk_arc_cw_slow_001:  32%|███▏      | 261/814 [00:00<00:00, 2605.96it/s]Preloading AMP data for walk_arc_cw_slow_001:  64%|██████▍   | 522/814 [00:00<00:00, 2595.48it/s]Preloading AMP data for walk_arc_cw_slow_001:  96%|█████████▌| 782/814 [00:00<00:00, 2562.66it/s]Preloading AMP data for walk_arc_cw_slow_001: 100%|██████████| 814/814 [00:00<00:00, 2571.83it/s]
+Processing motion 45/64: walk_backward_loop_001__A022
+Preloading AMP data for walk_backward_loop_001__A022:   0%|          | 0/520 [00:00<?, ?it/s]Preloading AMP data for walk_backward_loop_001__A022:  48%|████▊     | 251/520 [00:00<00:00, 2505.50it/s]Preloading AMP data for walk_backward_loop_001__A022:  97%|█████████▋| 503/520 [00:00<00:00, 2508.63it/s]Preloading AMP data for walk_backward_loop_001__A022: 100%|██████████| 520/520 [00:00<00:00, 2496.65it/s]
+Processing motion 46/64: walk_backward_loop_001__A024
+Preloading AMP data for walk_backward_loop_001__A024:   0%|          | 0/729 [00:00<?, ?it/s]Preloading AMP data for walk_backward_loop_001__A024:  34%|███▍      | 247/729 [00:00<00:00, 2462.80it/s]Preloading AMP data for walk_backward_loop_001__A024:  69%|██████▊   | 501/729 [00:00<00:00, 2506.68it/s]Preloading AMP data for walk_backward_loop_001__A024: 100%|██████████| 729/729 [00:00<00:00, 2502.70it/s]
+Processing motion 47/64: walk_backward_slow_001
+Preloading AMP data for walk_backward_slow_001:   0%|          | 0/1604 [00:00<?, ?it/s]Preloading AMP data for walk_backward_slow_001:  16%|█▌        | 254/1604 [00:00<00:00, 2536.71it/s]Preloading AMP data for walk_backward_slow_001:  32%|███▏      | 508/1604 [00:00<00:00, 2525.35it/s]Preloading AMP data for walk_backward_slow_001:  47%|████▋     | 761/1604 [00:00<00:00, 2509.60it/s]Preloading AMP data for walk_backward_slow_001:  63%|██████▎   | 1012/1604 [00:00<00:00, 2474.93it/s]Preloading AMP data for walk_backward_slow_001:  79%|███████▉  | 1264/1604 [00:00<00:00, 2487.90it/s]Preloading AMP data for walk_backward_slow_001:  94%|█████████▍| 1515/1604 [00:00<00:00, 2494.12it/s]Preloading AMP data for walk_backward_slow_001: 100%|██████████| 1604/1604 [00:00<00:00, 2495.71it/s]
+Processing motion 48/64: walk_backward_slow_002
+Preloading AMP data for walk_backward_slow_002:   0%|          | 0/1248 [00:00<?, ?it/s]Preloading AMP data for walk_backward_slow_002:  20%|██        | 252/1248 [00:00<00:00, 2519.19it/s]Preloading AMP data for walk_backward_slow_002:  40%|████      | 504/1248 [00:00<00:00, 2514.19it/s]Preloading AMP data for walk_backward_slow_002:  61%|██████    | 756/1248 [00:00<00:00, 2510.39it/s]Preloading AMP data for walk_backward_slow_002:  81%|████████  | 1008/1248 [00:00<00:00, 2509.36it/s]Preloading AMP data for walk_backward_slow_002: 100%|██████████| 1248/1248 [00:00<00:00, 2520.93it/s]
+Processing motion 49/64: walk_cautious_forward_001
+Preloading AMP data for walk_cautious_forward_001:   0%|          | 0/1253 [00:00<?, ?it/s]Preloading AMP data for walk_cautious_forward_001:  21%|██        | 260/1253 [00:00<00:00, 2593.77it/s]Preloading AMP data for walk_cautious_forward_001:  42%|████▏     | 520/1253 [00:00<00:00, 2575.69it/s]Preloading AMP data for walk_cautious_forward_001:  62%|██████▏   | 778/1253 [00:00<00:00, 2572.34it/s]Preloading AMP data for walk_cautious_forward_001:  83%|████████▎ | 1036/1253 [00:00<00:00, 2550.68it/s]Preloading AMP data for walk_cautious_forward_001: 100%|██████████| 1253/1253 [00:00<00:00, 2563.24it/s]
+Processing motion 50/64: walk_forward_loop_002__A022
+Preloading AMP data for walk_forward_loop_002__A022:   0%|          | 0/455 [00:00<?, ?it/s]Preloading AMP data for walk_forward_loop_002__A022:  58%|█████▊    | 264/455 [00:00<00:00, 2631.42it/s]Preloading AMP data for walk_forward_loop_002__A022: 100%|██████████| 455/455 [00:00<00:00, 2633.29it/s]
+Processing motion 51/64: walk_forward_loop_002__A024
+Preloading AMP data for walk_forward_loop_002__A024:   0%|          | 0/482 [00:00<?, ?it/s]Preloading AMP data for walk_forward_loop_002__A024:  54%|█████▍    | 261/482 [00:00<00:00, 2607.90it/s]Preloading AMP data for walk_forward_loop_002__A024: 100%|██████████| 482/482 [00:00<00:00, 2618.66it/s]
+Processing motion 52/64: walk_forward_normal_001
+Preloading AMP data for walk_forward_normal_001:   0%|          | 0/533 [00:00<?, ?it/s]Preloading AMP data for walk_forward_normal_001:  49%|████▉     | 263/533 [00:00<00:00, 2620.66it/s]Preloading AMP data for walk_forward_normal_001:  99%|█████████▊| 526/533 [00:00<00:00, 2608.45it/s]Preloading AMP data for walk_forward_normal_001: 100%|██████████| 533/533 [00:00<00:00, 2605.62it/s]
+Processing motion 53/64: walk_forward_normal_002
+Preloading AMP data for walk_forward_normal_002:   0%|          | 0/489 [00:00<?, ?it/s]Preloading AMP data for walk_forward_normal_002:  53%|█████▎    | 261/489 [00:00<00:00, 2606.12it/s]Preloading AMP data for walk_forward_normal_002: 100%|██████████| 489/489 [00:00<00:00, 2623.11it/s]
+Processing motion 54/64: walk_forward_normal_003
+Preloading AMP data for walk_forward_normal_003:   0%|          | 0/451 [00:00<?, ?it/s]Preloading AMP data for walk_forward_normal_003:  58%|█████▊    | 261/451 [00:00<00:00, 2603.44it/s]Preloading AMP data for walk_forward_normal_003: 100%|██████████| 451/451 [00:00<00:00, 2571.51it/s]
+Processing motion 55/64: walk_forward_normal_004
+Preloading AMP data for walk_forward_normal_004:   0%|          | 0/487 [00:00<?, ?it/s]Preloading AMP data for walk_forward_normal_004:  54%|█████▍    | 263/487 [00:00<00:00, 2625.94it/s]Preloading AMP data for walk_forward_normal_004: 100%|██████████| 487/487 [00:00<00:00, 2642.00it/s]
+Processing motion 56/64: walk_forward_slow_001
+Preloading AMP data for walk_forward_slow_001:   0%|          | 0/1275 [00:00<?, ?it/s]Preloading AMP data for walk_forward_slow_001:  21%|██        | 267/1275 [00:00<00:00, 2666.20it/s]Preloading AMP data for walk_forward_slow_001:  42%|████▏     | 534/1275 [00:00<00:00, 2599.98it/s]Preloading AMP data for walk_forward_slow_001:  62%|██████▏   | 795/1275 [00:00<00:00, 2591.17it/s]Preloading AMP data for walk_forward_slow_001:  83%|████████▎ | 1061/1275 [00:00<00:00, 2617.90it/s]Preloading AMP data for walk_forward_slow_001: 100%|██████████| 1275/1275 [00:00<00:00, 2610.85it/s]
+Processing motion 57/64: walk_forward_slow_002
+Preloading AMP data for walk_forward_slow_002:   0%|          | 0/956 [00:00<?, ?it/s]Preloading AMP data for walk_forward_slow_002:  27%|██▋       | 260/956 [00:00<00:00, 2593.82it/s]Preloading AMP data for walk_forward_slow_002:  55%|█████▍    | 522/956 [00:00<00:00, 2604.58it/s]Preloading AMP data for walk_forward_slow_002:  82%|████████▏ | 783/956 [00:00<00:00, 2604.16it/s]Preloading AMP data for walk_forward_slow_002: 100%|██████████| 956/956 [00:00<00:00, 2592.68it/s]
+Processing motion 58/64: walk_forward_slow_003
+Preloading AMP data for walk_forward_slow_003:   0%|          | 0/964 [00:00<?, ?it/s]Preloading AMP data for walk_forward_slow_003:  26%|██▌       | 252/964 [00:00<00:00, 2518.16it/s]Preloading AMP data for walk_forward_slow_003:  53%|█████▎    | 507/964 [00:00<00:00, 2531.58it/s]Preloading AMP data for walk_forward_slow_003:  79%|███████▉  | 766/964 [00:00<00:00, 2555.14it/s]Preloading AMP data for walk_forward_slow_003: 100%|██████████| 964/964 [00:00<00:00, 2544.13it/s]
+Processing motion 59/64: walk_sideway_left_loop_002__A021
+Preloading AMP data for walk_sideway_left_loop_002__A021:   0%|          | 0/713 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_left_loop_002__A021:  36%|███▌      | 254/713 [00:00<00:00, 2533.21it/s]Preloading AMP data for walk_sideway_left_loop_002__A021:  72%|███████▏  | 510/713 [00:00<00:00, 2546.61it/s]Preloading AMP data for walk_sideway_left_loop_002__A021: 100%|██████████| 713/713 [00:00<00:00, 2556.86it/s]
+Processing motion 60/64: walk_sideway_left_slow_001
+Preloading AMP data for walk_sideway_left_slow_001:   0%|          | 0/1712 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_left_slow_001:  15%|█▍        | 253/1712 [00:00<00:00, 2520.84it/s]Preloading AMP data for walk_sideway_left_slow_001:  30%|██▉       | 506/1712 [00:00<00:00, 2479.15it/s]Preloading AMP data for walk_sideway_left_slow_001:  44%|████▍     | 757/1712 [00:00<00:00, 2489.41it/s]Preloading AMP data for walk_sideway_left_slow_001:  59%|█████▉    | 1006/1712 [00:00<00:00, 2484.29it/s]Preloading AMP data for walk_sideway_left_slow_001:  73%|███████▎  | 1255/1712 [00:00<00:00, 2459.60it/s]Preloading AMP data for walk_sideway_left_slow_001:  88%|████████▊ | 1502/1712 [00:00<00:00, 2451.58it/s]Preloading AMP data for walk_sideway_left_slow_001: 100%|██████████| 1712/1712 [00:00<00:00, 2461.37it/s]
+Processing motion 61/64: walk_sideway_left_slow_002
+Preloading AMP data for walk_sideway_left_slow_002:   0%|          | 0/1385 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_left_slow_002:  17%|█▋        | 239/1385 [00:00<00:00, 2388.20it/s]Preloading AMP data for walk_sideway_left_slow_002:  35%|███▌      | 489/1385 [00:00<00:00, 2451.82it/s]Preloading AMP data for walk_sideway_left_slow_002:  53%|█████▎    | 735/1385 [00:00<00:00, 2439.88it/s]Preloading AMP data for walk_sideway_left_slow_002:  71%|███████   | 979/1385 [00:00<00:00, 2409.46it/s]Preloading AMP data for walk_sideway_left_slow_002:  89%|████████▊ | 1226/1385 [00:00<00:00, 2428.14it/s]Preloading AMP data for walk_sideway_left_slow_002: 100%|██████████| 1385/1385 [00:00<00:00, 2427.34it/s]
+Processing motion 62/64: walk_sideway_right_loop_001__A022
+Preloading AMP data for walk_sideway_right_loop_001__A022:   0%|          | 0/630 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_right_loop_001__A022:  39%|███▉      | 246/630 [00:00<00:00, 2454.62it/s]Preloading AMP data for walk_sideway_right_loop_001__A022:  78%|███████▊  | 492/630 [00:00<00:00, 2444.99it/s]Preloading AMP data for walk_sideway_right_loop_001__A022: 100%|██████████| 630/630 [00:00<00:00, 2443.41it/s]
+Processing motion 63/64: walk_sideway_right_slow_001
+Preloading AMP data for walk_sideway_right_slow_001:   0%|          | 0/1385 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_right_slow_001:  18%|█▊        | 249/1385 [00:00<00:00, 2485.76it/s]Preloading AMP data for walk_sideway_right_slow_001:  36%|███▌      | 502/1385 [00:00<00:00, 2506.20it/s]Preloading AMP data for walk_sideway_right_slow_001:  54%|█████▍    | 753/1385 [00:00<00:00, 2499.39it/s]Preloading AMP data for walk_sideway_right_slow_001:  72%|███████▏  | 1003/1385 [00:00<00:00, 2493.73it/s]Preloading AMP data for walk_sideway_right_slow_001:  90%|█████████ | 1253/1385 [00:00<00:00, 2493.66it/s]Preloading AMP data for walk_sideway_right_slow_001: 100%|██████████| 1385/1385 [00:00<00:00, 2491.29it/s]
+Processing motion 64/64: walk_sideway_right_slow_002
+Preloading AMP data for walk_sideway_right_slow_002:   0%|          | 0/1712 [00:00<?, ?it/s]Preloading AMP data for walk_sideway_right_slow_002:  14%|█▍        | 247/1712 [00:00<00:00, 2462.24it/s]Preloading AMP data for walk_sideway_right_slow_002:  29%|██▉       | 494/1712 [00:00<00:00, 2442.56it/s]Preloading AMP data for walk_sideway_right_slow_002:  43%|████▎     | 743/1712 [00:00<00:00, 2461.17it/s]Preloading AMP data for walk_sideway_right_slow_002:  58%|█████▊    | 993/1712 [00:00<00:00, 2473.97it/s]Preloading AMP data for walk_sideway_right_slow_002:  73%|███████▎  | 1249/1712 [00:00<00:00, 2504.06it/s]Preloading AMP data for walk_sideway_right_slow_002:  88%|████████▊ | 1501/1712 [00:00<00:00, 2508.55it/s]Preloading AMP data for walk_sideway_right_slow_002: 100%|██████████| 1712/1712 [00:00<00:00, 2478.95it/s]
+BENCHMARK {"num_envs": 512, "steps": 240, "warmup": 48, "checkpoint": "logs/rsl_rl/state_classroom/2026-10-14_00-18-58/model_3000.pt", "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition", "video": false, "nan_check": false, "episode_log": true, "seconds": 8.404905512928963, "ms_per_step": 35.020439637204014, "env_steps_per_second": 14620.033480564194, "episode_ends": 26}
+         1288374 function calls (1276224 primitive calls) in 5.013 seconds
+
+   Ordered by: cumulative time
+   List reduced from 609 to 35 due to restriction <35>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.000    0.000    5.014    5.014 profile_classroom_sampling.py:71(run_steps)
+       96    0.001    0.000    5.014    0.052 profile_classroom_sampling.py:59(sample)
+       96    0.002    0.000    4.806    0.050 vecenv_wrapper.py:72(step)
+       96    0.006    0.000    4.798    0.050 manager_based_rl_env.py:378(step)
+     2304    0.229    0.000    1.226    0.001 path_navigation.py:84(classroom_follow_state)
+      438    0.004    0.000    0.920    0.002 scene.py:202(write_data_to_sim)
+    16206    0.005    0.000    0.916    0.000 entity.py:852(write_data_to_sim)
+    16206    0.029    0.000    0.910    0.000 entity.py:1268(_apply_actuator_controls)
+       96    0.000    0.000    0.896    0.009 command_manager.py:249(compute)
+       96    0.003    0.000    0.896    0.009 command_manager.py:109(compute)
+       96    0.013    0.000    0.853    0.009 termination_manager.py:102(compute)
+       96    0.037    0.000    0.726    0.008 goal_command.py:534(_update_command)
+       96    0.007    0.000    0.689    0.007 path_navigation.py:312(classroom_navigation_update)
+      246    0.018    0.000    0.670    0.003 event_manager.py:236(apply)
+     2628    0.245    0.000    0.558    0.000 unitree_actuators.py:90(compute)
+       96    0.001    0.000    0.530    0.006 observation_manager.py:305(compute)
+      480    0.003    0.000    0.529    0.001 observation_history_ordering.py:90(compute_group)
+      480    0.022    0.000    0.526    0.001 observation_manager.py:320(compute_group)
+       96    0.062    0.001    0.516    0.005 reward_manager.py:116(compute)
+       54    0.003    0.000    0.443    0.008 manager_based_rl_env.py:553(_reset_idx)
+      150    0.133    0.001    0.432    0.003 goal_command.py:380(_update_path_goal)
+     2628    0.081    0.000    0.297    0.000 unitree_actuators.py:137(_clip_effort)
+       96    0.199    0.002    0.279    0.003 events.py:399(throw_ball_on_dwell)
+    33298    0.237    0.000    0.237    0.000 sim_data.py:63(__getitem__)
+      900    0.151    0.000    0.232    0.000 walk_path.py:216(walk_path_query)
+     3720    0.082    0.000    0.230    0.000 sim_data.py:67(__setitem__)
+      150    0.035    0.000    0.201    0.001 path_navigation.py:39(_join_target)
+      150    0.082    0.001    0.183    0.001 classroom.py:109(extend_classroom_route)
+     2628    0.029    0.000    0.181    0.000 data.py:191(write_ctrl)
+    23010    0.177    0.000    0.177    0.000 {built-in method torch.where}
+      822    0.052    0.000    0.158    0.000 ball_region.py:49(ball_in_play)
+      576    0.147    0.000    0.147    0.000 {method 'nonzero' of 'torch._C.TensorBase' objects}
+       54    0.027    0.000    0.144    0.003 classroom.py:33(reset_classroom_robot)
+     2628    0.090    0.000    0.135    0.000 unitree_actuators.py:151(_compute_effort_limit)
+    17330    0.133    0.000    0.133    0.000 {built-in method torch.cat}
+
+
+Profile saved to .cache/sampling_final_512_no_nan.json

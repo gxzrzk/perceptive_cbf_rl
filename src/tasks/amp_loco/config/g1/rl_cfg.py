@@ -65,6 +65,9 @@ class RslRlAmpRunnerCfg(RslRlOnPolicyRunnerCfg):
   amp_anchor_name: str = ""
   """Anchor body for the body-local frame used by AMP obs."""
 
+  check_for_nan: bool = True
+  """Check rollout outputs each step; disabling removes per-group GPU syncs."""
+
   algorithm: AmpAlgorithmCfg = field(default_factory=AmpAlgorithmCfg)
 
 
