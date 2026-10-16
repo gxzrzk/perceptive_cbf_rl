@@ -4,7 +4,9 @@ from mjlab.entity import Entity, EntityCfg
 
 # Layout shared by scene creation, safe spawns and random route generation.
 # Measure aisles between furniture collision envelopes and wall INNER faces.
-CLASSROOM_AISLE_WIDTH = 2.0
+# Uniform gap: desk<->desk and desk<->wall passages are all this wide, so the
+# 15 pairs tile the room evenly with no larger open areas at the front/back.
+CLASSROOM_AISLE_WIDTH = 1.5
 CLASSROOM_WALL_HALF_THICKNESS = 0.08
 CLASSROOM_DESK_HALF_SIZE = (0.4, 0.6, 0.38)
 CLASSROOM_CHAIR_HALF_SIZE = (0.25, 0.25, 0.45)
@@ -44,15 +46,17 @@ CLASSROOM_SPAWN_LANES = (
   (CLASSROOM_COLUMN_Y[1] + CLASSROOM_COLUMN_Y[2]) / 2,
   (CLASSROOM_COLUMN_Y[0] + CLASSROOM_COLUMN_Y[1]) / 2,
 )
-# Center every cross aisle, including the 2 m front/back perimeter passages.
+# Center every cross aisle, including the uniform front/back perimeter passages.
 CLASSROOM_ROUTE_STATIONS = (
   CLASSROOM_FURNITURE_X_MIN - CLASSROOM_AISLE_WIDTH / 2,
   *(CLASSROOM_ROW_START + row * CLASSROOM_ROW_PITCH + CLASSROOM_PAIR_FRONT + CLASSROOM_AISLE_WIDTH / 2
     for row in range(CLASSROOM_ROWS - 1)),
   CLASSROOM_FURNITURE_X_MAX + CLASSROOM_AISLE_WIDTH / 2,
 )
-# Minimum root-point clearance on rounded corners of the 2 m aisles.
-CLASSROOM_ROUTE_CLEARANCE = 0.7
+# Minimum root-point clearance on rounded corners of the 1.5 m aisles. The
+# 0.25 m margin to the 0.75 m half-aisle still allows the default 0.6 m corner
+# radius at a 90-degree junction (needs (0.75 - clearance) >= 0.6*(1-cos45)).
+CLASSROOM_ROUTE_CLEARANCE = 0.5
 
 
 class StaticClassroomEntity(Entity):

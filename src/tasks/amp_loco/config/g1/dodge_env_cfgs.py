@@ -1271,7 +1271,7 @@ def g1_amp_dodge_mimickit_wallwalk_flat_env_cfg(play: bool = False) -> ManagerBa
 
 
 def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-  """15 desk/chair pairs with 2 m clear internal and perimeter passages."""
+  """15 desk/chair pairs with uniform 1.5 m internal and perimeter passages."""
   from src.assets.objects.classroom import (
     get_furniture_cfg, get_static_wall_cfg, CLASSROOM_ROWS, CLASSROOM_COLUMN_Y,
     CLASSROOM_ROW_START, CLASSROOM_ROW_PITCH,
@@ -1367,7 +1367,7 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
 
   command = cfg.commands["twist"]
   command.classroom_follow = True
-  command.max_ang_vel_z = 0.8
+  command.max_ang_vel_z = follow_param("WALK_MAX_ANG_VEL_Z", 1.2)
   command.align_enter_angle = math.radians(follow_param("WALK_ALIGN_ENTER_DEG", 75.0))
   command.align_exit_angle = math.radians(follow_param("WALK_ALIGN_EXIT_DEG", 25.0))
   command.path_v_ref = follow_param("WALK_V_REF", 0.6)

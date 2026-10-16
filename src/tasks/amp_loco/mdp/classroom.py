@@ -152,7 +152,7 @@ def generate_classroom_route(x, y, lane, count=80):
   """Random walk on the two longitudinal aisles and six cross aisles.
 
   Select only adjacent junctions, excluding immediate reversal. Each centerline
-  has 1 m clearance to the furniture envelope; the initial leg stays in its lane.
+  has 0.75 m clearance to the furniture envelope; the initial leg stays in its lane.
   """
   n, device = len(x), x.device
   # Cross-aisle centers between the desk front and the next row's chair back.

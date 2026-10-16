@@ -29,41 +29,41 @@ def test_classroom_clearance_and_wiring(play):
     assert len(poses[:30:2]) == 15
     assert {p[1] for p in poses[:30:2]} == set(CLASSROOM_COLUMN_Y)
     # Inner desk edges define the central aisle.
-    assert CLASSROOM_COLUMN_Y[2] - CLASSROOM_COLUMN_Y[1] - 1.2 == pytest.approx(2.)
+    assert CLASSROOM_COLUMN_Y[2] - CLASSROOM_COLUMN_Y[1] - 1.2 == pytest.approx(1.5)
     # Adjacent columns define the two additional longitudinal aisles.
-    assert CLASSROOM_COLUMN_Y[1] - CLASSROOM_COLUMN_Y[0] - 1.2 == pytest.approx(2.)
+    assert CLASSROOM_COLUMN_Y[1] - CLASSROOM_COLUMN_Y[0] - 1.2 == pytest.approx(1.5)
     # Every chair/desk pair must leave the promised cross aisle to the next row.
     for row in range(4):
         for col in range(3):
             desk = poses[row * 6 + col * 2]
             next_chair = poses[(row + 1) * 6 + col * 2 + 1]
-            assert next_chair[0] - 0.25 - (desk[0] + 0.4) == pytest.approx(2.)
+            assert next_chair[0] - 0.25 - (desk[0] + 0.4) == pytest.approx(1.5)
             # Junctions stay centered between the unchanged furniture envelopes.
             assert CLASSROOM_ROUTE_STATIONS[row + 1] == pytest.approx(
                 (desk[0] + 0.4 + next_chair[0] - 0.25) / 2)
     x_min, x_max = CLASSROOM_X_BOUNDS
     y_min, y_max = CLASSROOM_Y_BOUNDS
-    assert (x_max - x_min, y_max - y_min) == pytest.approx((20.16, 11.76))
+    assert (x_max - x_min, y_max - y_min) == pytest.approx((17.16, 9.76))
     # Use actual collision-box faces, including wall thickness, for every gap.
     halves = [cfg.scene.entities[name].spec_fn().geom('wall_collision').size.copy() for name in names]
     inner_x_min = poses[32][0] + halves[32][0]
     inner_x_max = poses[33][0] - halves[33][0]
     inner_y_min = poses[30][1] + halves[30][1]
     inner_y_max = poses[31][1] - halves[31][1]
-    assert (inner_x_max - inner_x_min, inner_y_max - inner_y_min) == pytest.approx((20., 11.6))
+    assert (inner_x_max - inner_x_min, inner_y_max - inner_y_min) == pytest.approx((17., 9.6))
     for row in range(5):
         desks = [row * 6 + col * 2 for col in range(3)]
         left, right = desks[0], desks[-1]
-        assert poses[left][1] - halves[left][1] - inner_y_min == pytest.approx(2.)
-        assert inner_y_max - poses[right][1] - halves[right][1] == pytest.approx(2.)
+        assert poses[left][1] - halves[left][1] - inner_y_min == pytest.approx(1.5)
+        assert inner_y_max - poses[right][1] - halves[right][1] == pytest.approx(1.5)
         for left, right in zip(desks, desks[1:]):
-            assert poses[right][1] - halves[right][1] - poses[left][1] - halves[left][1] == pytest.approx(2.)
+            assert poses[right][1] - halves[right][1] - poses[left][1] - halves[left][1] == pytest.approx(1.5)
     for col in range(3):
         first_chair, last_desk = col * 2 + 1, 4 * 6 + col * 2
-        assert poses[first_chair][0] - halves[first_chair][0] - inner_x_min == pytest.approx(2.)
-        assert inner_x_max - poses[last_desk][0] - halves[last_desk][0] == pytest.approx(2.)
-    assert CLASSROOM_ROUTE_STATIONS[0] == pytest.approx(inner_x_min + 1.)
-    assert CLASSROOM_ROUTE_STATIONS[-1] == pytest.approx(inner_x_max - 1.)
+        assert poses[first_chair][0] - halves[first_chair][0] - inner_x_min == pytest.approx(1.5)
+        assert inner_x_max - poses[last_desk][0] - halves[last_desk][0] == pytest.approx(1.5)
+    assert CLASSROOM_ROUTE_STATIONS[0] == pytest.approx(inner_x_min + 0.75)
+    assert CLASSROOM_ROUTE_STATIONS[-1] == pytest.approx(inner_x_max - 0.75)
     for i, (name, pose) in enumerate(zip(names, poses, strict=True)):
         asset = cfg.scene.entities[name]
         spec = asset.spec_fn()

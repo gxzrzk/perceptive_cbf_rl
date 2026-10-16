@@ -297,6 +297,8 @@ def test_sharp_arc_respects_yaw_rate_and_linear_speed_limits():
     route, count = round_classroom_route(torch.tensor([[[0., 0.], [5., 0.], [5., 4.]]]), radius=.2)
     command, env = follower(points=route[0, :count[0]].tolist())
     # Keep the yaw-rate cap active at 0.8 rad/s rather than curvature slowdown.
+    # Pin the cap explicitly: the scenario geometry assumes 0.8, not the task default.
+    command.cfg.max_ang_vel_z = .8
     command.cfg.curvature_alpha = .3
     point, yaw = walk_path_query(env, torch.tensor([0]), torch.tensor([4.8 + math.pi * .2 / 4]))
     advance(command, env, xy=point.tolist(), angles=[-math.degrees(yaw.item())])
