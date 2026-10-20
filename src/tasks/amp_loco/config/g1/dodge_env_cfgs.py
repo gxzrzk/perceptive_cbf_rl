@@ -127,8 +127,8 @@ BALLONLY_CLUTTER_DEPTH_JITTER = float(
   os.environ.get("BALLONLY_CLUTTER_DEPTH_JITTER", str(0.03 * BALLONLY_CLUTTER_SCALE))
 )
 # Joint-level CBF action filter (CBF-RL Phase 1; see docs/cbf_joint_filter_spec.md). OFF by
-# default so the baseline recipe is byte-identical; CBF_JOINT=1 swaps the joint-position action
-# for the filtered one and adds the two CBF-RL reward terms. The lambdas weight the
+# default so the baseline recipe is byte-identical; selected via CBF_MODE (see _cbf_mode below;
+# legacy CBF_JOINT=1 maps to CBF_MODE=both). The lambdas weight the
 # filter-correction penalty and the clearance-buffer penalty.
 CBF_JOINT = os.environ.get("CBF_JOINT", "0") == "1"
 # Reward weights: filter-correction penalty + clearance-buffer penalty, and the reward's
@@ -144,6 +144,35 @@ CBF_JOINT_BODY_BUFFER = float(os.environ.get("CBF_JOINT_BODY_BUFFER", "0.25"))
 CBF_JOINT_ALPHA = float(os.environ.get("CBF_JOINT_ALPHA", "1.5"))
 CBF_JOINT_DELTA_MAX = float(os.environ.get("CBF_JOINT_DELTA_MAX", "2.0"))
 CBF_JOINT_T_ALERT = float(os.environ.get("CBF_JOINT_T_ALERT", "0.4"))
+
+
+def _cbf_mode() -> str:
+  """Which CBF machinery the dodge tasks (incl. wall/classroom, which inherit it) use.
+
+  Read at CALL time (like OMNI_THROW/CBF_JOINT) so benchmarks can toggle per build. Selected by
+  the CBF_MODE env var:
+
+    link  (default) per-link barrier REWARDS only (``dodge_link_cbf`` for the ball,
+          ``wall_link_cbf`` for walls/furniture); no action filter. The historical recipe.
+    joint           link rewards OFF; joint-level CBF action filter + its correction/buffer
+          rewards ON (``_apply_cbf_joint_filter``). NOTE: the joint filter guards the BALL
+          only -- walls/furniture have no barrier in this mode.
+    both            link rewards AND the joint filter/rewards.
+    none            no CBF shaping at all (pure MimicKit reward; like NO_LINK_CBF but it also
+          drops the wall barrier).
+
+  The joint ACTION FILTER is independently toggleable: CBF_JOINT_APPLY_FILTER=0 still computes
+  the projection for the two reward terms but applies the RAW action (pure CBF-RL reward
+  shaping -- no filter crutch, no train/deploy mismatch); default 1 applies the filtered action.
+
+  Back-compat: CBF_JOINT=1 without an explicit CBF_MODE == "both" (the historical behavior:
+  filter stacked on top of the link rewards). NO_LINK_CBF=1 still zeroes the ball link reward
+  under link/both.
+  """
+  mode = os.environ.get("CBF_MODE", "link").strip().lower()
+  if mode == "link" and os.environ.get("CBF_JOINT", "0") == "1":
+    return "both"
+  return mode
 
 # Stage-1 actuated camera-pitch gimbal: re-parents head_camera_single onto a pitch hinge
 # (camera_pitch_joint, +/-30deg) actuated by the smallest G1 motor (4010). Added ONLY inside a
@@ -810,17 +839,20 @@ def _apply_mimickit_reward(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
   # most lead. weight=0.25 calibrated to that alpha: W*=0.21 nets the danger-zone reward to ~0 (so
   # exposing a limb stops being reward-positive without swamping the signal -- 1.0 was ~5x too
   # strong); 0.25 nudges danger marginally net-negative.
-  cfg.rewards["dodge_link_cbf"] = RewardTermCfg(
-    func=mdp.dodge_link_cbf_reward,
-    weight=0.27,
-    params={
-      "robot_name": "robot",
-      "ball_name": "ball",
-      "alpha": 1.0,
-      "margin": 0.05,
-      "constraint_clip": 2.0,
-    },
-  )
+  # CBF_MODE=joint/none drops the term entirely (not just weight 0): joint replaces it with the
+  # joint-level filter + rewards as the ball-avoidance mechanism; none is the CBF-free baseline.
+  if _cbf_mode() in ("link", "both"):
+    cfg.rewards["dodge_link_cbf"] = RewardTermCfg(
+      func=mdp.dodge_link_cbf_reward,
+      weight=0.27,
+      params={
+        "robot_name": "robot",
+        "ball_name": "ball",
+        "alpha": 1.0,
+        "margin": 0.05,
+        "constraint_clip": 2.0,
+      },
+    )
   # Full-body sidestep CBF -- TESTED AND DISABLED (weight 0). Idea: charge the base for not getting
   # OFF the ball's incoming xy line -> commit to a whole-body sidestep. Run 2026-06-04_18-25-45
   # (link 0.27 + sidestep 1.2) REGRESSED vs link-only (2026-06-04_11-39-27) at matched iters 6k/8k:
@@ -841,7 +873,8 @@ def _apply_mimickit_reward(cfg: ManagerBasedRlEnvCfg, play: bool) -> ManagerBase
   # NOT CBF-like and stay. This is the honest zero-CBF lower bound: the existing "vision_baseline"
   # still carries dodge_link_cbf at 0.27, so it is not actually CBF-free. Read at CALL time so the
   # flag composes with any task build; no-op when unset (byte-identical). dodge_sidestep is already 0.
-  if os.environ.get("NO_LINK_CBF", "0") == "1":
+  # (Under CBF_MODE=joint/none the term was never registered; the guard skips silently.)
+  if os.environ.get("NO_LINK_CBF", "0") == "1" and "dodge_link_cbf" in cfg.rewards:
     cfg.rewards["dodge_link_cbf"].weight = 0.0
 
   # --- Termination: ball-hit ON from iter 0, no penalty (do NOT call the curriculum helper). ---
@@ -937,9 +970,10 @@ def g1_amp_dodge_mimickit_flat_env_cfg(play: bool = False) -> ManagerBasedRlEnvC
       float(os.environ.get("OMNI_DIST_MAX", "10.0")),
     )
     _p["target_z_range"] = (0.3, 1.3)  # body-spanning aim (head -> legs); high/low fraction unused
-  # CBF_JOINT=1: add the joint-CBF filter + reward terms (per-body all-links keep-out). No gimbal /
-  # depth here, so this is just the action-space filter on the state-based actor (read at call time).
-  if os.environ.get("CBF_JOINT", "0") == "1":
+  # CBF_MODE=joint/both (or legacy CBF_JOINT=1): add the joint-CBF filter + reward terms (per-body
+  # all-links keep-out). No gimbal / depth here, so this is just the action-space filter on the
+  # state-based actor (read at call time). The filter itself toggles via CBF_JOINT_APPLY_FILTER.
+  if _cbf_mode() in ("joint", "both"):
     _apply_cbf_joint_filter(cfg)
   return cfg
 
@@ -1087,17 +1121,21 @@ def _apply_wall_overrides(
   )
 
   # --- Reward: per-link static wall barrier (zero when safe; see rewards.py). ---
-  cfg.rewards["wall_link_cbf"] = RewardTermCfg(
-    func=mdp.wall_link_cbf_reward,
-    weight=ev("WALL_CBF_WEIGHT", 0.3),
-    params={
-      "robot_name": "robot",
-      "wall_names": wall_names,
-      "alpha": ev("WALL_CBF_ALPHA", 1.0),
-      "margin": 0.05,
-      "constraint_clip": 2.0,
-    },
-  )
+  # CBF_MODE=joint/none drops it: the joint filter guards the BALL only, so in joint mode
+  # wall/furniture clearance is left to the other navigation/failure terms (a deliberate,
+  # clean link-vs-joint comparison); none is the CBF-free baseline. CBF_MODE=both keeps it.
+  if _cbf_mode() in ("link", "both"):
+    cfg.rewards["wall_link_cbf"] = RewardTermCfg(
+      func=mdp.wall_link_cbf_reward,
+      weight=ev("WALL_CBF_WEIGHT", 0.3),
+      params={
+        "robot_name": "robot",
+        "wall_names": wall_names,
+        "alpha": ev("WALL_CBF_ALPHA", 1.0),
+        "margin": 0.05,
+        "constraint_clip": 2.0,
+      },
+    )
 
   # --- Disable the ball-hit velocity-discontinuity fallback: a ball bouncing off
   # a WALL sees a large delta_v within hit_dist (1 m) of the pelvis above
@@ -1420,6 +1458,9 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
       "turn_stall_weight": follow_param("WALK_TURN_STALL_WEIGHT", 1.2),
       "join_stall_weight": follow_param("WALK_JOIN_STALL_WEIGHT", 1.2),
       "recovery_stall_weight": follow_param("WALK_RECOVERY_STALL_WEIGHT", 1.2),
+      # Stall penalties ramp up per second of continuous stall, to 10x base.
+      "stall_growth": follow_param("WALK_STALL_GROWTH", 2.4),
+      "stall_cap": follow_param("WALK_STALL_CAP", 12.0),
     },
   )
   # Keep the current-physics-step refresh before rewards, without an endpoint.
@@ -1585,7 +1626,7 @@ def _apply_cbf_joint_filter(cfg: ManagerBasedRlEnvCfg) -> None:
   Joint-level ball-avoidance (CBF-RL Phase 1, docs/cbf_joint_filter_spec.md): the filter projects
   the policy's implicit joint-velocity command off the ball's path; the reward (not the runtime
   nudge) is the lever -- penalizing the correction trains the policy to be safe on its own so the
-  train-only filter is dropped at deploy. Env-var gated (CBF_JOINT=1)."""
+  train-only filter is dropped at deploy. Gated by CBF_MODE=joint/both (legacy CBF_JOINT=1)."""
   # Read all knobs at CALL time (env-var override of the import defaults) so the benchmark can vary
   # filter strength / weights per build; training sets them at launch -> identical behavior there.
   ev = lambda k, d: float(os.environ.get(k, d))
@@ -1691,9 +1732,9 @@ def g1_amp_dodge_depth_single_ballonly_flat_env_cfg(
   cfg = _apply_mimickit_reward(cfg, play)
   _add_depth_obs_single_ballonly(cfg, play)
   _set_slim_critic_dodge(cfg, gate_up="head_depth_single", gate_down="head_depth_single")
-  # Read CBF_JOINT at CALL time (not the import-frozen constant) so the benchmark can toggle the
-  # filter per env build; training sets it at launch so the behavior is identical there.
-  if os.environ.get("CBF_JOINT", "0") == "1":
+  # Read the CBF mode at CALL time (not the import-frozen constant) so the benchmark can toggle
+  # the filter per env build; training sets it at launch so the behavior is identical there.
+  if _cbf_mode() in ("joint", "both"):
     _apply_cbf_joint_filter(cfg)
   return _promote_to_depth_cfg(cfg, depth_frame_offsets)
 

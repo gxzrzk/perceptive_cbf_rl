@@ -8,6 +8,10 @@
 #
 # Env overrides: TASK, NUM_ENVS (per GPU), EXP_NAME, STAND_RATIO, INPLACE_RATIO,
 # GPU_IDS, VIDEO, VIDEO_INTERVAL, VIDEO_LENGTH.
+# CBF algorithm: CBF_MODE=link (default, per-link barrier rewards) | joint (joint-level
+# CBF filter + rewards, link rewards off) | both | none. With joint/both,
+# CBF_JOINT_APPLY_FILTER=0 keeps the rewards but applies the raw action (pure shaping).
+# E.g. CBF_MODE=joint CBF_JOINT_APPLY_FILTER=0 ./train_classroom.sh
 # GPU_IDS: indices into CUDA_VISIBLE_DEVICES (physical ordinals when unset).
 # E.g. GPU_IDS="4 5", or CUDA_VISIBLE_DEVICES=4,5 GPU_IDS="0 1".
 # Set VIDEO=False to avoid rendering and video-wrapper synchronization.

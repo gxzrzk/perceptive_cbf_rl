@@ -79,11 +79,13 @@ def test_join_phase_cycles_repay_all_self_caused_openings():
     assert classroom_follow_state(command).join_bank.item() == pytest.approx(0., abs=1e-6)
 
 
-def test_threat_time_monotonic_turn_is_not_saved_and_recovery_is_paid():
+def test_threat_time_monotonic_turn_is_paid_immediately_and_not_saved():
     command, env = follower((120.,))
     command._dodge_threat[:] = True
     advance(command, env, angles=[80.])
-    assert components(command, env)['turn'].item() == 0.
+    # Reward terms stay open during a threat: the closing pays at once, and no
+    # part of it is saved for a second payment after the threat clears.
+    assert components(command, env)['turn'].item() == pytest.approx(2 * 40 / 180, abs=1e-6)
     command._dodge_threat[:] = False
     advance(command, env, angles=[70.])
     assert components(command, env)['turn'].item() == pytest.approx(2 * 10 / 180, abs=1e-6)

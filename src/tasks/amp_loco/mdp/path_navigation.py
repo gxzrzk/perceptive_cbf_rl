@@ -100,7 +100,8 @@ def classroom_follow_state(command):
       bearing=heading.clone(), joining=torch.zeros_like(heading, dtype=torch.bool),
       aligning=torch.zeros_like(heading, dtype=torch.bool), join_target=xy.clone(),
       segment_start=xy.clone(), segment_end=xy.clone(), age=zero.clone(),
-      recovery_age=zero.clone(), v_cmd=zero.clone(), command_speed=zero.clone(),
+      recovery_age=zero.clone(), stall_age=zero.clone(),
+      v_cmd=zero.clone(), command_speed=zero.clone(),
       target_reachable=torch.ones_like(heading, dtype=torch.bool),
       filtered_velocity=xy.new_zeros(len(xy), 2), s_frontier=zero.clone(),
       turn_bank=zero.clone(), join_bank=zero.clone(),
@@ -280,6 +281,10 @@ def classroom_follow_state(command):
   recovered = active_follow & (novel_s > cfg.join_progress_rate * dt)
   recovery_age = torch.where(new | recovered, 0., state.recovery_age + dt * safe)
   recovery_stall = eligible & ready & (recovery_age >= cfg.recovery_timeout)
+  # Continuous-stall clock driving the escalating stall penalty. Any stall flag
+  # keeps it running; motion or a threat pause (which clears the flags) resets.
+  stalled = turn_stall | join_stall | follow_stall | recovery_stall
+  stall_age = torch.where(new | ~stalled, 0., state.stall_age + dt)
   values = dict(xy=xy, heading=heading, bearing=bearing, theta=theta, step_theta=step_theta,
     target_distance=target_distance, joining=joining, step_joining=step_joining,
     join_target=join_target, target_reachable=target_reachable,
@@ -292,7 +297,7 @@ def classroom_follow_state(command):
     speed=speed, novel_speed=novel_s / dt, s_frontier=frontier,
     filtered_velocity=filtered, age=age, cumulative=cumulative, recovery_age=recovery_age,
     turn_stall=turn_stall, join_stall=join_stall, follow_stall=follow_stall,
-    recovery_stall=recovery_stall)
+    recovery_stall=recovery_stall, stall_age=stall_age)
   for name, value in values.items():
     if full_update:
       # Snapshot views into simulation data, without constructing unused zeros
@@ -335,20 +340,24 @@ def classroom_path_follow_reward(
   align_lateral_scale=.2, deviation_weight=.5, deviation_std=.5,
   join_deviation_scale=.2, movement_cost_cap=4., deviation_cost_cap=4.,
   stall_weight=1.2, turn_stall_weight=1.2, join_stall_weight=1.2,
-  recovery_stall_weight=1.2, progress_penalty_scale=1.,
+  recovery_stall_weight=1.2, stall_growth=2.4, stall_cap=12.,
+  progress_penalty_scale=1.,
 ):
-  """Reward rate, entirely paused during an in-room incoming-ball threat.
+  """Reward rate; only penalty terms pause during an in-room incoming-ball threat.
 
-  Closings pay only the amount beyond each unpaid-opening ledger; openings are
-  charged at progress_penalty_scale, which also discounts retreat costs.
-  Geometry, the paid-distance frontier and ledgers keep updating while paused:
-  closings repay debt, threat-time openings incur none, and no motion is saved
-  for payment when the threat clears. All other costs keep their strength.
+  Reward terms (turn/join closings beyond debt and novel forward progress) keep
+  paying while dodging. Closings pay only the amount beyond each unpaid-opening
+  ledger; openings are charged at progress_penalty_scale, which also discounts
+  retreat costs. Geometry, the paid-distance frontier and ledgers keep updating
+  during a threat: closings repay debt, threat-time openings incur none, and no
+  motion is saved for payment when the threat clears. Stall penalties escalate
+  linearly with continuous stall time, growing at stall_growth per second from
+  each base weight up to stall_cap. All other costs keep their strength.
   """
   if (min(k_theta, k_join, k_p, backward_weight, lateral_weight, deviation_weight,
-          stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight
-          ) < 0 or k_b < k_p or deviation_std <= 0 or lateral_limit < 0
-      or backward_limit < 0 or min(movement_cost_cap, deviation_cost_cap) <= 0
+          stall_weight, turn_stall_weight, join_stall_weight, recovery_stall_weight,
+          stall_growth) < 0 or k_b < k_p or deviation_std <= 0 or lateral_limit < 0
+      or backward_limit < 0 or min(movement_cost_cap, deviation_cost_cap, stall_cap) <= 0
       or not 0 <= align_lateral_scale <= 1 or not 0 <= join_deviation_scale <= 1
       or not 0 <= progress_penalty_scale <= 1):
     raise ValueError("Invalid classroom reward parameters (require k_b >= k_p)")
@@ -370,22 +379,25 @@ def classroom_path_follow_reward(
   deviation = (state.distance / deviation_std).square().clamp(max=deviation_cost_cap)
   deviation *= torch.where(state.step_joining, join_deviation_scale, 1.)
   turn_open = (-state.turn_delta).clamp_min(0)
+  # Escalating stall rates: the longer the continuous stall, the harsher the
+  # per-step cost, capped at stall_cap.
+  stall_rate = lambda weight: (weight + stall_growth * state.stall_age).clamp(max=stall_cap)
+  # An in-room incoming ball gates ONLY the penalty side. Reward terms keep
+  # paying while dodging; gated penalty magnitudes stay zero in the metrics.
+  gate = lambda value: torch.where(safe, value, 0.0)
   parts = {
-    "turn": k_theta * (state.turn_pay - progress_penalty_scale * turn_open) / torch.pi,
-    "join": k_join * (positive_join - progress_penalty_scale * negative_join) / cfg.navigation_d_ref,
+    "turn": k_theta * (state.turn_pay - progress_penalty_scale * gate(turn_open)) / torch.pi,
+    "join": k_join * (positive_join - progress_penalty_scale * gate(negative_join)) / cfg.navigation_d_ref,
     "forward": dt * k_p * g * (state.novel_speed / cfg.path_v_ref).clamp(0, 1) * follow,
-    "retreat": -progress_penalty_scale * dt * k_b * (-state.speed / cfg.path_v_ref).clamp(0, 1),
-    "body_backward": -dt * backward_weight * backward,
-    "lateral": -dt * lateral_weight * lateral,
-    "deviation": -dt * deviation_weight * deviation,
-    "turn_stall": -dt * turn_stall_weight * state.turn_stall.float(),
-    "join_stall": -dt * join_stall_weight * state.join_stall.float(),
-    "follow_stall": -dt * stall_weight * state.follow_stall.float(),
-    "recovery_stall": -dt * recovery_stall_weight * state.recovery_stall.float(),
+    "retreat": -progress_penalty_scale * dt * k_b * gate((-state.speed / cfg.path_v_ref).clamp(0, 1)),
+    "body_backward": -dt * backward_weight * gate(backward),
+    "lateral": -dt * lateral_weight * gate(lateral),
+    "deviation": -dt * deviation_weight * gate(deviation),
+    "turn_stall": -dt * gate(stall_rate(turn_stall_weight) * state.turn_stall.float()),
+    "join_stall": -dt * gate(stall_rate(join_stall_weight) * state.join_stall.float()),
+    "follow_stall": -dt * gate(stall_rate(stall_weight) * state.follow_stall.float()),
+    "recovery_stall": -dt * gate(stall_rate(recovery_stall_weight) * state.recovery_stall.float()),
   }
-  # Gate every component, including differences and retreat/deviation costs.
-  # Store the gated values so reward-component metrics also remain zero.
-  parts = {name: torch.where(safe, value, 0.0) for name, value in parts.items()}
   state.reward_components = parts
   return sum(parts.values()) / dt
 

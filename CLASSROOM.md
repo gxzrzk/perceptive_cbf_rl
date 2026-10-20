@@ -36,6 +36,28 @@ uv run python scripts/play.py Unitree-G1-AMP-Dodge-MimicKit-Classroom-Flat --age
 NUM_ENVS=512 ./train_classroom.sh
 ```
 
+CBF 算法可通过 `CBF_MODE` 环境变量在 link-cbf 与 joint-cbf 之间切换（在启动训练前 export，配置在进程导入时实例化，运行中的进程需重启）：
+
+```bash
+CBF_MODE=link ./train_classroom.sh    # 默认：link-cbf 逐连杆屏障奖励（球 + 34 件家具/墙）
+CBF_MODE=joint ./train_classroom.sh   # joint-cbf：关节级 CBF 动作过滤器 + 配套奖励，link 奖励全关
+CBF_MODE=both ./train_classroom.sh    # 两套叠加：防球用 joint 过滤器，防家具继续用 wall_link_cbf
+CBF_MODE=none ./train_classroom.sh    # 全部 CBF 关闭，纯 MimicKit 躲球奖励（无 CBF 对照组）
+```
+
+各模式注册的组件：`link`（默认，与原行为一致）注册 `dodge_link_cbf`（球）与 `wall_link_cbf`（家具/墙）；`joint` 关闭两个 link 奖励，将 `joint_pos` 动作替换为 `CbfJointPositionAction` 并新增 `dodge_cbf_joint_correction`、`dodge_cbf_joint_buffer` 两个奖励项；`both` 两者全开；`none` 全关。注意 joint-cbf 只防球、不管家具，`joint` 模式下家具/墙没有任何屏障，需要家具防护时使用 `both`。
+
+joint-cbf 的动作过滤器可独立开关（仅 `joint`/`both` 模式下有意义）：
+
+```bash
+# 过滤器开（默认）：每步将关节目标投影到安全区域后执行，训练时机器人被物理保护
+CBF_MODE=joint ./train_classroom.sh
+# 过滤器关：投影与奖励照常计算，但执行策略原始动作（纯奖励塑形，无训练/部署不一致）
+CBF_MODE=joint CBF_JOINT_APPLY_FILTER=0 ./train_classroom.sh
+```
+
+过滤器仅在训练时存在，部署导出的是裸 actor；`CBF_JOINT_APPLY_FILTER=0` 使训练与部署动作路径完全一致。过滤器强度与奖励权重可用 `CBF_JOINT_ALPHA`、`CBF_JOINT_BODY_BUFFER`、`CBF_JOINT_DELTA_MAX`、`CBF_JOINT_T_ALERT`、`CBF_JOINT_LAMBDA_CORR`、`CBF_JOINT_LAMBDA_BUF`、`CBF_JOINT_BUFFER`、`CBF_SENSE_RADIUS` 调整。教室开启 `scale_rewards_by_dt=True`，所有奖励项（含 joint-cbf 两项）按 dt=0.02 缩放，切换模式后权重需按此尺度重新校准。实现位于 `config/g1/dodge_env_cfgs.py` 的 `_cbf_mode()`，旧开关 `CBF_JOINT=1` 等价于 `CBF_MODE=both`，行为不变。
+
 播放教室模型：
 
 ```bash

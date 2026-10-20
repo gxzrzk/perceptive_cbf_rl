@@ -68,20 +68,21 @@ def test_forward_alignment_coefficient_and_threat_freezes_retreat(angle, expecte
     command, env = follower((angle,))
     advance(command, env, xy=[[.006, 0.]])  # .3 m/s: half reference speed
     assert reward(env).item() == pytest.approx(2 * expected * .5 * .02, abs=1e-6)
+    # A threat freezes only the penalty side: forward progress still pays.
     command._dodge_threat[:] = True
-    advance(command, env, xy=[[0., 0.]])
-    assert reward(env).item() == 0.
+    advance(command, env, xy=[[.012, 0.]])
+    assert reward(env).item() == pytest.approx(2 * expected * .5 * .02, abs=1e-6)
     command._dodge_threat[:] = False
-    advance(command, env, xy=[[-.006, 0.]])
+    advance(command, env, xy=[[.006, 0.]])
     assert reward(env, deviation_weight=0.).item() == pytest.approx(-.02, abs=1e-6)
 
 
 @pytest.mark.parametrize('mode', ['forward', 'retreat', 'turn', 'join', 'stall'])
-def test_whole_navigation_reward_and_component_metrics_freeze_per_threat_env(mode):
-    command, env = follower((120., 120.) if mode == 'turn' else (0., 0.))
-    if mode == 'join':
-        advance(command, env, xy=[[0., .5]] * 2)
-        reward(env)
+def test_threat_freezes_only_penalty_components_per_env(mode):
+    # Join mode spawns off-path: the closing below pays reward instead of only
+    # repaying debt from a self-caused opening.
+    command, env = follower((120., 120.) if mode == 'turn' else (0., 0.),
+                            xy=[[0., .5]] * 2 if mode == 'join' else None)
     if mode == 'stall':
         for _ in range(60):
             advance(command, env)
@@ -98,14 +99,22 @@ def test_whole_navigation_reward_and_component_metrics_freeze_per_threat_env(mod
     else:
         advance(command, env)
     value = reward(env)
-    assert value[0] == 0. and value[1].abs() > 0.
     parts = classroom_follow_state(command).reward_components
-    assert all(component[0] == 0. for component in parts.values())
+    penalties = ('retreat', 'body_backward', 'lateral', 'deviation',
+                 'turn_stall', 'join_stall', 'follow_stall', 'recovery_stall')
+    # Every pure-penalty component of the threatened environment is gated.
+    assert all(parts[name][0] == 0. for name in penalties)
+    # Reward terms keep paying the threatened environment while dodging.
+    if mode in ('forward', 'turn', 'join'):
+        assert value[0] > 0.
+    else:
+        assert value[0] == 0.
+    assert value[1].abs() > 0.
     assert any(component[1] != 0. for component in parts.values())
 
 
 @pytest.mark.parametrize('mode', ['forward', 'turn', 'join'])
-def test_threat_motion_is_not_paid_after_navigation_reward_resumes(mode):
+def test_threat_motion_is_paid_immediately_and_not_again_after_resume(mode):
     command, env = follower((120.,) if mode == 'turn' else (0.,),
                             xy=[0., .5] if mode == 'join' else None)
     command._dodge_threat[:] = True
@@ -116,7 +125,8 @@ def test_threat_motion_is_not_paid_after_navigation_reward_resumes(mode):
             advance(command, env, angles=[120. - (step + 1) * 20.])
         else:
             advance(command, env, xy=[[0., .5 - (step + 1) * .05]])
-        assert reward(env, deviation_weight=0.).item() == 0.
+        # Reward terms stay open during a threat: dodging progress pays at once.
+        assert reward(env, deviation_weight=0.).item() > 0.
     command._dodge_threat[:] = False
     advance(command, env)
     assert reward(env, deviation_weight=0.).item() == 0.
@@ -138,7 +148,9 @@ def test_hidden_outside_ball_cannot_freeze_navigation_with_a_stale_threat_flag()
     env.sim.data = ball_env.sim.data
     command._dodge_threat[:] = True
     advance(command, env, xy=[[.012, 0.]] * 2)
-    assert reward(env).tolist() == pytest.approx([0., .04], abs=1e-6)
+    # Env 0's in-room threat freezes only its penalties; the forward reward of
+    # both environments keeps paying (env 1's outside ball cannot gate it).
+    assert reward(env).tolist() == pytest.approx([.04, .04], abs=1e-6)
 
 
 @pytest.mark.parametrize("dt", [.01, .02, .05])
@@ -184,10 +196,14 @@ def test_stalls_have_seconds_grace_and_no_static_positive_reward(dt):
         advance(command, env)
         assert torch.equal(reward(env), torch.zeros(2))
     advance(command, env)
-    assert torch.allclose(reward(env), torch.full((2,), -1.2 * dt), atol=1e-6)
+    # The stall penalty escalates with continuous stall time (default growth
+    # 2.4/s on top of the 1.2 base weight, capped at 12).
+    assert torch.allclose(reward(env), torch.full((2,), -(1.2 + 2.4 * dt) * dt), atol=1e-6)
+    advance(command, env)
+    assert torch.allclose(reward(env), torch.full((2,), -(1.2 + 4.8 * dt) * dt), atol=1e-6)
     # Reverse then forward turning doesn't repeatedly reset the stall clock.
     advance(command, env, angles=[121., 0.])
-    assert reward(env)[0] < -1.2 * dt
+    assert reward(env)[0] < -(1.2 + 4.8 * dt) * dt
     advance(command, env, angles=[120., 0.])
     assert classroom_follow_state(command).turn_stall[0] >= 1.
 
