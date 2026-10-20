@@ -27,3 +27,6 @@ render_robots.py
 # Documentation outputs.
 **/_build/*
 **/generated/*
+
+# Smoke-test artifacts from pipeline bring-up
+logs_smoketest/
