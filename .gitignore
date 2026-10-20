@@ -48,3 +48,5 @@ deploy/wheels/*.whl
 deploy/common/etam_clips/
 deploy/*_rec*.npz
 deploy/recordings/
+
+# Third-party comparison codebases (LP-NavOA etc.)
