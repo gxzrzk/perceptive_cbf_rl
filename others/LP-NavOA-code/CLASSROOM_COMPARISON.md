@@ -71,15 +71,23 @@ uv run --no-sync ...    # 绝不使用裸 uv run / uv sync（会改写共享 ven
 - 最新 checkpoint：`/home/zxg/perceptive_cbf_rl/logs/rsl_rl/state_classroom/2026-10-16_01-19-30/model_75000.pt`
 - 巡航速度 0.6 m/s，训练路线含随机换道转弯（横过道站点 v ≈ 0/3.1/6.2/9.3/12.4/15.5）
 
+## 已拍板的设计原则
+
+**忠于 LP-NavOA 原生训练方法，场景替换（classroom）是唯一变量**
+（用户 2026-10-21 决定）。含义：
+
+- stage 1–6 与官方 `curriculum_train_v6.sh` 完全一致，不加任何定制。
+- classroom 阶段不做定制的转弯路线（否决了"S 形换道路线"提案）。
+  原生的速度自适应 waypoint 生成在 classroom 跑不起来（墙体检测会
+  把课桌误判为墙），这是场景替换被迫的最小适配：显式直线车道 waypoint。
+- 转弯能力由原生 stage 5/6 提供（classroom 规划器从 indoor 规划器热启动），
+  规划器能否把 indoor 的转弯经验泛化到 classroom 属于实验结论本身。
+
 ## 待决事项（训练前需拍板）
 
-1. **S 形转弯路线（公平性问题）**：当前 classroom waypoint 是直线车道，
-   局部规划器学不到换道转弯；PAC-MAN 训练是带随机转弯的。建议训练前实现
-   按 env 采样的换道路线（子类化 `FixedSequentialGoalCommand`，reset 时采样
-   目标车道 ±2.7 m + 6 个横过道站点之一），或评测时双方都只走直线。
-2. **stage 1 env 数**：本机 4096（实测可行）或换机器保持官方 8192。
-3. **训练机器**：官方总规模（4000+4000+4500+80000+20000+20000 迭代）在
+1. **stage 1 env 数**：本机 4096（实测可行）或换机器保持官方 8192。
+2. **训练机器**：官方总规模（4000+4000+4500+80000+20000+20000 迭代）在
    3060 上预计需要数天；若有服务器建议迁移（整个 `others/LP-NavOA-code/`
    目录 + 独立 `uv sync --extra cu128` 即可，不再需要共享 venv 纪律）。
-4. 评测协议：建议双方都在 `Mjlab-Classroom-NoPP-G1-v6` 等价场景下测
+3. 评测协议：建议双方都在 `Mjlab-Classroom-NoPP-G1-v6` 等价场景下测
    成功率/碰撞率/平均速度，路线集合一致。
