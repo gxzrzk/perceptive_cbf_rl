@@ -1,0 +1,76 @@
+{
+  "variants": [
+    {
+      "name": "DR full",
+      "tasks": ["Low-speed"],
+      "checkpoint": "default"
+    },
+    {
+      "name": "DR waypoint-only labels",
+      "tasks": ["Low-speed"],
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_waypoint_only_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "DR key-goal-only labels",
+      "tasks": ["Low-speed"],
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_key_goal_only_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "DR no teacher forcing",
+      "tasks": ["Low-speed"],
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_no_teacher_forcing_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "DR no curriculum",
+      "tasks": ["Low-speed"],
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_no_dr_curriculum_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "DR no safety filter",
+      "tasks": ["Low-speed"],
+      "checkpoint": "default",
+      "disable_safety_envelope": true
+    },
+    {
+      "name": "Odom full",
+      "tasks": ["Low-speed"],
+      "checkpoint": "default",
+      "use_odometry": true,
+      "include_joint_vel": false
+    },
+    {
+      "name": "Odom waypoint-only labels",
+      "tasks": ["Low-speed"],
+      "use_odometry": true,
+      "include_joint_vel": false,
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_odom_waypoint_only_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "Odom key-goal-only labels",
+      "tasks": ["Low-speed"],
+      "use_odometry": true,
+      "include_joint_vel": false,
+      "checkpoints": {
+        "Low-speed": "logs/steering/local_planner_ablation_odom_key_goal_only_low_speed_v6_final.pt"
+      }
+    },
+    {
+      "name": "Odom no safety filter",
+      "tasks": ["Low-speed"],
+      "checkpoint": "default",
+      "use_odometry": true,
+      "include_joint_vel": false,
+      "disable_safety_envelope": true
+    }
+  ]
+}

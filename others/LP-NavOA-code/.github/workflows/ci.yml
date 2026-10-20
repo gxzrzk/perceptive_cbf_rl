@@ -1,0 +1,85 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'Makefile'
+      - 'LICENSE'
+      - 'NOTICE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'Makefile'
+      - 'LICENSE'
+      - 'NOTICE'
+
+env:
+  UV_FROZEN: "1"
+
+jobs:
+  lint-format:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          version: "0.9.27"
+      - name: Run lint
+        run: uvx ruff@0.14.14 check --diff
+      - name: Run format
+        run: uvx ruff@0.14.14 format --diff
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Test the ends of the supported range; the full range is 3.10-3.13.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+          version: "0.9.27"
+      - name: Test with python ${{ matrix.python-version }}
+        run: uv run --extra cpu pytest
+
+  # The type checkers report diagnostics inherited from the research fork, so
+  # they run as advisory jobs: they surface regressions without failing the
+  # workflow. Run `make type` locally for the same output.
+  pyright:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          version: "0.9.27"
+      - name: Type check with pyright
+        run: uv run --extra cpu pyright
+
+  ty-check:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          version: "0.9.27"
+      - name: Type check with ty
+        run: uv run --extra cpu ty check

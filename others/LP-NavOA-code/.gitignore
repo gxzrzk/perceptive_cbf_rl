@@ -1,0 +1,29 @@
+# Virtual environments.
+.venv/
+
+# Training / evaluation outputs.
+logs/
+wandb/
+onnx/
+videos/
+artifacts/
+benchmark_results/
+dataset/
+motions/
+
+# Python.
+__pycache__/
+*.py[cod]
+*.ipynb_checkpoints/
+MUJOCO_LOG.TXT
+
+# Editors / tools.
+.vscode/
+.idea/
+_rerun*
+debug.py
+render_robots.py
+
+# Documentation outputs.
+**/_build/*
+**/generated/*

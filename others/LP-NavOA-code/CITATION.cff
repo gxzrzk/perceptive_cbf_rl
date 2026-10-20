@@ -1,0 +1,78 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: >-
+  LP-NavOA: Integrated Local Navigation and Obstacle Avoidance for Humanoid
+  Robots under Limited Perception
+message: >-
+  If you use this software, please cite both the LP-NavOA paper and mjlab,
+  the framework it builds on.
+type: software
+authors:
+  - given-names: Yukun
+    family-names: Luo
+  - given-names: Jianjun
+    family-names: Ma
+  - given-names: Yuyao
+    family-names: Min
+  - given-names: Jinzhe
+    family-names: Li
+  - given-names: Kaihong
+    family-names: Huang
+  - given-names: Peng
+    family-names: Li
+repository-code: 'https://github.com/shenqiqishi/LP-NavOA-code'
+keywords:
+  - humanoid
+  - local-navigation
+  - obstacle-avoidance
+  - limited-perception
+  - reinforcement-learning
+  - mujoco
+license: Apache-2.0
+version: 1.2.0
+preferred-citation:
+  # TODO: switch to `conference-paper` with `collection-title` once the
+  # peer-reviewed venue is public.
+  type: article
+  title: >-
+    LP-NavOA: Integrated Local Navigation and Obstacle Avoidance for Humanoid
+    Robots under Limited Perception
+  authors:
+    - given-names: Yukun
+      family-names: Luo
+    - given-names: Jianjun
+      family-names: Ma
+    - given-names: Yuyao
+      family-names: Min
+    - given-names: Jinzhe
+      family-names: Li
+    - given-names: Kaihong
+      family-names: Huang
+    - given-names: Peng
+      family-names: Li
+  year: 2026
+  journal: arXiv preprint
+  url: https://arxiv.org/abs/2606.23249
+  identifiers:
+    - type: doi
+      value: 10.48550/arXiv.2606.23249
+references:
+  - type: article
+    title: 'mjlab: A Lightweight Framework for GPU-Accelerated Robot Learning'
+    authors:
+      - given-names: Kevin
+        family-names: Zakka
+      - given-names: Qiayuan
+        family-names: Liao
+      - given-names: Brent
+        family-names: Yi
+      - given-names: Louis
+        family-names: Le Lay
+      - given-names: Koushil
+        family-names: Sreenath
+      - given-names: Pieter
+        family-names: Abbeel
+    year: 2026
+    url: https://arxiv.org/abs/2601.22074

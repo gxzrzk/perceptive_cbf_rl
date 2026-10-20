@@ -1,0 +1,24 @@
+# Normalize line endings for a cross-platform research repository.
+* text=auto eol=lf
+
+# Shell scripts must keep LF endings so they stay executable on Linux.
+*.sh text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.mp4 binary
+*.stl binary
+*.STL binary
+*.obj binary
+*.npz binary
+*.pt binary
+*.onnx binary
+*.zip binary
+
+# Generated lockfiles: keep diffs honest but do not rewrite them.
+uv.lock -diff linguist-generated

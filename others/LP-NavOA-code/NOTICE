@@ -1,0 +1,51 @@
+LP-NavOA
+Copyright 2026, Yukun Luo and the LP-NavOA contributors
+
+This product is a research fork of mjlab and includes software developed by
+third parties. The notices below are provided in accordance with the terms of
+the respective licenses.
+
+===============================================================================
+mjlab
+===============================================================================
+This repository is derived from mjlab:
+    https://github.com/mujocolab/mjlab
+    Copyright 2025, The mjlab Developers
+    Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The mjlab manager-based environment API, MDP term library, task registry,
+training/evaluation scripts, viewers, terrain generation, and asset zoo are
+retained in substantially their upstream form. LP-NavOA adds the circular
+goal-command backbone tasks, the planner/waypoint teacher and distilling
+recurrent local planner, and the navigation benchmark used in the paper.
+
+If you use this software in research, please cite both the LP-NavOA paper
+(see CITATION.cff) and mjlab.
+
+===============================================================================
+NVIDIA Isaac Lab (BSD-3-Clause)
+===============================================================================
+Portions of `src/mjlab/utils/lab_api/` are forked from NVIDIA Isaac Lab:
+    https://github.com/isaac-sim/IsaacLab
+    Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+    All rights reserved.
+    Licensed under the BSD-3-Clause license.
+
+Forked files retain their original license headers. See the individual files
+under `src/mjlab/utils/lab_api/` for details.
+
+===============================================================================
+Unitree G1 robot model
+===============================================================================
+The Unitree G1 description under `src/mjlab/asset_zoo/robots/unitree_g1/` is
+derived from Unitree Robotics' public robot description:
+    https://github.com/unitreerobotics/unitree_mujoco
+Refer to Unitree's terms for use of the robot model and meshes.
+
+===============================================================================
+MuJoCo and MuJoCo Warp
+===============================================================================
+This software depends on MuJoCo (https://github.com/google-deepmind/mujoco,
+Apache License 2.0) and MuJoCo Warp
+(https://github.com/google-deepmind/mujoco_warp, Apache License 2.0), which are
+installed as runtime dependencies and are not vendored in this repository.
