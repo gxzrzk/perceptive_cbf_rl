@@ -1463,11 +1463,28 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
     os.environ.get("WALK_TRACK_LIN_STD", 0.3)
   )
   cfg.episode_length_s = 25.0
+  # WALK_THROW_ENABLED=0 turns the classroom into a pure-navigation task (the
+  # LP-NavOA comparison setup, which has no projectiles): the timed-throw event
+  # and its curriculum are not registered, the ball stays parked below the floor
+  # with the base collision setup, and the 6-D ball_state observation is dropped
+  # from the "ball_state" group (the furniture-geometry ``wall_state`` term in
+  # the same group is KEPT -- it is a navigation input). The dodge reward terms
+  # are popped as well: they are all gated on a live ball (airborne/approaching)
+  # and would return 0 anyway, so this only makes the reward list match the
+  # actual task. (``dodge_stillness_when_safe`` / ``dodge_action_rate_when_safe``
+  # are already dropped by the wallwalk base; the pops are defensive.)
+  throw_enabled = os.environ.get("WALK_THROW_ENABLED", "1").lower() not in ("0", "false")
+  if not throw_enabled:
+    cfg.events.pop("throw_ball_on_dwell", None)
+    for name in ("mimickit_dodge", "dodge_stillness_when_safe",
+                 "dodge_action_rate_when_safe", "dodge_link_cbf", "dodge_sidestep"):
+      cfg.rewards.pop(name, None)
+    cfg.observations["ball_state"].terms.pop("ball_state", None)
   classroom_interval = (
     float(os.environ.get("WALK_THROW_INTERVAL_MIN", 2.0)),
     float(os.environ.get("WALK_THROW_INTERVAL_MAX", 5.0)),
   )
-  if not play:
+  if throw_enabled and not play:
     throw_curriculum = {
       "warmup_iterations": int(os.environ.get("WALK_THROW_WARMUP_ITERS", 6000)),
       "ramp_iterations": int(os.environ.get("WALK_THROW_RAMP_ITERS", 4000)),
@@ -1486,32 +1503,33 @@ def g1_amp_dodge_mimickit_classroom_flat_env_cfg(play: bool = False) -> ManagerB
       events[name] = event
     cfg.events = events
     classroom_interval = throw_curriculum["start_interval"]
-  # Use the same countdown for the first throw after reset and subsequent throws.
-  cfg.events["reset_dodge_state"].params["throw_interval_range"] = classroom_interval
-  cfg.events["throw_ball_on_dwell"].params.update(
-    omnidirectional=True, along_path=False, launch_speed_range=None,
-    dist_range=(3.0, 5.0), throw_interval_range=classroom_interval)
-  # Bit 1 keeps ordinary robot/scenery collisions. Only the robot accepts
-  # ball bit 2; ball affinity 0 prevents the reverse mask test enabling scenery.
-  ball_bit = 2
-  cfg.scene.entities["ball"].collisions = (
-    CollisionCfg(geom_names_expr=("ball_collision",), contype=ball_bit, conaffinity=0),
-  )
-  cfg.scene.entities["robot"].collisions = tuple(
-    replace(
-      collision,
-      conaffinity=(
-        {pattern: value | ball_bit for pattern, value in collision.conaffinity.items()}
-        if isinstance(collision.conaffinity, dict)
-        else collision.conaffinity | ball_bit
-      ),
+  if throw_enabled:
+    # Use the same countdown for the first throw after reset and subsequent throws.
+    cfg.events["reset_dodge_state"].params["throw_interval_range"] = classroom_interval
+    cfg.events["throw_ball_on_dwell"].params.update(
+      omnidirectional=True, along_path=False, launch_speed_range=None,
+      dist_range=(3.0, 5.0), throw_interval_range=classroom_interval)
+    # Bit 1 keeps ordinary robot/scenery collisions. Only the robot accepts
+    # ball bit 2; ball affinity 0 prevents the reverse mask test enabling scenery.
+    ball_bit = 2
+    cfg.scene.entities["ball"].collisions = (
+      CollisionCfg(geom_names_expr=("ball_collision",), contype=ball_bit, conaffinity=0),
     )
-    for collision in cfg.scene.entities["robot"].collisions
-  )
-  # After reaching the saved throw target, hide and hold out-of-room balls below
-  # the floor. Run after launches so every throw first installs its new target.
-  cfg.events["hide_outside_classroom_ball"] = EventTermCfg(
-    func=hide_outside_classroom_ball, mode="step")
+    cfg.scene.entities["robot"].collisions = tuple(
+      replace(
+        collision,
+        conaffinity=(
+          {pattern: value | ball_bit for pattern, value in collision.conaffinity.items()}
+          if isinstance(collision.conaffinity, dict)
+          else collision.conaffinity | ball_bit
+        ),
+      )
+      for collision in cfg.scene.entities["robot"].collisions
+    )
+    # After reaching the saved throw target, hide and hold out-of-room balls below
+    # the floor. Run after launches so every throw first installs its new target.
+    cfg.events["hide_outside_classroom_ball"] = EventTermCfg(
+      func=hide_outside_classroom_ball, mode="step")
   hidden_ball_pos = CLASSROOM_BALL_PARK_POS
   cfg.scene.entities["ball"].init_state.pos = hidden_ball_pos
   cfg.events["reset_dodge_state"].params["park_offset"] = hidden_ball_pos

@@ -31,20 +31,40 @@
 bash run_classroom_curriculum.sh
 ```
 
+若 stage 1–5 已完成，只续训 stage 6/7：
+
+```bash
+bash run_classroom_stage67.sh
+```
+
+该入口默认使用本次 stage 3 的 `model_12497.pt` 和 stage 5 的
+`local_planner_low_speed_v6_511_final.pt`，先训练 indoor 规划器，再用其最终权重
+热启动 classroom 规划器。换用其他 backbone 时传入 `--backbone-checkpoint PATH`。
+当前机器的原共享 `.venv` 链接已失效；续训入口使用按本项目锁文件创建的
+`.venv-stage67`，可用 `LP_PYTHON` 或 `--python` 覆盖。
+
 产物：backbone → `logs/rsl_rl/g1_velocity_raycast_h1/<ts>/model_*.pt`；
 各规划器 → `logs/steering/local_planner_<name>_final.pt`。
 
 ### 运行纪律（重要）
 
-本拷贝与原项目 `/home/zxg/LP-NavOA-code` **共享 venv**（`.venv` 是符号链接），
-且 venv 内 `mjlab.pth` 指向原项目源码。因此在本目录下必须：
+本拷贝原先与 `/home/zxg/LP-NavOA-code` 共享 `.venv`，但目前该链接的目标已清空。
+stage 6/7 的独立环境可在本目录用以下命令从本机缓存重建：
+
+```bash
+UV_PROJECT_ENVIRONMENT="$(pwd)/.venv-stage67" \
+UV_CACHE_DIR=/root/autodl-tmp/zxg/.uv-cache \
+uv sync --frozen --offline --no-dev --extra cu128 --python 3.13
+```
+
+若使用旧的全量脚本，仍须确保运行的是本拷贝源码，并避免同步旧共享环境：
 
 ```bash
 export PYTHONPATH=$(pwd)/src
-uv run --no-sync ...    # 绝不使用裸 uv run / uv sync（会改写共享 venv 的 mjlab.pth）
+uv run --no-sync ...
 ```
 
-驱动脚本已内置这两条，手跑单条命令时自己加上。
+全量驱动脚本已内置这两条；stage 6/7 入口直接使用独立环境的 Python。
 
 ## 状态
 
@@ -52,7 +72,7 @@ uv run --no-sync ...    # 绝不使用裸 uv run / uv sync（会改写共享 ven
 - [x] 任务注册（`list_envs` 可见两个 classroom 任务）
 - [x] smoke test 全链路通过（64 envs × 30 迭代 backbone → 200 迭代蒸馏 →
       NoPP 测试模式；产物在 `logs_smoketest/`，仅作流程验证，策略无效）
-- [ ] 完整训练（未启动，见待决事项）
+- [x] stage 1–5 已完成；stage 6/7 由 `run_classroom_stage67.sh` 续训
 
 ## 硬件实测（本机 RTX 3060 Laptop 6GB 显存 + 7.4GB 内存 WSL2）
 

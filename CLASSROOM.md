@@ -44,6 +44,20 @@ NUM_ENVS=512 ./train_classroom.sh
 
 布局位于 `src/tasks/amp_loco/config/g1/dodge_env_cfgs.py` 的 `g1_amp_dodge_mimickit_classroom_flat_env_cfg`。修改速度或回合长度时，应同时留足前墙之前的行走和投球空间。
 
+## LP-NavOA 对比变体（无投球纯导航，0.8 m/s）
+
+与 LP-NavOA 的公平对比要求纯导航设定（对方无投球），且巡航速度提高到 0.8 m/s。专用启动脚本：
+
+```bash
+./train_classroom_vs_lp.sh
+```
+
+该脚本等价于 `WALK_THROW_ENABLED=0 WALK_V_REF=0.8 EXP_NAME=classroom_vs_lp ./train_classroom.sh`，日志写入 `logs/rsl_rl/classroom_vs_lp/`。`WALK_V_REF` 同时驱动 `path_v_ref` 与 `max_lin_vel_x`，无需改码。播放/评测时需带上同一组环境变量（`WALK_THROW_ENABLED=0 WALK_V_REF=0.8 ./play_classroom.sh ...`），否则观测维度与训练不一致。
+
+`WALK_THROW_ENABLED=0`（默认 1，不影响既有任务）在教室工厂中做如下裁剪：不注册 `throw_ball_on_dwell`、`hide_outside_classroom_ball`、`classroom_throw_interval` 课程与步进刷新事件；跳过球/机器人碰撞位覆写，球始终停放在地板下方（`reset_dodge_state` 保留）；删除全部与球相关的奖励项（`mimickit_dodge`、`dodge_stillness_when_safe`、`dodge_action_rate_when_safe`、`dodge_link_cbf`、`dodge_sidestep`，无球时本就恒零或被基类移除）；`ball_state` 观测组中仅删除 6 维球状态项，72 维桌椅几何 `wall_state` 项保留，观测组名和 runner 配置不变。`ball_hit` 终止保留但永不触发。
+
+0.8 m/s 的 AMP 先验覆盖已核查：`amp_classroom` 64 条 clip 中 `walk_forward_normal_004`（中位 0.92 m/s）、`walk_forward_loop_002__A024`（0.93）、`walk_forward_normal_003`（0.80）、`walk_arc_cw_loop_002__A046`（0.79）覆盖 0.8 巡航，其上还有 1.0+ m/s 的 jog clip，无需新增运动片段。RSI 中的 27 条躲球 clip 暂时保留（重置分布略宽但无害；如需严格纯导航可先验剪成步行集）。
+
 教室训练使用固定迭代课程：前 6000 次迭代，首次和后续投球间隔均为随机 6–9 秒；接着用 4000 次迭代线性收紧，第 8000 次为 4–7 秒，第 10000 次及以后为 2–5 秒。课程不依赖动作标准差阈值。播放直接使用最终的 2–5 秒间隔。`WALK_THROW_INTERVAL_MIN`、`WALK_THROW_INTERVAL_MAX` 调整最终范围，`WALK_THROW_WARMUP_ITERS`、`WALK_THROW_RAMP_ITERS` 分别调整热身和过渡长度。
 
 课程按训练器实际 `num_steps_per_env` 换算迭代进度，回合重置不重启课程。checkpoint 保存累计课程进度，恢复时继续；旧 checkpoint 根据已保存的迭代编号恢复，修改每次采样步数也能保持进度。收紧只影响新采样的投球等待时间，正在运行的倒计时继续完成；恢复 checkpoint 时重新按恢复阶段采样倒计时。日志 `Curriculum/classroom_throw_interval/*` 输出进度及当前间隔。
@@ -87,7 +101,8 @@ NUM_ENVS=512 ./train_classroom.sh
 | `WALK_JOIN_D_IN` / `WALK_JOIN_D_OUT` | 0.2 / 0.4 m | 汇入/跟随距离迟滞 |
 | `WALK_ALIGN_ENTER_DEG` / `WALK_ALIGN_EXIT_DEG` | 75° / 25° | 对准迟滞 |
 | `WALK_LOOKAHEAD` / `WALK_JOIN_LOOKAHEAD` | 0.8 / 0.8 m | 跟随/汇入目标 |
-| `WALK_V_REF` / `WALK_D_REF` | 0.6 m/s / 0.5 m | 归一化基准 |
+| `WALK_V_REF` / `WALK_D_REF` | 0.6 m/s / 0.5 m | 归一化基准（`WALK_V_REF` 同时是巡航速度上限） |
+| `WALK_THROW_ENABLED` | 1 | 0 = 无投球纯导航变体（LP 对比），删除投球事件/课程/球观测/躲球奖励 |
 | `WALK_GOAL_HEADING_WEIGHT` / `WALK_JOIN_WEIGHT` | 6 / 4 | 转向/汇入差分权重 |
 | `WALK_PATH_PROGRESS_SAFE_WEIGHT` / `WALK_PATH_BACKWARD_WEIGHT` | 6 / 6 | 前进/后退权重 |
 | `WALK_PROGRESS_PENALTY_SCALE` | 0.5 | 转向/汇入开口押金费率及路径后退折扣；合拢先冲销欠账，其他惩罚不变 |

@@ -38,12 +38,15 @@ echo "[train_classroom.sh] gpu_ids=${GPU_IDS}"
 echo "[train_classroom.sh] rel_standing_envs=${STAND_RATIO} rel_inplace_throw_envs=${INPLACE_RATIO}"
 echo "[train_classroom.sh] extra args: $*"
 
-read -r -a GPU_ID_LIST <<< "$GPU_IDS"
+# mjlab's TYRO_FLAGS include UsePythonSyntaxForLiteralCollections, so the
+# list[int] | "all" | None union must be given as a Python list literal
+# (space-separated GPU_IDS "4 5" -> "[4,5]").
+GPU_IDS_LITERAL="[${GPU_IDS// /,}]"
 
 PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
   exec uv run python scripts/train.py "$TASK" \
     --env.scene.num-envs="$NUM_ENVS" \
-    --gpu-ids "${GPU_ID_LIST[@]}" \
+    --gpu-ids "$GPU_IDS_LITERAL" \
     --env.commands.twist.rel-inplace-throw-envs="$INPLACE_RATIO" \
     --env.commands.twist.rel-standing-envs="$STAND_RATIO" \
     --agent.experiment-name="$EXP_NAME" \

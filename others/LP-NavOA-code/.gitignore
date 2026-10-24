@@ -1,5 +1,6 @@
 # Virtual environments.
 .venv/
+.venv-stage67/
 
 # Training / evaluation outputs.
 logs/

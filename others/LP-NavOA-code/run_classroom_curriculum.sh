@@ -7,8 +7,7 @@
 # warm-started from the Stage 6 indoor planner.
 #
 # Differences from the upstream script are mechanical only:
-#   - `uv run --no-sync` + PYTHONPATH, because this checkout shares the original
-#     project's venv via symlink (never run bare `uv run`/`uv sync` here).
+#   - `uv run --no-sync` + PYTHONPATH, using the local locked environment.
 #
 # Usage: bash run_classroom_curriculum.sh [--robot-version v5|v15]
 
@@ -16,6 +15,7 @@ set -e
 
 cd "$(dirname "$0")"
 export PYTHONPATH="$(pwd)/src"
+export UV_PROJECT_ENVIRONMENT="${LP_VENV:-$(pwd)/.venv-stage67}"
 UV_RUN="uv run --no-sync"
 
 ROBOT_VERSION=v15
@@ -65,7 +65,7 @@ STAGE7_MAX_ITERATIONS=20000
 STAGE7_OUTPUT_DIR="logs/steering"
 STAGE7_EXPERIMENT_NAME="classroom_v6_511"
 
-RAYCAST_OBS_NAMES="raycast raycast_left raycast_right"
+RAYCAST_OBS_NAMES='("raycast", "raycast_left", "raycast_right")'
 LOG_DIR="logs/rsl_rl/g1_velocity_raycast_h1"
 # =======================
 
@@ -133,7 +133,7 @@ ${UV_RUN} python -m mjlab.tasks.steering.train_local_planner \
     --num_envs ${STAGE5_NUM_ENVS} \
     --output_dir "${STAGE5_OUTPUT_DIR}" \
     --experiment_name "${STAGE5_EXPERIMENT_NAME}" \
-    --raycast-obs-names ${RAYCAST_OBS_NAMES} \
+    --raycast-obs-names "${RAYCAST_OBS_NAMES}" \
     --max_iterations ${STAGE5_MAX_ITERATIONS}
 
 LP_CKPT="${STAGE5_OUTPUT_DIR}/local_planner_${STAGE5_EXPERIMENT_NAME}_final.pt"
@@ -150,7 +150,7 @@ ${UV_RUN} python -m mjlab.tasks.steering.train_local_planner \
     --num_envs ${STAGE6_NUM_ENVS} \
     --output_dir "${STAGE6_OUTPUT_DIR}" \
     --experiment_name "${STAGE6_EXPERIMENT_NAME}" \
-    --raycast-obs-names ${RAYCAST_OBS_NAMES} \
+    --raycast-obs-names "${RAYCAST_OBS_NAMES}" \
     --max_iterations ${STAGE6_MAX_ITERATIONS}
 
 LP_CKPT="${STAGE6_OUTPUT_DIR}/local_planner_${STAGE6_EXPERIMENT_NAME}_final.pt"
@@ -167,8 +167,8 @@ ${UV_RUN} python -m mjlab.tasks.steering.train_local_planner \
     --num_envs ${STAGE7_NUM_ENVS} \
     --output_dir "${STAGE7_OUTPUT_DIR}" \
     --experiment_name "${STAGE7_EXPERIMENT_NAME}" \
-    --raycast-obs-names ${RAYCAST_OBS_NAMES} \
-    --max_iterations ${STAGE7_MAX_ITERATIONS}"
+    --raycast-obs-names "${RAYCAST_OBS_NAMES}" \
+    --max_iterations ${STAGE7_MAX_ITERATIONS}
 
 echo ""
 echo "=========================================="
